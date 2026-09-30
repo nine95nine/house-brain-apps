@@ -1,5 +1,5 @@
 name: "House Brain Maintenance"
-version: "0.1.2"
+version: "0.2.0"
 slug: "house_brain_maintenance"
 description: >-
   Reviews pending App updates and applies them after your iPhone approval
@@ -65,6 +65,8 @@ options:
   auto_window_end_hour: 5
   health_check_minutes: 3
   report_issue: 0
+  issue_checks: true
+  digest_hour: 8
 schema:
   github_repo: "match(^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$)"
   github_token: password
@@ -85,3 +87,5 @@ schema:
   auto_window_end_hour: "int(0,23)"
   health_check_minutes: "int(1,30)"
   report_issue: "int(0,10000000)"
+  issue_checks: bool
+  digest_hour: "int(0,23)"

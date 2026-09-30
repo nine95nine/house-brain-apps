@@ -1,10 +1,11 @@
 # House Brain Maintenance
 
-This App keeps your Home Assistant Apps up to date safely. It never changes anything without a
-rule you chose: every update waits for your approval on your iPhone, unless you switch on
-automatic installs of low-risk bug-fix updates at night.
+This App keeps your Home Assistant Apps up to date safely and tells you about problems with a
+suggested fix. It never changes anything without a rule you chose: every update and every fix
+waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
+bug-fix updates at night.
 
-## What it does (0.1.2)
+## What it does (0.2.0)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -27,6 +28,22 @@ automatic installs of low-risk bug-fix updates at night.
 
 If you tap Reject, that version is not offered again. If you do not answer, it asks again the
 next day.
+
+**Problem alerts** (`issue_checks`, on by default). Every check it looks, without changing
+anything, at: Home Assistant **Repairs**, Supervisor health and its own suggested fixes, **Apps**
+that crashed or stopped although they start at boot, **integrations** that failed to start or keep
+retrying, **errors in the log**, **disk space** and **backups** (warns if no backup including Home
+Assistant in 7 days). A problem must be seen twice in a row before you hear about it.
+
+- Serious problems: one notification right away, with what to do.
+- Safe fixes: restart or start that App, reload that integration, or let Home Assistant run its own
+  repair. The notification has **Approve** (Face ID) and **Reject**; nothing runs without Approve.
+  Afterwards you get **fixed** or **not fixed** with next steps. Reject means it will not ask again
+  while that problem stays.
+- Everything else, and problems that cleared, come in one summary at `digest_hour` (8 am).
+- Each problem is reported once; details go to the tracking issue (`report_issue`) with passwords,
+  tokens, IP, MAC and e-mail addresses removed.
+- It never reboots, stops, removes or updates anything as a fix, and never touches itself.
 
 **Scout jobs** (proposed by the House Brain AI, each needs your approval):
 

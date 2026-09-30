@@ -17,6 +17,11 @@ boundary is this module:
   same way, and exactly one *mutating* target at a time: ``with ha.update_target(slug)``
   opens update / partial backup / partial restore for that one slug only; outside that
   block every mutating update route is forbidden. ``self`` can never be a target.
+* problem detection (0.2.0) adds read-only routes (host disk, backup list) and three read-only
+  Core WebSocket commands (Repairs list, integration entries, system log), all projected to
+  bounded fields. A one-tap fix opens exactly one mutating route for one target inside
+  ``with ha.fix_target(kind, ref)``: restart/start of one App, apply of one Supervisor
+  suggestion, or reload of one integration entry. Never ``self``, never an update route.
 
 The ``ha`` CLI is never used (#223 R4 ``apps``/``addons`` escape).
 """
@@ -37,10 +42,14 @@ APPROVAL_EVENT = "mobile_app_notification_action"
 RE_SLUG = re.compile(r"^[a-z0-9][a-z0-9_]{0,99}$")
 RE_BACKUP_SLUG = re.compile(r"^[a-f0-9]{8,64}$")
 RE_APP_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:-]{0,63}$")
+RE_UUID_HEX = re.compile(r"^[a-f0-9]{32}$")
+RE_ENTRY_ID = re.compile(r"^[A-Za-z0-9]{20,40}$")
+FIX_KINDS = frozenset({"restart_app", "start_app", "apply_suggestion", "reload_entry"})
 SAFE_STATES = frozenset({"startup", "started", "stopped", "unknown", "error"})
 PRIVILEGE_FIELDS = ("hassio_role", "full_access", "host_network", "host_pid", "docker_api", "auth_api",
                     "homeassistant_api", "apparmor")
-_WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/list"})
+_WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/list",
+                       "repairs/list_issues", "config_entries/get", "system_log/list"})
 
 _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/addons/self/info"),
@@ -50,6 +59,8 @@ _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/store/addons/[a-z0-9][a-z0-9_]{0,99}"),
     ("GET", r"/core/info"),
     ("GET", r"/resolution/info"),
+    ("GET", r"/host/info"),
+    ("GET", r"/backups"),
     ("GET", r"/core/api/"),
     ("POST", r"/core/api/services/notify/mobile_app_[a-z0-9_]{1,80}"),
     ("POST", r"/core/api/states/" + re.escape(STATUS_ENTITY)),
@@ -169,6 +180,7 @@ class HomeAssistant:
         )
         self._allow = tuple((m, re.compile(p)) for m, p in routes)
         self._target: str | None = None
+        self._fix: tuple[str, str] | None = None
         self._self_slug: str | None = None
 
     # -- guard --------------------------------------------------------------
@@ -189,14 +201,45 @@ class HomeAssistant:
                                             ("POST", r"/backups/[a-f0-9]{8,64}/restore/partial")):
                 if method == allowed_method and re.fullmatch(pattern, path):
                     return
+        fix = self._fix
+        if fix is not None and method == "POST":
+            kind, ref = fix
+            allowed = {
+                "restart_app": f"/addons/{ref}/restart",
+                "start_app": f"/addons/{ref}/start",
+                "apply_suggestion": f"/resolution/suggestion/{ref}",
+                "reload_entry": "/core/api/services/homeassistant/reload_config_entry",
+            }[kind]
+            if path == allowed:
+                return
         raise ForbiddenCall(f"{method} {path}")
+
+    @contextmanager
+    def fix_target(self, kind: str, ref: str):
+        """Open exactly one owner-approved fix route for one target."""
+        if kind not in FIX_KINDS:
+            raise ForbiddenCall(f"fix kind {kind}")
+        if kind in ("restart_app", "start_app"):
+            if not RE_SLUG.fullmatch(ref) or ref in ("self", self.self_slug(), self.scout):
+                raise ForbiddenCall(f"fix target {ref}")
+        elif kind == "apply_suggestion" and not RE_UUID_HEX.fullmatch(ref):
+            raise ForbiddenCall("fix suggestion id")
+        elif kind == "reload_entry" and not RE_ENTRY_ID.fullmatch(ref):
+            raise ForbiddenCall("fix entry id")
+        if self._fix is not None or self._target is not None:
+            raise ForbiddenCall("nested target")
+        self._fix = (kind, ref)
+        try:
+            yield
+        finally:
+            self._fix = None
 
     @contextmanager
     def update_target(self, slug: str):
         """Open the mutating update routes for exactly one App for the duration of a job."""
         if not RE_SLUG.fullmatch(slug) or slug == "self" or slug == self.self_slug():
             raise ForbiddenCall(f"update target {slug}")
-        if self._target is not None:
+        if self._target is not None or self._fix is not None:
             raise ForbiddenCall("nested update target")
         self._target = slug
         try:
@@ -308,6 +351,111 @@ class HomeAssistant:
             vals = data.get(key) if isinstance(data, dict) else None
             return frozenset(str(v)[:60] for v in (vals or []) if isinstance(v, str))
         return ids("unhealthy"), ids("unsupported")
+
+    # -- problem detection (read-only, projected) ----------------------------------------
+    def resolution(self) -> dict:
+        """Supervisor issues/suggestions/unhealthy/unsupported as bounded identifier tuples."""
+        data = self._supervisor("GET", "/resolution/info")
+        data = data if isinstance(data, dict) else {}
+        def ident(v: Any) -> str:
+            return re.sub(r"[^A-Za-z0-9_.:-]", "", str(v or ""))[:60]
+        def rows(key: str, auto: bool) -> list[dict]:
+            out = []
+            for row in (data.get(key) or [])[:50]:
+                if isinstance(row, dict) and isinstance(row.get("uuid"), str) and RE_UUID_HEX.fullmatch(row["uuid"]):
+                    item = {"uuid": row["uuid"], "type": ident(row.get("type")),
+                            "context": ident(row.get("context")), "reference": ident(row.get("reference"))}
+                    if auto:
+                        item["auto"] = row.get("auto") is True
+                    out.append(item)
+            return out
+        return {"unhealthy": sorted({ident(v) for v in (data.get("unhealthy") or [])[:30] if isinstance(v, str)}),
+                "unsupported": sorted({ident(v) for v in (data.get("unsupported") or [])[:30] if isinstance(v, str)}),
+                "issues": rows("issues", False), "suggestions": rows("suggestions", True)}
+
+    def disk(self) -> tuple[float, float] | None:
+        """(total GB, free GB) of the data disk, or None when not reported."""
+        data = self._supervisor("GET", "/host/info")
+        total, free = (data.get("disk_total"), data.get("disk_free")) if isinstance(data, dict) else (None, None)
+        if isinstance(total, (int, float)) and isinstance(free, (int, float)) and total > 0 and 0 <= free <= total:
+            return float(total), float(free)
+        return None
+
+    def backup_list(self) -> list[tuple[str, str]]:
+        """(type, ISO date) of every backup; names and contents are not kept.
+
+        A backup that includes Home Assistant itself counts as ``full``: Home Assistant's own
+        automatic backups are stored by Supervisor as type ``partial`` with everything selected.
+        """
+        data = self._supervisor("GET", "/backups")
+        out = []
+        for row in ((data.get("backups") or []) if isinstance(data, dict) else [])[:500]:
+            if isinstance(row, dict) and isinstance(row.get("date"), str):
+                content = row.get("content") if isinstance(row.get("content"), dict) else {}
+                kind = "full" if row.get("type") == "full" or content.get("homeassistant") is True else "partial"
+                out.append((kind, row["date"][:40]))
+        return out
+
+    def app_boot(self, slug: str) -> str:
+        data = self._supervisor("GET", f"/addons/{slug}/info")
+        boot = data.get("boot") if isinstance(data, dict) else None
+        return boot if boot in ("auto", "manual") else "unknown"
+
+    def app_state(self, slug: str) -> str:
+        data = self._supervisor("GET", f"/addons/{slug}/info")
+        state = data.get("state") if isinstance(data, dict) else None
+        return state if state in SAFE_STATES else "unknown"
+
+    def core_problems(self) -> dict:
+        """Repairs issues, integration entries and system-log errors over one Core socket."""
+        sock = self.ws()
+        try:
+            repairs = sock.command({"type": "repairs/list_issues"})
+            entries = sock.command({"type": "config_entries/get"})
+            log = sock.command({"type": "system_log/list"})
+        finally:
+            sock.close()
+        def s(v: Any, n: int) -> str:
+            return str(v)[:n] if isinstance(v, (str, int, float)) else ""
+        out_repairs = []
+        for row in ((repairs or {}).get("issues") or [])[:200] if isinstance(repairs, dict) else []:
+            if isinstance(row, dict):
+                out_repairs.append({k: s(row.get(k), 120) for k in (
+                    "domain", "issue_id", "severity", "translation_key", "learn_more_url",
+                    "breaks_in_ha_version", "dismissed_version")} |
+                    {"is_fixable": row.get("is_fixable") is True, "ignored": row.get("ignored") is True})
+        out_entries = []
+        for row in (entries or [])[:500] if isinstance(entries, list) else []:
+            if isinstance(row, dict) and isinstance(row.get("entry_id"), str) and RE_ENTRY_ID.fullmatch(row["entry_id"]):
+                out_entries.append({"entry_id": row["entry_id"], "domain": s(row.get("domain"), 60),
+                                    "title": s(row.get("title"), 80), "state": s(row.get("state"), 30),
+                                    "reason": s(row.get("reason"), 200), "disabled": bool(row.get("disabled_by"))})
+        out_log = []
+        for row in (log or [])[:100] if isinstance(log, list) else []:
+            if isinstance(row, dict) and row.get("level") in ("ERROR", "CRITICAL"):
+                msg = row.get("message")
+                first = msg[0] if isinstance(msg, list) and msg else msg
+                src = row.get("source")
+                source = f"{s(src[0], 120)}:{s(src[1], 8)}" if isinstance(src, list) and len(src) == 2 else ""
+                exc = row.get("exception")
+                out_log.append({"name": s(row.get("name"), 120), "level": row["level"], "message": s(first, 400),
+                                "source": source, "count": row.get("count") if isinstance(row.get("count"), int) else 1,
+                                "exception": "\n".join(str(exc).strip().splitlines()[-3:])[:600] if exc else ""})
+        return {"repairs": out_repairs, "entries": out_entries, "log": out_log}
+
+    # -- owner-approved fixes (only inside fix_target) ----------------------------------
+    def restart_app(self, slug: str) -> None:
+        self._supervisor("POST", f"/addons/{slug}/restart", body={}, timeout=300)
+
+    def start_app(self, slug: str) -> None:
+        self._supervisor("POST", f"/addons/{slug}/start", body={}, timeout=300)
+
+    def apply_suggestion(self, uuid: str) -> None:
+        self._supervisor("POST", f"/resolution/suggestion/{uuid}", body={}, timeout=600)
+
+    def reload_entry(self, entry_id: str) -> None:
+        self._call("POST", "/core/api/services/homeassistant/reload_config_entry",
+                   body={"entry_id": entry_id}, timeout=120)
 
     # -- update mutation (only inside update_target) ---------------------------------
     def update_app(self, slug: str) -> None:

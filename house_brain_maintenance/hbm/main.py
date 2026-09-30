@@ -17,6 +17,7 @@ from .ha import RE_SLUG, HomeAssistant
 from .jobs import DONE, FAILED_MANUAL, REFUSED, Engine, Result, Settings
 from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Updater
 from .journal import Journal
+from .watch import Watcher, WatchPolicy
 from .manifest import RE_REQUEST_ID, ManifestError, parse
 from .web import INGRESS_PEER, ApprovalBoard, IngressServer
 
@@ -52,6 +53,8 @@ class Options:
     auto_window_end_hour: int = 5
     health_check_minutes: int = 3
     report_issue: int = 0
+    issue_checks: bool = True
+    digest_hour: int = 8
 
 
 def load_options(path: str) -> Options:
@@ -103,6 +106,9 @@ def load_options(path: str) -> Options:
         auto_window_end_hour=i("auto_window_end_hour", 0, 23) if "auto_window_end_hour" in raw else 5,
         health_check_minutes=i("health_check_minutes", 1, 30) if "health_check_minutes" in raw else 3,
         report_issue=i("report_issue", 0, 10**7) if "report_issue" in raw else 0,
+        issue_checks=raw.get("issue_checks", True) if isinstance(raw.get("issue_checks", True), bool)
+        else _bad("issue_checks"),
+        digest_hour=i("digest_hour", 0, 23) if "digest_hour" in raw else 8,
     )
 
 
@@ -143,6 +149,7 @@ class Service:
         self.poll = poll
         self.engine: Engine | None = None
         self.updater: Updater | None = None
+        self.watcher: Watcher | None = None
         self.health_scale = health_scale
         self.last_update_check = 0.0
         self.last_request_error = ""
@@ -165,6 +172,10 @@ class Service:
                             health_seconds=health, grace_seconds=min(45.0, health / 4), poll=self.poll,
                             exclude=frozenset())
             self.updater = Updater(self.ha, self.j, settings, policy)
+            watch = WatchPolicy(digest_hour=self.o.digest_hour,
+                                max_fix_asks_per_day=self.o.max_approval_requests_per_day,
+                                verify_seconds=60.0 * self.health_scale, poll=self.poll)
+            self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
         return self.engine
 
     def key(self, request_id: str) -> str:
@@ -229,6 +240,18 @@ class Service:
         if handled:
             return
         self.poll_updates()
+        self.poll_issues()
+
+    def report_text(self, text: str) -> None:
+        if self.o.report_issue:
+            self.gh.comment(self.o.report_issue, text)
+
+    def poll_issues(self) -> None:
+        if not self.o.issue_checks:
+            return
+        self.ensure_engine()
+        summary = self.watcher.check()
+        self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary})
 
     def poll_updates(self) -> None:
         if time.monotonic() - self.last_update_check < self.o.update_check_minutes * 60 and self.last_update_check:

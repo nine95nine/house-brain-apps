@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0
+
+- **Problem alerts and one-tap fixes** (owner decisions 2026-09-30). Every check (5 min) reads, without
+  changing anything: Home Assistant Repairs, Supervisor health/issues/suggestions, crashed or stopped Apps,
+  integrations that failed to start, errors in the log, disk space and backups.
+- Serious problems notify at once; warnings, log errors and "cleared" notes come in one summary at
+  `digest_hour` (default 8). Each problem is reported once (log errors at most once a week); details go to
+  the tracking issue with secrets, IP/MAC/e-mail addresses and long identifiers removed.
+- Safe fixes only after Approve (Face ID): restart/start one App, reload one integration, or apply one of
+  Supervisor's own repair/reload/App-restart suggestions; verified afterwards (FIXED / NOT FIXED + next steps).
+  Never reboot, stop, remove, clear backups, disk changes, Core restart or updates as a "fix".
+- A Home Assistant automatic backup (stored as `partial` with Home Assistant included) counts as a full backup.
+- New options: `issue_checks` (default on), `digest_hour` (default 8). `max_approval_requests_per_day`
+  now also limits fix questions.
+
 ## 0.1.2
 
 - The Log tab now shows each step of a job (approval asked, backup, update, health watch,
