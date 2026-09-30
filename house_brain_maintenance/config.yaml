@@ -1,0 +1,87 @@
+name: "House Brain Maintenance"
+version: "0.1.0"
+slug: "house_brain_maintenance"
+description: >-
+  Reviews pending App updates and applies them after your iPhone approval
+  (phone unlock required; no answer means no): backup of that App only,
+  update, health watch, automatic restore of its backup if it fails. Optional
+  night-time automatic install of low-risk bug-fix updates (off by default).
+  Also rotates the Inventory Scout key safely and runs the Scout once. Pinned
+  Supervisor route allowlist; never updates Home Assistant Core/OS or itself;
+  no host port (ingress only); no physical control.
+arch:
+  - aarch64
+homeassistant: "2026.8.3"
+startup: application
+boot: auto
+stage: experimental
+backup: hot
+init: false
+apparmor: true
+hassio_api: true
+hassio_role: manager
+homeassistant_api: true
+docker_api: false
+auth_api: false
+full_access: false
+host_network: false
+host_ipc: false
+host_dbus: false
+host_pid: false
+host_uts: false
+stdin: false
+usb: false
+uart: false
+udev: false
+gpio: false
+devicetree: false
+kernel_modules: false
+audio: false
+video: false
+tmpfs: true
+timeout: 30
+ingress: true
+ingress_port: 8099
+panel_icon: "mdi:wrench-clock"
+panel_title: "Maintenance"
+panel_admin: true
+options:
+  github_repo: "nine95nine/home-assistant-whole-home"
+  github_token: null
+  requests_branch: "maint/requests"
+  notify_service: null
+  owner_username: null
+  dry_run: true
+  poll_seconds: 300
+  max_approval_requests_per_day: 4
+  approval_timeout_minutes: 15
+  require_phone_unlock: true
+  scout_slug: "local_house_brain_maintenance_inventory_scout"
+  observer_slug: "local_house_brain_engineering_observer"
+  clear_freeze_for: ""
+  update_mode: "ask"
+  update_check_minutes: 60
+  auto_window_start_hour: 2
+  auto_window_end_hour: 5
+  health_check_minutes: 3
+  report_issue: 0
+schema:
+  github_repo: "match(^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$)"
+  github_token: password
+  requests_branch: "match(^[A-Za-z0-9._/-]{1,100}$)"
+  notify_service: "match(^mobile_app_[a-z0-9_]{1,80}$)"
+  owner_username: "match(^[A-Za-z0-9_.@-]{1,64}$)"
+  dry_run: bool
+  poll_seconds: "int(60,3600)"
+  max_approval_requests_per_day: "int(1,12)"
+  approval_timeout_minutes: "int(2,60)"
+  require_phone_unlock: bool
+  scout_slug: "match(^[a-z0-9][a-z0-9_]{0,99}$)"
+  observer_slug: "match(^[a-z0-9][a-z0-9_]{0,99}$)"
+  clear_freeze_for: "match(^([a-z0-9][a-z0-9-]{2,63})?$)?"
+  update_mode: "list(ask|auto_low_risk)"
+  update_check_minutes: "int(15,1440)"
+  auto_window_start_hour: "int(0,23)"
+  auto_window_end_hour: "int(0,23)"
+  health_check_minutes: "int(1,30)"
+  report_issue: "int(0,10000000)"
