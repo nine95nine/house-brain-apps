@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- Fix (first live install, 2026-09-30): when the job-request branch was missing, or GitHub
+  failed, every poll logged `poll failed ... Branch not found` and the update check never ran.
+  A missing request branch now means "no requests" (logged once), and any GitHub fault while
+  checking requests is logged once and no longer blocks update checks.
+- No change to permissions, options, allowlist, update review or restore behaviour.
+
 ## 0.1.0
 
 - First release (owner decisions D1-D9 and 2026-09-29 Maintenance-chat decisions).

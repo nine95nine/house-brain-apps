@@ -145,6 +145,8 @@ class Service:
         self.updater: Updater | None = None
         self.health_scale = health_scale
         self.last_update_check = 0.0
+        self.last_request_error = ""
+        self.missing_branch_logged = False
         self.stop = False
 
     def ensure_engine(self) -> Engine:
@@ -215,7 +217,16 @@ class Service:
             return
         if self.frozen():
             return
-        if self.poll_requests():
+        try:
+            handled = self.poll_requests()
+        except net.NetError as err:
+            # A GitHub fault (network, rate limit, token) must never stop update checks.
+            handled = False
+            message = net.redact(f"NetError: {err}")[:300]
+            if message != self.last_request_error:
+                LOG.warning("request check failed (update checks continue): %s", message)
+            self.last_request_error = message
+        if handled:
             return
         self.poll_updates()
 
@@ -234,7 +245,18 @@ class Service:
 
     def poll_requests(self) -> bool:
         """Handle at most one new manifest request. True when one was handled."""
-        head = self.gh.branch_head(self.o.requests_branch)
+        try:
+            head = self.gh.branch_head(self.o.requests_branch)
+        except net.NetError as err:
+            if err.status != 404:
+                raise
+            # No request branch yet means no requests; say so once, not every poll.
+            if not self.missing_branch_logged:
+                LOG.info("request branch %s not found: no requests", self.o.requests_branch)
+                self.missing_branch_logged = True
+            return False
+        self.missing_branch_logged = False
+        self.last_request_error = ""
         ledger = self.j.ledger()
         ids = [r for r in self.gh.list_request_ids(head) if RE_REQUEST_ID.fullmatch(r)]
         # Skip handled ids first, then cap: an old backlog can never hide new requests.

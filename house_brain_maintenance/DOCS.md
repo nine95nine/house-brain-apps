@@ -4,7 +4,7 @@ This App keeps your Home Assistant Apps up to date safely. It never changes anyt
 rule you chose: every update waits for your approval on your iPhone, unless you switch on
 automatic installs of low-risk bug-fix updates at night.
 
-## What it does (0.1.0)
+## What it does (0.1.1)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
