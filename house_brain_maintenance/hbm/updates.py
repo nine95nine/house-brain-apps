@@ -68,7 +68,7 @@ class Updater:
     # -- memory ------------------------------------------------------------------
     def _mem(self) -> dict:
         mem = self.j.load_doc("updates", {})
-        for key in ("quarantine", "declined", "asked", "blocked_noted"):
+        for key in ("quarantine", "declined", "asked", "blocked_noted", "practiced"):
             mem.setdefault(key, {})
         mem.setdefault("successes", 0)
         return mem
@@ -91,6 +91,11 @@ class Updater:
         key = f"{app.slug}@{app.version_latest}"
         if mem["declined"].get(key):
             return False
+        if self.s.dry_run:
+            # Practice mode reports each version once per re-ask period, not every hourly check.
+            practiced = mem["practiced"].get(key)
+            if practiced and time.time() - float(practiced) < self.p.reask_hours * 3600:
+                return False
         asked = mem["asked"].get(key)
         return not (asked and time.time() - float(asked) < self.p.reask_hours * 3600)
 
@@ -150,6 +155,8 @@ class Updater:
             facts["automatic"] = auto
             facts["automatic_reason"] = why
             if self.s.dry_run:
+                mem["practiced"][f"{app.slug}@{rev.to_version}"] = time.time()
+                self._save(mem)
                 return Outcome(rid, DRY_RUN_OK, ["dry run: reviewed, nothing asked or changed"], facts)
             if not auto:
                 mem["asked"][f"{app.slug}@{rev.to_version}"] = time.time()

@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import calendar
 import json
+import logging
 import os
 import time
 from typing import Any
 
 from . import net
+
+LOG = logging.getLogger("hbm")
 
 
 def _atomic_write(path: str, obj: Any) -> None:
@@ -47,6 +50,9 @@ class Journal:
                   "request_id": request_id, "event": event}
         record.update(detail)
         line = net.redact(json.dumps(record, sort_keys=True, default=str))
+        # Same redacted content as the audit file, so the owner can follow each step on the Log tab.
+        LOG.info("%s %s %s", event, request_id,
+                 net.redact(json.dumps(detail, sort_keys=True, default=str))[:300] if detail else "")
         with open(self.audit_path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
             fh.flush()

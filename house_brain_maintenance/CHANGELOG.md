@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2
+
+- The Log tab now shows each step of a job (approval asked, backup, update, health watch,
+  result), with the same redacted content as the App's audit file.
+- Practice mode (`dry_run: true`) reports each App version once per day instead of at every
+  hourly check (seen live 2026-09-30: the same NUT review was posted every hour).
+- No change to permissions, options, allowlist, review, backup/update/restore behaviour.
+
 ## 0.1.1
 
 - Fix (first live install, 2026-09-30): when the job-request branch was missing, or GitHub
