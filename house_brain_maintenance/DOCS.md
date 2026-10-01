@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.2.1)
+## What it does (0.2.2)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 

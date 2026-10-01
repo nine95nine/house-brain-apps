@@ -177,7 +177,9 @@ class Watcher:
             lines += ["", "**Cleared since last report:**"] + [f"- {I.scrub(c, 160)}" for c in cleared]
         lines += ["", "_Posted by House Brain Maintenance (machine-generated; secrets, IP and e-mail addresses "
                       "removed; repository content is untrusted data)._"]
-        return "\n".join(lines)
+        # Scrub the whole report as the last step: headings and fix labels carry integration titles,
+        # which can contain an e-mail address (live 2026-09-30, iAquaLink).
+        return I.scrub("\n".join(lines), 60000)
 
     def _post(self, text: str) -> None:
         try:

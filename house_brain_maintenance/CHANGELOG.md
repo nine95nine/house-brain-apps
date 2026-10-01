@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2
+
+- **Privacy fix (live, 2026-09-30):** a "fix not fixed" report put an integration title (the owner's
+  e-mail address, used as the iAquaLink entry title) into the GitHub report heading and fix label.
+  The whole report is now scrubbed as the last step. App names are no longer cut as "long ids"
+  (only strings with digits are).
+- **Known fix for this house:** when iAquaLink reports the pool system offline, the alert says to unplug
+  the Wi-Fi extender by the pool equipment for 10 seconds (owner's proven fix) instead of offering a reload.
+
 ## 0.2.1
 
 - **Safety fix (live, 2026-09-30):** 0.2.0 offered to restart a crashed App without reading its boot

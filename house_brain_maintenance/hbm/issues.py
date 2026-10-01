@@ -40,6 +40,16 @@ SUGGESTION_LABELS = {
 ENTRY_PROBLEM_STATES = {"setup_error": CRITICAL, "migration_error": CRITICAL, "failed_unload": WARNING,
                         "setup_retry": WARNING}
 RETRY_CRITICAL_SECONDS = 30 * 60
+
+# House-specific known fixes (owner knowledge). Matched on integration domain + reason text.
+# They replace the generic advice and the reload offer (a reload does not help these cases).
+KNOWN_ENTRY_FIXES = {
+    # Owner 2026-10-01: iAquaLink goes offline when the Wi-Fi extender by the pool equipment drops;
+    # unplugging it for 10 seconds brings it back. A reload did not help (live NOT_FIXED 2026-09-30).
+    ("iaqualink", "offline"): ("iAquaLink lost its connection",
+                               ("Unplug the Wi-Fi extender by the pool equipment for 10 seconds, then plug it back in.",
+                                "iAquaLink usually reconnects within a few minutes; Home Assistant retries by itself.")),
+}
 FULL_BACKUP_MAX_DAYS = 7
 DISK_CRITICAL_GB = 2.0          # below this Home Assistant can stop recording and updating
 DISK_WARNING = (5.0, 0.10)      # GB free, fraction free
@@ -102,7 +112,7 @@ _SCRUB = (
     (re.compile(r"(?i)\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}\b"), "[ip]"),
     (re.compile(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b"), "[mac]"),
     (re.compile(r"(https?://[^\s?#]+)\?[^\s]*"), r"\1?[query]"),
-    (re.compile(r"\b[A-Za-z0-9_\-]{32,}\b"), "[long-id]"),
+    (re.compile(r"\b(?=[A-Za-z_\-]*\d)[A-Za-z0-9_\-]{32,}\b"), "[long-id]"),   # ids/keys contain digits
 )
 
 
@@ -223,7 +233,11 @@ def from_entries(entries: list[dict], first_seen: dict[str, float], now: float) 
         if state == "migration_error":
             steps = ["This usually needs the integration removed and added again; I'll look at the details."]
         detail = (f"Reason: {e['reason']}",) if e.get("reason") else ()
-        out.append(Finding(key, "integration", severity, f"Integration {what}: {name}", detail=detail,
+        title = f"Integration {what}: {name}"
+        for (domain, needle), (known_title, known_steps) in KNOWN_ENTRY_FIXES.items():
+            if e.get("domain") == domain and needle in (e.get("reason") or "").lower():
+                title, steps, action = f"{known_title} ({name})", list(known_steps), None
+        out.append(Finding(key, "integration", severity, title, detail=detail,
                            steps=tuple(steps), link=INTEGRATIONS_LINK, action=action,
                            facts={"domain": e.get("domain"), "state": state}))
     return out
