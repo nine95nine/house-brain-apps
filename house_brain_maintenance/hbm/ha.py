@@ -222,6 +222,9 @@ class HomeAssistant:
         if kind in ("restart_app", "start_app"):
             if not RE_SLUG.fullmatch(ref) or ref in ("self", self.self_slug(), self.scout):
                 raise ForbiddenCall(f"fix target {ref}")
+            if self.app_boot(ref) != "auto":
+                # Checked again at fix time: never restart/start a manual-start App.
+                raise ForbiddenCall(f"fix target {ref} is not started at boot")
         elif kind == "apply_suggestion" and not RE_UUID_HEX.fullmatch(ref):
             raise ForbiddenCall("fix suggestion id")
         elif kind == "reload_entry" and not RE_ENTRY_ID.fullmatch(ref):
@@ -397,8 +400,13 @@ class HomeAssistant:
         return out
 
     def app_boot(self, slug: str) -> str:
+        """``auto`` only when the App starts at boot and is not ``manual_only``; anything else is manual."""
         data = self._supervisor("GET", f"/addons/{slug}/info")
-        boot = data.get("boot") if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return "unknown"
+        if data.get("boot_config") == "manual_only":
+            return "manual"
+        boot = data.get("boot")
         return boot if boot in ("auto", "manual") else "unknown"
 
     def app_state(self, slug: str) -> str:

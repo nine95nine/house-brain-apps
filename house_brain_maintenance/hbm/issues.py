@@ -184,7 +184,12 @@ def from_apps(rows: list[tuple[str, str, str, str]]) -> list[Finding]:
     """rows: (slug, name, state, boot) for Apps worth checking."""
     out = []
     for slug, name, state, boot in rows:
-        if state == "error":
+        if state == "error" and boot != "auto":
+            out.append(Finding(f"app:{slug}", "app", WARNING, f"App stopped with an error: {name}",
+                               steps=("It is set to start only by hand, so I never restart it.",
+                                      "If you expected it to be running, open its Log tab first."),
+                               link=APPS_LINK, facts={"slug": slug, "state": state, "boot": boot}))
+        elif state == "error":
             out.append(Finding(f"app:{slug}", "app", CRITICAL, f"App crashed: {name}",
                                steps=("Open the App's Log tab to see why.", "A restart often fixes it."),
                                link=APPS_LINK, action=Action("restart_app", slug, f"restart {name}"),

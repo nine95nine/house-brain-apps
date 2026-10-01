@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.2.0)
+## What it does (0.2.1)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -36,7 +36,8 @@ retrying, **errors in the log**, **disk space** and **backups** (warns if no bac
 Assistant in 7 days). A problem must be seen twice in a row before you hear about it.
 
 - Serious problems: one notification right away, with what to do.
-- Safe fixes: restart or start that App, reload that integration, or let Home Assistant run its own
+- Safe fixes (only for Apps set to start at boot; an App set to start by hand, such as the
+  AquaRite bridge, is only reported and never restarted): restart or start that App, reload that integration, or let Home Assistant run its own
   repair. The notification has **Approve** (Face ID) and **Reject**; nothing runs without Approve.
   Afterwards you get **fixed** or **not fixed** with next steps. Reject means it will not ask again
   while that problem stays.

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- **Safety fix (live, 2026-09-30):** 0.2.0 offered to restart a crashed App without reading its boot
+  setting. The AquaRite commissioning bridge (`boot: manual_only`, kept deliberately non-running) was
+  offered a restart, the owner approved it, and it started. Now an App set to start by hand (`manual`
+  or `manual_only`) is only reported (warning, no fix), and the restart/start route is refused again at
+  fix time unless the App starts at boot.
+
 ## 0.2.0
 
 - **Problem alerts and one-tap fixes** (owner decisions 2026-09-30). Every check (5 min) reads, without

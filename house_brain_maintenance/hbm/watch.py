@@ -78,9 +78,9 @@ class Watcher:
             for a in apps:
                 if a.slug in (own, self.ha.scout) or not RE_SLUG.fullmatch(a.slug):
                     continue
-                if a.state == "error":
-                    rows.append((a.slug, a.name, a.state, "auto"))
-                elif a.state == "stopped":
+                if a.state in ("error", "stopped"):
+                    # Always read the real boot setting: a manual-start App (for example a commissioning
+                    # bridge kept deliberately non-running) is never restarted or started by a fix.
                     rows.append((a.slug, a.name, a.state, self.ha.app_boot(a.slug)))
             findings += I.from_apps(rows)
         except (HAError, net.NetError, ForbiddenCall):
