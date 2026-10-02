@@ -29,6 +29,7 @@ DOC = "issues"
 REASK_SECONDS = 24 * 3600
 LOG_REPORT_SECONDS = 7 * 86400   # the system log empties on every Core restart; report a log error once a week
 CONFIRM_POLLS = 2
+REDIAGNOSE_SECONDS = 6 * 3600
 MAX_PUSH_PER_CHECK = 3
 MAX_SUMMARY_ITEMS = 12
 FIXED = "FIXED"
@@ -101,7 +102,13 @@ class Watcher:
         try:
             core = self.ha.core_problems()
             findings += I.from_repairs(core["repairs"])
-            findings += I.from_entries(core["entries"], first_seen, now, self.ha.power_cycle_entity)
+            heard = None
+            if I.needs_network_check(core["entries"]):
+                try:
+                    heard = self.ha.ssdp_heard()
+                except Exception:  # noqa: BLE001 - unreadable: the finding says it was not checked
+                    heard = None
+            findings += I.from_entries(core["entries"], first_seen, now, self.ha.power_cycle_entity, heard)
             findings += I.from_log(core["log"])
         except Exception:  # noqa: BLE001 - Core may be restarting; try again next check
             failed.append("core")
@@ -120,6 +127,12 @@ class Watcher:
             rec = st["open"].setdefault(f.key, {"first": now, "polls": 0, "alerted": False})
             rec.update(polls=rec["polls"] + 1, title=f.title, severity=f.severity, clear=f.announce_clear,
                        source=f.source)
+            diagnosis = f.facts.get("diagnosis")
+            if diagnosis and diagnosis not in I.UNSURE_DIAGNOSES and rec.get("diagnosis") != diagnosis \
+                    and now - rec.get("diagnosed_at", 0) >= REDIAGNOSE_SECONDS:
+                # The cause was just found, or changed: tell the owner again with the new steps
+                # (at most once per REDIAGNOSE_SECONDS, so a flapping cause cannot spam the phone).
+                rec.update(diagnosis=diagnosis, diagnosed_at=now, alerted=False)
             if rec["alerted"] or rec["polls"] < CONFIRM_POLLS:
                 continue
             if f.action and not self.s.dry_run:

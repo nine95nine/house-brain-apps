@@ -22,6 +22,10 @@ boundary is this module:
   bounded fields. A one-tap fix opens exactly one mutating route for one target inside
   ``with ha.fix_target(kind, ref)``: restart/start of one App, apply of one Supervisor
   suggestion, or reload of one integration entry. Never ``self``, never an update route.
+* network discovery check (0.2.3) adds one read-only Core WebSocket subscription
+  (``ssdp/subscribe_discovery``: what Home Assistant currently hears announced on the network).
+  It is read for a few seconds, projected to device types and identities only (addresses,
+  locations and headers are dropped at once), and the socket is closed.
 
 The ``ha`` CLI is never used (#223 R4 ``apps``/``addons`` escape).
 """
@@ -44,13 +48,18 @@ RE_BACKUP_SLUG = re.compile(r"^[a-f0-9]{8,64}$")
 RE_APP_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:-]{0,63}$")
 RE_UUID_HEX = re.compile(r"^[a-f0-9]{32}$")
 RE_ENTRY_ID = re.compile(r"^[A-Za-z0-9]{20,40}$")
+RE_UDN = re.compile(r"^uuid:[A-Za-z0-9._:-]{1,100}$")
+RE_ST = re.compile(r"^[A-Za-z0-9._:/-]{1,120}$")
+SSDP_READ_SECONDS = 4.0
+SSDP_MAX_ROWS = 400
 RE_SWITCH = re.compile(r"^switch\.[a-z0-9_]{1,80}$")
 FIX_KINDS = frozenset({"restart_app", "start_app", "apply_suggestion", "reload_entry", "power_cycle"})
 SAFE_STATES = frozenset({"startup", "started", "stopped", "unknown", "error"})
 PRIVILEGE_FIELDS = ("hassio_role", "full_access", "host_network", "host_pid", "docker_api", "auth_api",
                     "homeassistant_api", "apparmor")
 _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/list",
-                       "repairs/list_issues", "config_entries/get", "system_log/list"})
+                       "repairs/list_issues", "config_entries/get", "system_log/list",
+                       "ssdp/subscribe_discovery"})
 
 # Recovery Report (0.3.0): exact entities it may read, nothing else (read-only).
 RECOVERY_READ_ENTITIES = frozenset({
@@ -172,6 +181,18 @@ def _project(slug: str, data: Any, key_option: str | None) -> AppView:
         broker_url=url if isinstance(url, str) and len(url) <= 300 else None,
         key_fingerprint=fingerprint(key) if isinstance(key, str) and key else None,
     )
+
+
+def _ssdp_row(item: dict) -> dict:
+    """Project one discovery record: device type, identity, model/maker names. No addresses."""
+    upnp = item.get("upnp") if isinstance(item.get("upnp"), dict) else {}
+    def text(v: Any, n: int) -> str:
+        return re.sub(r"[^A-Za-z0-9 ()._+-]", "", v)[:n] if isinstance(v, str) else ""
+    st, udn = item.get("ssdp_st"), item.get("ssdp_udn")
+    return {"st": st if isinstance(st, str) and RE_ST.fullmatch(st) else "",
+            "udn": udn if isinstance(udn, str) and RE_UDN.fullmatch(udn) else "",
+            "name": text(upnp.get("friendlyName"), 60), "model": text(upnp.get("modelName"), 40),
+            "maker": text(upnp.get("manufacturer"), 40)}
 
 
 class HomeAssistant:
@@ -477,6 +498,32 @@ class HomeAssistant:
                                 "source": source, "count": row.get("count") if isinstance(row.get("count"), int) else 1,
                                 "exception": "\n".join(str(exc).strip().splitlines()[-3:])[:600] if exc else ""})
         return {"repairs": out_repairs, "entries": out_entries, "log": out_log}
+
+    def ssdp_heard(self, seconds: float = SSDP_READ_SECONDS) -> list[dict]:
+        """What Home Assistant hears announced on the network right now (read-only).
+
+        Subscribing replays Home Assistant's whole discovery cache at once. Each row keeps only
+        the announced device type (ST), the device identity (UDN) and its model/maker names;
+        IP addresses, locations and raw headers are dropped before anything is kept.
+        """
+        sock = self.ws()
+        rows: list[dict] = []
+        try:
+            sock.command({"type": "ssdp/subscribe_discovery"}, timeout=20)
+            deadline = time.monotonic() + seconds
+            while len(rows) < SSDP_MAX_ROWS:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                event = sock.next_event(remaining)
+                if event is None:
+                    break
+                for item in (event.get("add") or []) if isinstance(event, dict) else []:
+                    if isinstance(item, dict):
+                        rows.append(_ssdp_row(item))
+        finally:
+            sock.close()
+        return rows[:SSDP_MAX_ROWS]
 
     # -- owner-approved fixes (only inside fix_target) ----------------------------------
     def restart_app(self, slug: str) -> None:

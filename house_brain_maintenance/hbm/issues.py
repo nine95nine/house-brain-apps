@@ -54,6 +54,38 @@ KNOWN_ENTRY_FIXES = {
 # approval 2026-10-02): only after the problem has lasted this long, only for these keys.
 POWER_CYCLE_FIXES = {("iaqualink", "offline"): "power-cycle the pool Wi-Fi extender (IAquaLink WiFi plug)"}
 POWER_CYCLE_AFTER_SECONDS = 10 * 60
+# UPnP/IGD "Device not discovered" (live 2026-10-02, Orbi RBR840): Home Assistant waits for the
+# router's network announcement (SSDP) and gives up after 10 s; a reload repeats the same wait, so it
+# cannot help unless the router is heard again. What Home Assistant hears decides the real cause.
+UPNP_NOT_DISCOVERED = "device not discovered:"
+IGD_ST = "urn:schemas-upnp-org:device:InternetGatewayDevice:"
+ROUTER_UPNP_STEPS = (
+    "In Safari open orbilogin.com (router admin login) -> ADVANCED -> Advanced Setup -> UPnP: tick"
+    " 'Turn UPnP On' and Apply.",
+    "If it was already on: restart the Orbi router (internet off for about 3 minutes). Home Assistant"
+    " reconnects by itself within 10 minutes; nothing to do in Home Assistant.",
+    "Still not heard after that: the router's announcements are not reaching the Pi (for example through"
+    " the Orbi satellite). Plug the Pi's switch into the Orbi router, or check Settings -> System -> Network"
+    " uses the Pi's wired adapter.",
+)
+UPNP_DIAGNOSES = {
+    # code: (title, steps, keep the reload offer)
+    "UPNP_HEARD_NOW": ("UPnP router is announcing again", (
+        "Home Assistant hears the router again; its own retry reconnects it within minutes.",
+        "Or tap Approve to reload the integration now."), True),
+    "UPNP_ROUTER_NEW_IDENTITY": ("UPnP router came back with a new identity", (
+        "Settings -> Devices & services: under 'Discovered', add the UPnP/IGD router (RBR840).",
+        "Then open the old UPnP/IGD entry -> three dots -> Delete. Only the router's own traffic sensors"
+        " change; nothing else in the house uses them.",
+        "Usually after a router firmware update or factory reset."), False),
+    "UPNP_ROUTER_SILENT": ("Router stopped announcing UPnP", ROUTER_UPNP_STEPS, False),
+    "UPNP_NOTHING_HEARD": ("Home Assistant hears no network announcements at all", (
+        "This is on the Home Assistant side, not the router: Settings -> System -> Network -> Network adapter:"
+        " turn on 'Auto configure' (or select the Pi's wired adapter) and Save.",
+        "Then check the Pi's network cable and the switch it is plugged into."), False),
+    "UPNP_UNCHECKED": ("UPnP router not heard on the network", ROUTER_UPNP_STEPS, False),
+}
+UNSURE_DIAGNOSES = frozenset({"UPNP_UNCHECKED"})
 FULL_BACKUP_MAX_DAYS = 7
 DISK_CRITICAL_GB = 2.0          # below this Home Assistant can stop recording and updating
 DISK_WARNING = (5.0, 0.10)      # GB free, fraction free
@@ -217,8 +249,49 @@ def from_apps(rows: list[tuple[str, str, str, str]]) -> list[Finding]:
     return out
 
 
+def needs_network_check(entries: list[dict]) -> bool:
+    """True when an integration waits for a network announcement (worth one read of what HA hears)."""
+    return any(_upnp_not_discovered(e) and not e.get("disabled") for e in entries)
+
+
+def _upnp_not_discovered(e: dict) -> bool:
+    return e.get("domain") == "upnp" and e.get("state") == "setup_retry" and \
+        UPNP_NOT_DISCOVERED in (e.get("reason") or "").lower()
+
+
+def diagnose_upnp(reason: str, heard: list[dict] | None) -> str:
+    """Why Home Assistant can't find the UPnP router, from what it hears on the network right now.
+
+    ``heard`` is ``None`` when it could not be read. Home Assistant itself re-matches a router whose
+    identity changed (same MAC or address, same IGD version) and updates the entry, so an IGD heard
+    under another identity or IGD version is one it could not match: it waits under "Discovered".
+    """
+    if heard is None:
+        return "UPNP_UNCHECKED"
+    usn = reason.split(":", 1)[1].strip() if ":" in reason else ""
+    udn, _, st = usn.partition("::")
+    igd = [r for r in heard if (r.get("st") or "").startswith(IGD_ST)]
+    if any(r.get("udn") == udn and r.get("st") == st for r in igd):
+        return "UPNP_HEARD_NOW"
+    if igd:
+        return "UPNP_ROUTER_NEW_IDENTITY"
+    if any(r.get("udn") or r.get("st") for r in heard):
+        return "UPNP_ROUTER_SILENT"
+    return "UPNP_NOTHING_HEARD"
+
+
+def network_summary(heard: list[dict] | None) -> dict:
+    """Counts only (no names, no identities) for the tracking-issue report."""
+    if heard is None:
+        return {"network_check": "unreadable"}
+    igd = [r for r in heard if (r.get("st") or "").startswith(IGD_ST)]
+    return {"devices_heard": len({r.get("udn") for r in heard if r.get("udn")}),
+            "igd_heard": len({r.get("udn") for r in igd if r.get("udn")}),
+            "igd_versions": sorted({r["st"].rsplit(":", 1)[-1] for r in igd})}
+
+
 def from_entries(entries: list[dict], first_seen: dict[str, float], now: float,
-                 power_cycle_entity: str = "") -> list[Finding]:
+                 power_cycle_entity: str = "", heard: list[dict] | None = None) -> list[Finding]:
     out = []
     for e in entries:
         state = e.get("state")
@@ -246,9 +319,15 @@ def from_entries(entries: list[dict], first_seen: dict[str, float], now: float,
                 if label and power_cycle_entity and \
                         now - first_seen.get(key, now) >= POWER_CYCLE_AFTER_SECONDS:
                     action = Action("power_cycle", power_cycle_entity, label)
+        facts = {"domain": e.get("domain"), "state": state}
+        if _upnp_not_discovered(e):
+            diagnosis = diagnose_upnp(e.get("reason") or "", heard)
+            known_title, known_steps, keep_reload = UPNP_DIAGNOSES[diagnosis]
+            title, steps = f"{known_title} ({name})", list(known_steps)
+            action = action if keep_reload else None
+            facts |= {"diagnosis": diagnosis} | network_summary(heard)
         out.append(Finding(key, "integration", severity, title, detail=detail,
-                           steps=tuple(steps), link=INTEGRATIONS_LINK, action=action,
-                           facts={"domain": e.get("domain"), "state": state}))
+                           steps=tuple(steps), link=INTEGRATIONS_LINK, action=action, facts=facts))
     return out
 
 

@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.4.0)
+## What it does (0.4.1)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -48,6 +48,11 @@ Assistant in 7 days). A problem must be seen twice in a row before you hear abou
 - **Pool Wi-Fi extender** (`extender_plug_entity`): when iAquaLink has been offline for 10 minutes it can
   offer to power-cycle the extender's smart plug (off 10 s, on, checked). Only that plug, only after your
   Approve, at most 3 times a day. Leave the option empty to get the manual steps instead.
+- **UPnP router not found** (0.4.1): when the UPnP/IGD integration can't find the router, it reads, for a few
+  seconds and without changing anything, what Home Assistant hears announced on the network. The alert then says
+  the real cause and the right steps: the router stopped announcing UPnP (turn UPnP on / restart the router), the
+  router came back with a new identity (add the discovered one, delete the old), Home Assistant hears nothing at
+  all (its network adapter), or the router is heard again (then a reload is offered). Only counts are reported.
 
 **Recovery Report** (`recovery_report`, on by default; 0.3.0). When Home Assistant comes back from
 being down, or a network or power outage ends, the **Maintenance** page (sidebar) shows:

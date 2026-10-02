@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.1
+
+- **UPnP router not found: the real cause instead of a reload that cannot work** (live finding 2026-10-02:
+  "Device not discovered" for the Orbi RBR840; the offered reload ran and the problem stayed). Home Assistant
+  sets UPnP up only after it hears the router's network announcement (SSDP), so a reload repeats the same wait.
+- For that case the App now reads, read-only and for a few seconds, what Home Assistant currently hears on the
+  network (one new read-only WebSocket subscription; addresses, locations and headers are dropped at once) and says:
+  **router stopped announcing UPnP** (turn UPnP on / restart the router), **router came back with a new identity**
+  (add the discovered router, delete the old entry), **Home Assistant hears nothing at all** (its network adapter),
+  or **router heard again** (only then the reload is offered).
+- An already-reported problem is reported again once when its cause is first found or changes (at most every
+  6 hours). Only counts (devices heard, gateways heard, IGD versions) go to the tracking issue.
+
 ## 0.4.0
 
 - **One-tap power cycle of the pool Wi-Fi extender** (owner-approved design, 2026-10-02). When iAquaLink has
