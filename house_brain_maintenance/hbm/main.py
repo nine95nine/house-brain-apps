@@ -8,15 +8,17 @@ import os
 import re
 import signal
 import sys
+import threading
 import time
 from dataclasses import dataclass
 
 from . import VERSION, approval, net
 from .github import REQUESTS_DIR, RE_REPO, GitHub
-from .ha import RE_SLUG, HomeAssistant
+from .ha import RE_SLUG, HomeAssistant, RE_SWITCH
 from .jobs import DONE, FAILED_MANUAL, REFUSED, Engine, Result, Settings
 from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Updater
 from .journal import Journal
+from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
 from .manifest import RE_REQUEST_ID, ManifestError, parse
 from .web import INGRESS_PEER, ApprovalBoard, IngressServer
@@ -25,6 +27,8 @@ LOG = logging.getLogger("hbm")
 RE_NOTIFY = re.compile(r"^mobile_app_[a-z0-9_]{1,80}$")
 RE_USERNAME = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 RE_BRANCH = re.compile(r"^[A-Za-z0-9._/-]{1,100}$")
+RE_LIVENESS_URL = re.compile(r"^https://[a-z0-9-]{1,63}\.[a-z0-9-]{1,63}\.workers\.dev/v1/ping$")
+RE_LIVENESS_KEY = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 MAX_REQUESTS_PER_POLL = 10
 
 
@@ -55,6 +59,12 @@ class Options:
     report_issue: int = 0
     issue_checks: bool = True
     digest_hour: int = 8
+    recovery_report: bool = True
+    safety_notify_services: tuple[str, ...] = ()
+    liveness_url: str = ""
+    liveness_key: str = ""
+    liveness_interval_minutes: int = 2
+    extender_plug_entity: str = ""
 
 
 def load_options(path: str) -> Options:
@@ -109,7 +119,44 @@ def load_options(path: str) -> Options:
         issue_checks=raw.get("issue_checks", True) if isinstance(raw.get("issue_checks", True), bool)
         else _bad("issue_checks"),
         digest_hour=i("digest_hour", 0, 23) if "digest_hour" in raw else 8,
+        recovery_report=raw.get("recovery_report", True) if isinstance(raw.get("recovery_report", True), bool)
+        else _bad("recovery_report"),
+        safety_notify_services=_safety(raw.get("safety_notify_services", [])),
+        **_liveness(raw),
+        liveness_interval_minutes=i("liveness_interval_minutes", 2, 30) if "liveness_interval_minutes" in raw else 2,
+        extender_plug_entity=_plug(raw.get("extender_plug_entity", "")),
     )
+
+
+def _safety(value) -> tuple[str, ...]:
+    if value in (None, ""):
+        return ()
+    if not isinstance(value, list) or len(value) > 4 or not all(
+            isinstance(v, str) and RE_NOTIFY.fullmatch(v) for v in value) or len(set(value)) != len(value):
+        raise OptionsError("safety_notify_services")
+    return tuple(value)
+
+
+def _liveness(raw: dict) -> dict:
+    url, key = raw.get("liveness_url") or "", raw.get("liveness_key") or ""
+    if not isinstance(url, str) or not isinstance(key, str):
+        raise OptionsError("liveness_url")
+    if bool(url) != bool(key):
+        raise OptionsError("liveness_url" if not url else "liveness_key")   # both or neither
+    if url and not RE_LIVENESS_URL.fullmatch(url):
+        raise OptionsError("liveness_url")
+    if key and not RE_LIVENESS_KEY.fullmatch(key):
+        raise OptionsError("liveness_key")
+    net.register_secret(key)
+    return {"liveness_url": url, "liveness_key": key}
+
+
+def _plug(value) -> str:
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str) or not RE_SWITCH.fullmatch(value):
+        raise OptionsError("extender_plug_entity")
+    return value
 
 
 def _bad(key: str):
@@ -155,6 +202,35 @@ class Service:
         self.last_request_error = ""
         self.missing_branch_logged = False
         self.stop = False
+        self.recovery: Recovery | None = None
+        self._owner_cache: str | None = None
+
+    def _owner_id(self) -> str | None:
+        """The owner's Home Assistant user id (for the page's "Got it"); resolved once, None on failure."""
+        if self.engine is not None:
+            return self.engine.s.owner_user_id
+        if self._owner_cache is None:
+            try:
+                self._owner_cache = approval.resolve_owner(self.ha, self.o.owner_username)
+            except Exception:  # noqa: BLE001 - try again on the next tap
+                return None
+        return self._owner_cache
+
+    def build_recovery(self, scale: float = 1.0) -> Recovery | None:
+        """0.3.0 Recovery Report (read-only). None when the owner turned it off."""
+        if not self.o.recovery_report:
+            return None
+        try:
+            open_url = f"homeassistant://navigate/{self.ha.self_slug()}?server=default"
+        except Exception:  # noqa: BLE001 - the push still works without the tap link
+            open_url = None
+        settings = RecoverySettings(
+            notify_service=self.o.notify_service, safety_notify_services=self.o.safety_notify_services,
+            liveness_url=self.o.liveness_url, liveness_key=self.o.liveness_key,
+            liveness_interval=self.o.liveness_interval_minutes * 60.0 * scale, open_url=open_url,
+            owner_user_id=self._owner_id, scale=scale)
+        self.recovery = Recovery(self.ha, self.j, settings)
+        return self.recovery
 
     def ensure_engine(self) -> Engine:
         if self.engine is None:
@@ -174,7 +250,9 @@ class Service:
             self.updater = Updater(self.ha, self.j, settings, policy)
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
                                 max_fix_asks_per_day=self.o.max_approval_requests_per_day,
-                                verify_seconds=60.0 * self.health_scale, poll=self.poll)
+                                verify_seconds=60.0 * self.health_scale, poll=self.poll,
+                                power_off_seconds=10.0 * self.health_scale,
+                                power_verify_seconds=600.0 * self.health_scale)
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
         return self.engine
 
@@ -318,7 +396,8 @@ def build_service(options_path: str, data_dir: str) -> Service:
     sup = os.environ.get("HBM_SUPERVISOR_URL", "http://supervisor")
     ws = os.environ.get("HBM_CORE_WS_URL", "ws://supervisor/core/websocket")
     api = os.environ.get("HBM_GITHUB_API", "https://api.github.com")
-    ha = HomeAssistant(sup, token, ws, opts.scout_slug, opts.observer_slug)
+    ha = HomeAssistant(sup, token, ws, opts.scout_slug, opts.observer_slug,
+                       power_cycle_entity=opts.extender_plug_entity)
     gh = GitHub(opts.github_repo, opts.github_token, api)
     approval_timeout = opts.approval_timeout_minutes * 60.0
     run_timeout, poll, health_scale = 600.0, 5.0, 1.0
@@ -332,6 +411,18 @@ def build_service(options_path: str, data_dir: str) -> Service:
                    scout_run_timeout=run_timeout, poll=poll, health_scale=health_scale)
 
 
+def start_recovery(service: Service) -> threading.Thread | None:
+    scale = float(os.environ.get("HBM_TEST_TIME_SCALE", "1")) if os.environ.get("HBM_TEST_MODE") == "1" else 1.0
+    rec = service.build_recovery(scale)
+    if rec is None:
+        return None
+    rec.start()
+    thread = threading.Thread(target=run_forever, args=(rec, lambda: service.stop, HEARTBEAT_SECONDS * scale),
+                              name="recovery", daemon=True)
+    thread.start()
+    return thread
+
+
 def start_ingress(service: Service) -> IngressServer | None:
     if service.board is None:
         return None
@@ -339,7 +430,7 @@ def start_ingress(service: Service) -> IngressServer | None:
     if os.environ.get("HBM_TEST_MODE") == "1":
         port = int(os.environ.get("HBM_INGRESS_PORT", "8099"))
         peer = os.environ.get("HBM_INGRESS_PEER", INGRESS_PEER)
-    server = IngressServer(service.board, port=port, allowed_peer=peer)
+    server = IngressServer(service.board, port=port, allowed_peer=peer, recovery=service.recovery)
     server.start()
     return server
 
@@ -354,6 +445,11 @@ def main() -> int:
     except (OptionsError, ValueError, OSError) as err:
         LOG.error("configuration refused: %s", err)
         return 2
+    rec_thread = None
+    try:
+        rec_thread = start_recovery(service)
+    except Exception as err:  # noqa: BLE001 - the rest of the App must run without the report
+        LOG.warning("recovery report unavailable: %s", net.redact(f"{type(err).__name__}: {err}")[:200])
     try:
         start_ingress(service)
     except OSError as err:
@@ -379,6 +475,9 @@ def main() -> int:
         deadline = time.monotonic() + service.o.poll_seconds
         while not service.stop and time.monotonic() < deadline:
             time.sleep(1)
+    service.stop = True
+    if rec_thread is not None:
+        rec_thread.join(timeout=10)   # writes the clean-stop heartbeat
     LOG.info("stopped")
     return 0
 

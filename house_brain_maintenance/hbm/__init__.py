@@ -1,4 +1,4 @@
 """House Brain Maintenance: owner-approved maintenance jobs for Home Assistant Apps."""
 
-VERSION = "0.2.2"
+VERSION = "0.4.0"
 SCHEMA = "house_brain_maintenance_request.v1"

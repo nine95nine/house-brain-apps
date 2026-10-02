@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.2.2)
+## What it does (0.4.0)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -45,6 +45,23 @@ Assistant in 7 days). A problem must be seen twice in a row before you hear abou
 - Each problem is reported once; details go to the tracking issue (`report_issue`) with passwords,
   tokens, IP, MAC and e-mail addresses removed.
 - It never reboots, stops, removes or updates anything as a fix, and never touches itself.
+- **Pool Wi-Fi extender** (`extender_plug_entity`): when iAquaLink has been offline for 10 minutes it can
+  offer to power-cycle the extender's smart plug (off 10 s, on, checked). Only that plug, only after your
+  Approve, at most 3 times a day. Leave the option empty to get the manual steps instead.
+
+**Recovery Report** (`recovery_report`, on by default; 0.3.0). When Home Assistant comes back from
+being down, or a network or power outage ends, the **Maintenance** page (sidebar) shows:
+
+- how long it lasted;
+- the likely cause and how sure it is (planned update or restart, power cut with the UPS running
+  out, unexpected reboot, crash with the last error lines, network only, or "could not tell");
+- a checklist (smoke/CO sensors first, UPS recharging, thermostat, Sense, solar);
+- what to do, and the earlier outages.
+
+You also get one notification on your phone once the internet is back. Short planned restarts,
+such as a Deployer install, are only shown on the page. If the smoke/CO sensors are still not
+back after 15 minutes, every phone in `safety_notify_services` gets an urgent notification.
+Tap **Got it** on the page when you have read it. It only reads; it never fixes or restarts anything.
 
 **Scout jobs** (proposed by the House Brain AI, each needs your approval):
 
@@ -77,6 +94,10 @@ Assistant in 7 days). A problem must be seen twice in a row before you hear abou
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |
 | `scout_slug`, `observer_slug` | The Scout and Observer Apps. Leave the defaults. |
 | `clear_freeze_for` | After a `FAILED_MANUAL` result the App pauses until you enter that request id here. |
+| `recovery_report` | The Recovery Report (default on). |
+| `safety_notify_services` | Phones for urgent smoke/CO "not back" notifications, for example `mobile_app_my_iphone` (up to 4). Empty = only `notify_service`. |
+| `liveness_url`, `liveness_key` | Optional off-site "still alive" ping to your own liveness Worker (both or neither; empty = off). The key is a password field. |
+| `liveness_interval_minutes` | How often the ping is sent (2–30, default 2; the Worker's free tier allows about 1,000 writes a day). |
 
 To pause everything: set `update_mode` to `ask` and simply do not approve, or stop this App.
 

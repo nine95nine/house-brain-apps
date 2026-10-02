@@ -50,6 +50,10 @@ KNOWN_ENTRY_FIXES = {
                                ("Unplug the Wi-Fi extender by the pool equipment for 10 seconds, then plug it back in.",
                                 "iAquaLink usually reconnects within a few minutes; Home Assistant retries by itself.")),
 }
+# Known fixes that may be offered as a one-tap power cycle of the configured switch (owner design
+# approval 2026-10-02): only after the problem has lasted this long, only for these keys.
+POWER_CYCLE_FIXES = {("iaqualink", "offline"): "power-cycle the pool Wi-Fi extender (IAquaLink WiFi plug)"}
+POWER_CYCLE_AFTER_SECONDS = 10 * 60
 FULL_BACKUP_MAX_DAYS = 7
 DISK_CRITICAL_GB = 2.0          # below this Home Assistant can stop recording and updating
 DISK_WARNING = (5.0, 0.10)      # GB free, fraction free
@@ -213,7 +217,8 @@ def from_apps(rows: list[tuple[str, str, str, str]]) -> list[Finding]:
     return out
 
 
-def from_entries(entries: list[dict], first_seen: dict[str, float], now: float) -> list[Finding]:
+def from_entries(entries: list[dict], first_seen: dict[str, float], now: float,
+                 power_cycle_entity: str = "") -> list[Finding]:
     out = []
     for e in entries:
         state = e.get("state")
@@ -237,6 +242,10 @@ def from_entries(entries: list[dict], first_seen: dict[str, float], now: float) 
         for (domain, needle), (known_title, known_steps) in KNOWN_ENTRY_FIXES.items():
             if e.get("domain") == domain and needle in (e.get("reason") or "").lower():
                 title, steps, action = f"{known_title} ({name})", list(known_steps), None
+                label = POWER_CYCLE_FIXES.get((domain, needle))
+                if label and power_cycle_entity and \
+                        now - first_seen.get(key, now) >= POWER_CYCLE_AFTER_SECONDS:
+                    action = Action("power_cycle", power_cycle_entity, label)
         out.append(Finding(key, "integration", severity, title, detail=detail,
                            steps=tuple(steps), link=INTEGRATIONS_LINK, action=action,
                            facts={"domain": e.get("domain"), "state": state}))

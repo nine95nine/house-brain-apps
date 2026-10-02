@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.4.0
+
+- **One-tap power cycle of the pool Wi-Fi extender** (owner-approved design, 2026-10-02). When iAquaLink has
+  reported "offline" for at least 10 minutes, the phone asks "power-cycle the pool Wi-Fi extender?". After
+  **Approve** (Face ID) the App turns the plug `extender_plug_entity` (default
+  `switch.iaqualink_wifi_plug_socket_1`) off, waits 10 seconds, turns it back on and checks it reports on; then it
+  waits up to 10 minutes for iAquaLink to reconnect and reports **fixed** or **not fixed**.
+- If the plug does not report back on, it tries again and sends an **urgent** notification to turn it on by hand.
+- Only that one switch, only for iAquaLink offline, never without a tap, never in practice mode or automatically;
+  at most 3 power cycles a day, at least 30 minutes apart. Clear `extender_plug_entity` to switch it off.
+
+## 0.3.0
+
+Owner-approved design, 2026-10-01 (decisions D1-D6, `docs/architecture/HA_RECOVERY_REPORT_R1_APP_AND_WORKER_DESIGN.md`).
+
+- **Recovery Report: what happened while Home Assistant was down, and what to check.** (`recovery_report`, on by default; read-only.)
+  - A background check every minute notices when Home Assistant Core stops answering, when the host rebooted while the App was away, and network or power outages (the #73 outage sensors and the UPS).
+  - When it is over, it records how long it lasted and the likely cause with how sure it is:
+    - planned update or restart;
+    - power cut with the UPS running out;
+    - unexpected host reboot;
+    - crash, with the error lines from just before it;
+    - network only;
+    - or "could not tell".
+  - It uses the Connection Forensics clean/unclean verdict when that package is installed.
+  - A 30-minute checklist follows: smoke/CO sensors first, then the UPS recharging, the thermostat, Sense and solar.
+  - The **Maintenance page** shows the latest report, the checklist, what to do, and the earlier outages, with a **Got it** button. "Got it" is owner only and single use.
+  - A persistent notification appears in Home Assistant at once.
+- **One push** to `notify_service` once the internet is back. If it cannot be sent, it is retried every 5 min for up to 24 h and is never repeated after it arrives.
+  - Short planned restarts (a clean shutdown, under 10 min, for example a Deployer install) are only shown on the page.
+  - If the smoke/CO sensors are still not back after 15 min, a time-sensitive push goes to every phone in the new `safety_notify_services` option, once.
+- **Optional off-site "still alive" ping** to your own liveness Worker (`liveness_url`, `liveness_key`, `liveness_interval_minutes`; off by default). It sends a signed timestamp and counter only, so the Worker can tell you "home not reachable" during an outage.
+- **New read-only routes** (exact, in the one allowlist):
+  - previous-boot and current Core log tail (`/core/logs/boots/-1`, `/core/logs`, `?lines=` only);
+  - the state of 11 named entities.
+  - Plus create/dismiss of its own persistent notification (`hbm_recovery_report`) only.
+  - No privilege change: the App is already `manager`.
+
 ## 0.2.2
 
 - **Privacy fix (live, 2026-09-30):** a "fix not fixed" report put an integration title (the owner's

@@ -41,6 +41,11 @@ class WatchPolicy:
     max_fix_asks_per_day: int = 4
     verify_seconds: float = 60.0
     poll: float = 5.0
+    # Power cycle of the configured switch (0.4.0, owner-approved design 2026-10-02).
+    power_off_seconds: float = 10.0
+    power_verify_seconds: float = 600.0
+    power_cycles_per_day: int = 3
+    power_cycle_gap_seconds: float = 30 * 60
 
 
 class Watcher:
@@ -56,6 +61,7 @@ class Watcher:
     # -- state -------------------------------------------------------------------------
     def _state(self) -> dict:
         st = self.j.load_doc(DOC, {})
+        st.setdefault("power_cycles", [])
         for key in ("open", "declined", "asked", "log_reported"):
             st.setdefault(key, {})
         st.setdefault("summary", [])
@@ -95,7 +101,7 @@ class Watcher:
         try:
             core = self.ha.core_problems()
             findings += I.from_repairs(core["repairs"])
-            findings += I.from_entries(core["entries"], first_seen, now)
+            findings += I.from_entries(core["entries"], first_seen, now, self.ha.power_cycle_entity)
             findings += I.from_log(core["log"])
         except Exception:  # noqa: BLE001 - Core may be restarting; try again next check
             failed.append("core")
@@ -224,10 +230,18 @@ class Watcher:
         if self.s.dry_run:
             return None
         st["asks"] = [t for t in st["asks"] if now - t < 86400]
+        st["power_cycles"] = [t for t in st["power_cycles"] if now - t < 86400]
+        cycles = st["power_cycles"]
+        power_ok = len(cycles) < self.p.power_cycles_per_day and \
+            (not cycles or now - max(cycles) >= self.p.power_cycle_gap_seconds)
+
+        def due(f: I.Finding) -> bool:
+            if f.action.kind == "power_cycle":
+                return power_ok and now - st["asked"].get(f.key, 0) >= self.p.power_cycle_gap_seconds
+            return now - st["asked"].get(f.key, 0) >= REASK_SECONDS
         candidates = [f for f in current.values()
                       if f.action and st["open"].get(f.key, {}).get("polls", 0) >= CONFIRM_POLLS
-                      and not st["declined"].get(f.key)
-                      and now - st["asked"].get(f.key, 0) >= REASK_SECONDS]
+                      and not st["declined"].get(f.key) and due(f)]
         if not candidates:
             return None
         candidates.sort(key=lambda f: (f.severity != I.CRITICAL, f.key))
@@ -260,6 +274,10 @@ class Watcher:
             return "REJECTED"
         if decision.outcome != approval.APPROVE:
             return decision.outcome
+        if f.action.kind == "power_cycle":
+            st = self._state()
+            st["power_cycles"].append(self.clock())
+            self.j.save_doc(DOC, st)
         outcome, note = self.run_fix(f)
         self.j.audit(rid, "FIX_" + outcome, fix=f.action.kind, note=note[:200])
         title = f"Maintenance: {'fixed' if outcome == FIXED else 'not fixed'}"
@@ -272,6 +290,8 @@ class Watcher:
 
     def run_fix(self, f: I.Finding) -> tuple[str, str]:
         a = f.action
+        if a.kind == "power_cycle":
+            return self._power_cycle(f)
         try:
             with self.ha.fix_target(a.kind, a.ref):
                 if a.kind == "restart_app":
@@ -286,9 +306,48 @@ class Watcher:
             return NOT_FIXED, net.redact(f"the fix could not run: {err}")[:200]
         return self._verify(f)
 
-    def _verify(self, f: I.Finding) -> tuple[str, str]:
+    def _power_cycle(self, f: I.Finding) -> tuple[str, str]:
+        """Switch off, wait, switch on; the switch is always turned back on, and checked."""
+        entity = f.action.ref
+        back_on = False
+        switched_off = False
+        try:
+            with self.ha.fix_target("power_cycle", entity):
+                try:
+                    switched_off = True                # set first: the call may land even if it errors
+                    self.ha.switch_power(entity, False)
+                    self.j.audit(f"fix-{f.key}"[:80], "POWER_OFF", entity=entity)
+                    time.sleep(self.p.power_off_seconds)
+                finally:
+                    for _ in range(3):                 # never leave the extender without power
+                        try:
+                            self.ha.switch_power(entity, True)
+                            if self.ha.switch_state(entity) == "on":
+                                back_on = True
+                                break
+                        except (HAError, net.NetError, ForbiddenCall):
+                            pass
+                        time.sleep(min(5.0, self.p.power_off_seconds))
+        except (HAError, net.NetError, ForbiddenCall) as err:
+            if switched_off and not back_on:
+                self._plug_left_off(entity)
+            return NOT_FIXED, net.redact(f"the power cycle could not run: {err}")[:200]
+        if not back_on:
+            self._plug_left_off(entity)
+            return NOT_FIXED, "the plug did not report back on: turn it on in Home Assistant now"
+        self.j.audit(f"fix-{f.key}"[:80], "POWER_ON", entity=entity)
+        return self._verify(f, self.p.power_verify_seconds)
+
+    def _plug_left_off(self, entity: str) -> None:
+        self.j.audit("fix-power", "POWER_LEFT_OFF", entity=entity)
+        approval.inform(self.ha, self.s.notify_service, "URGENT: pool Wi-Fi extender may be off",
+                        "The power cycle could not confirm the plug is back on. Open Home Assistant and turn on "
+                        f"{entity} (IAquaLink WiFi plug), or plug the extender straight into the wall.\n"
+                        "https://my.home-assistant.io/redirect/entities/")
+
+    def _verify(self, f: I.Finding, seconds: float | None = None) -> tuple[str, str]:
         a = f.action
-        deadline = time.monotonic() + self.p.verify_seconds
+        deadline = time.monotonic() + (self.p.verify_seconds if seconds is None else seconds)
         ok_since = None
         while True:
             try:
@@ -316,4 +375,7 @@ class Watcher:
         if a.kind == "reload_entry":
             entries = self.ha.core_problems()["entries"]
             return any(e["entry_id"] == a.ref and e["state"] == "loaded" for e in entries)
+        if a.kind == "power_cycle" and f.key.startswith("entry:"):
+            entries = self.ha.core_problems()["entries"]
+            return any(e["entry_id"] == f.key[6:] and e["state"] == "loaded" for e in entries)
         return False

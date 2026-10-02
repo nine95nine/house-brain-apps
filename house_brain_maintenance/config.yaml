@@ -1,5 +1,5 @@
 name: "House Brain Maintenance"
-version: "0.2.2"
+version: "0.4.0"
 slug: "house_brain_maintenance"
 description: >-
   Reviews pending App updates and applies them after your iPhone approval
@@ -8,7 +8,8 @@ description: >-
   night-time automatic install of low-risk bug-fix updates (off by default).
   Also rotates the Inventory Scout key safely and runs the Scout once. Pinned
   Supervisor route allowlist; never updates Home Assistant Core/OS or itself;
-  no host port (ingress only); no physical control.
+  no host port (ingress only); no physical control. After an outage it shows
+  what happened and what to check (Recovery Report, read-only).
 arch:
   - aarch64
 homeassistant: "2026.8.3"
@@ -67,6 +68,12 @@ options:
   report_issue: 0
   issue_checks: true
   digest_hour: 8
+  recovery_report: true
+  safety_notify_services: []
+  liveness_url: ""
+  liveness_key: ""
+  liveness_interval_minutes: 2
+  extender_plug_entity: "switch.iaqualink_wifi_plug_socket_1"
 schema:
   github_repo: "match(^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$)"
   github_token: password
@@ -89,3 +96,10 @@ schema:
   report_issue: "int(0,10000000)"
   issue_checks: bool
   digest_hour: "int(0,23)"
+  recovery_report: bool
+  safety_notify_services:
+    - "match(^mobile_app_[a-z0-9_]{1,80}$)?"
+  liveness_url: "match(^(https://[a-z0-9-]{1,63}\\.[a-z0-9-]{1,63}\\.workers\\.dev/v1/ping)?$)?"
+  liveness_key: password?
+  liveness_interval_minutes: "int(2,30)"
+  extender_plug_entity: "match(^(switch\\.[a-z0-9_]{1,80})?$)?"

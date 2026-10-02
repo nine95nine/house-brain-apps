@@ -45,10 +45,11 @@ class NetError(Exception):
 
 
 def request(method: str, url: str, headers: dict[str, str] | None = None,
-            body: Any = None, timeout: float = 30.0, raw: bool = False) -> tuple[int, Any]:
-    data = None
+            body: Any = None, timeout: float = 30.0, raw: bool = False,
+            raw_body: bytes | None = None) -> tuple[int, Any]:
+    data = raw_body
     hdrs = dict(headers or {})
-    if body is not None:
+    if body is not None and raw_body is None:
         data = json.dumps(body).encode("utf-8")
         hdrs.setdefault("Content-Type", "application/json")
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)

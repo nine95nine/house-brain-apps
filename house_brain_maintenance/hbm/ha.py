@@ -44,12 +44,23 @@ RE_BACKUP_SLUG = re.compile(r"^[a-f0-9]{8,64}$")
 RE_APP_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:-]{0,63}$")
 RE_UUID_HEX = re.compile(r"^[a-f0-9]{32}$")
 RE_ENTRY_ID = re.compile(r"^[A-Za-z0-9]{20,40}$")
-FIX_KINDS = frozenset({"restart_app", "start_app", "apply_suggestion", "reload_entry"})
+RE_SWITCH = re.compile(r"^switch\.[a-z0-9_]{1,80}$")
+FIX_KINDS = frozenset({"restart_app", "start_app", "apply_suggestion", "reload_entry", "power_cycle"})
 SAFE_STATES = frozenset({"startup", "started", "stopped", "unknown", "error"})
 PRIVILEGE_FIELDS = ("hassio_role", "full_access", "host_network", "host_pid", "docker_api", "auth_api",
                     "homeassistant_api", "apparmor")
 _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/list",
                        "repairs/list_issues", "config_entries/get", "system_log/list"})
+
+# Recovery Report (0.3.0): exact entities it may read, nothing else (read-only).
+RECOVERY_READ_ENTITIES = frozenset({
+    "sensor.house_brain_connection_forensics_last_restart",
+    "sensor.house_brain_network_outage_class", "sensor.house_brain_network_outage_summary",
+    "sensor.house_brain_network_wan_status", "sensor.ups_status_data", "sensor.ups_battery_charge",
+    "binary_sensor.any_smoke_detected", "binary_sensor.any_co_detected", "climate.ecobee_thermostat",
+    "sensor.sense_51446_l1_voltage", "sensor.enphase_solar_power_now",
+})
+RECOVERY_NOTIFICATION_ID = "hbm_recovery_report"
 
 _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/addons/self/info"),
@@ -64,6 +75,12 @@ _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/core/api/"),
     ("POST", r"/core/api/services/notify/mobile_app_[a-z0-9_]{1,80}"),
     ("POST", r"/core/api/states/" + re.escape(STATUS_ENTITY)),
+    # Recovery Report (0.3.0), read-only except its own persistent notification:
+    ("GET", r"/core/logs"),
+    ("GET", r"/core/logs/boots/-1"),
+    ("GET", r"/core/api/states/(?:" + "|".join(re.escape(e) for e in sorted(RECOVERY_READ_ENTITIES)) + r")"),
+    ("POST", r"/core/api/services/persistent_notification/create"),
+    ("POST", r"/core/api/services/persistent_notification/dismiss"),
 )
 
 
@@ -158,7 +175,12 @@ def _project(slug: str, data: Any, key_option: str | None) -> AppView:
 
 
 class HomeAssistant:
-    def __init__(self, base: str, token: str, ws_url: str, scout_slug: str, observer_slug: str) -> None:
+    def __init__(self, base: str, token: str, ws_url: str, scout_slug: str, observer_slug: str,
+                 power_cycle_entity: str = "") -> None:
+        if power_cycle_entity and not RE_SWITCH.fullmatch(power_cycle_entity):
+            raise ValueError("invalid power-cycle switch")
+        # The one switch an owner-approved power cycle may toggle (0.4.0, owner decision 2026-10-02).
+        self.power_cycle_entity = power_cycle_entity
         for slug in (scout_slug, observer_slug):
             if not RE_SLUG.fullmatch(slug) or slug == "self":
                 raise ValueError("invalid target slug")
@@ -177,7 +199,7 @@ class HomeAssistant:
             ("POST", rf"/addons/{s}/options"),
             ("POST", rf"/addons/{s}/start"),
             ("GET", rf"/addons/{s}/logs/latest"),
-        )
+        ) + ((("GET", r"/core/api/states/" + re.escape(power_cycle_entity)),) if power_cycle_entity else ())
         self._allow = tuple((m, re.compile(p)) for m, p in routes)
         self._target: str | None = None
         self._fix: tuple[str, str] | None = None
@@ -205,12 +227,13 @@ class HomeAssistant:
         if fix is not None and method == "POST":
             kind, ref = fix
             allowed = {
-                "restart_app": f"/addons/{ref}/restart",
-                "start_app": f"/addons/{ref}/start",
-                "apply_suggestion": f"/resolution/suggestion/{ref}",
-                "reload_entry": "/core/api/services/homeassistant/reload_config_entry",
+                "restart_app": {f"/addons/{ref}/restart"},
+                "start_app": {f"/addons/{ref}/start"},
+                "apply_suggestion": {f"/resolution/suggestion/{ref}"},
+                "reload_entry": {"/core/api/services/homeassistant/reload_config_entry"},
+                "power_cycle": {"/core/api/services/switch/turn_off", "/core/api/services/switch/turn_on"},
             }[kind]
-            if path == allowed:
+            if path in allowed:
                 return
         raise ForbiddenCall(f"{method} {path}")
 
@@ -229,6 +252,8 @@ class HomeAssistant:
             raise ForbiddenCall("fix suggestion id")
         elif kind == "reload_entry" and not RE_ENTRY_ID.fullmatch(ref):
             raise ForbiddenCall("fix entry id")
+        elif kind == "power_cycle" and (not self.power_cycle_entity or ref != self.power_cycle_entity):
+            raise ForbiddenCall("power-cycle target is not the configured switch")
         if self._fix is not None or self._target is not None:
             raise ForbiddenCall("nested target")
         self._fix = (kind, ref)
@@ -260,12 +285,14 @@ class HomeAssistant:
 
     # -- HTTP ---------------------------------------------------------------
     def _call(self, method: str, path: str, body: Any = None, timeout: float = 30.0,
-              raw: bool = False) -> Any:
+              raw: bool = False, query: str = "") -> Any:
         self._guard(method, path)
+        if query and not re.fullmatch(r"\?lines=[0-9]{1,4}", query):
+            raise ForbiddenCall(f"query {query[:40]}")
         headers = {"Authorization": f"Bearer {self._token}"}
         if raw:
             headers["Accept"] = "text/plain"
-        _, data = net.request(method, self.base + path, headers, body=body, timeout=timeout, raw=raw)
+        _, data = net.request(method, self.base + path + query, headers, body=body, timeout=timeout, raw=raw)
         return data
 
     def _supervisor(self, method: str, path: str, body: Any = None, timeout: float = 30.0) -> Any:
@@ -465,6 +492,20 @@ class HomeAssistant:
         self._call("POST", "/core/api/services/homeassistant/reload_config_entry",
                    body={"entry_id": entry_id}, timeout=120)
 
+    def switch_power(self, entity_id: str, on: bool) -> None:
+        """Turn the configured power-cycle switch on/off; only inside ``fix_target("power_cycle", it)``."""
+        if self._fix != ("power_cycle", entity_id) or entity_id != self.power_cycle_entity:
+            raise ForbiddenCall(f"switch {entity_id}")
+        self._call("POST", f"/core/api/services/switch/turn_{'on' if on else 'off'}",
+                    body={"entity_id": entity_id}, timeout=30)
+
+    def switch_state(self, entity_id: str) -> str:
+        if entity_id != self.power_cycle_entity or not entity_id:
+            raise ForbiddenCall(f"state {entity_id}")
+        data = self._call("GET", f"/core/api/states/{entity_id}", timeout=15)
+        state = data.get("state") if isinstance(data, dict) else None
+        return state if state in ("on", "off", "unavailable", "unknown") else "unknown"
+
     # -- update mutation (only inside update_target) ---------------------------------
     def update_app(self, slug: str) -> None:
         self._supervisor("POST", f"/addons/{slug}/update", body={"backup": False}, timeout=3600)
@@ -506,6 +547,50 @@ class HomeAssistant:
 
     def notify(self, service: str, payload: dict) -> None:
         self._call("POST", f"/core/api/services/notify/{service}", body=payload, timeout=30)
+
+    # -- Recovery Report (0.3.0): read-only + its own persistent notification ----------
+    def entity_state(self, entity_id: str) -> dict | None:
+        """``{"state", "last_changed"}`` of one pinned entity, or None when it does not exist."""
+        if entity_id not in RECOVERY_READ_ENTITIES:
+            raise ForbiddenCall(f"entity {entity_id[:80]}")
+        try:
+            data = self._call("GET", f"/core/api/states/{entity_id}", timeout=15)
+        except net.NetError as err:
+            if err.status == 404:
+                return None
+            raise
+        if not isinstance(data, dict):
+            return None
+        state = data.get("state")
+        return {"state": str(state)[:255] if state is not None else None,
+                "last_changed": str(data.get("last_changed") or "")[:40]}
+
+    def host_boot_info(self) -> tuple[str | None, str | None]:
+        """(host boot timestamp, operating system string) from ``/host/info``."""
+        data = self._supervisor("GET", "/host/info")
+        boot = data.get("boot_timestamp") if isinstance(data, dict) else None
+        osv = data.get("operating_system") if isinstance(data, dict) else None
+        return (str(boot)[:20] if isinstance(boot, (int, str)) and str(boot).isdigit() else None,
+                str(osv)[:60] if isinstance(osv, str) else None)
+
+    def core_log_tail(self, *, previous_boot: bool, lines: int = 1500) -> str:
+        """Plain-text Core log tail of this boot or of the previous boot (bounded, 20 s)."""
+        path = "/core/logs/boots/-1" if previous_boot else "/core/logs"
+        data = self._call("GET", path, timeout=20, raw=True, query=f"?lines={min(max(lines, 2), 2000)}")
+        return bytes(data or b"")[:524288].decode("utf-8", "replace")
+
+    def persistent_note(self, notification_id: str, title: str, message: str) -> None:
+        if notification_id != RECOVERY_NOTIFICATION_ID:
+            raise ForbiddenCall("notification id")
+        self._call("POST", "/core/api/services/persistent_notification/create",
+                   body={"notification_id": notification_id, "title": title[:120], "message": message[:900]},
+                   timeout=15)
+
+    def persistent_dismiss(self, notification_id: str) -> None:
+        if notification_id != RECOVERY_NOTIFICATION_ID:
+            raise ForbiddenCall("notification id")
+        self._call("POST", "/core/api/services/persistent_notification/dismiss",
+                   body={"notification_id": notification_id}, timeout=15)
 
     def publish_status(self, state: str, attributes: dict) -> None:
         try:

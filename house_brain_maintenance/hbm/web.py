@@ -11,6 +11,10 @@ taps Approve or Reject. Rules (all must hold for a decision to count):
 
 The page never approves on open: an accidental tap on the push is harmless.
 It has no other routes and serves no files.
+
+0.3.0: the page also shows the **Recovery Report** card (latest outages, likely cause, checklist).
+Its only action, "Got it", follows the same rules (ingress peer, owner user id, single-use code,
+POST to ``/recovery/ack``) and only marks the reports read.
 """
 from __future__ import annotations
 
@@ -96,14 +100,53 @@ button{{width:100%;padding:18px;margin:8px 0;font-size:20px;border:0;border-radi
 </style></head><body>{body}</body></html>"""
 
 
-def render(pending: Pending | None, last: str, action: str, note: str = "") -> str:
+STATUS_TEXT = {"RECOVERED": "✅ back", "PENDING": "⏳ waiting", "ATTENTION": "⚠️ needs you",
+               "NOT_OBSERVED": "– not seen"}
+
+
+def _when(ts: float) -> str:
+    lt = time.localtime(ts)
+    return f"{time.strftime('%a %b %d', lt)} {lt.tm_hour % 12 or 12}:{lt.tm_min:02d} {'am' if lt.tm_hour < 12 else 'pm'}"
+
+
+def render_recovery(incidents: list[dict], nonce: str, action: str, labels: dict[str, str]) -> str:
+    """The Recovery Report card: latest incident in full, then one line per earlier incident."""
+    if not incidents:
+        return '<h2>Recovery Report</h2><p class="m">No outages recorded yet.</p>'
+    e = html.escape
+    inc = incidents[0]
+    mins = max(1, int(round((inc["end"] - inc["start"]) / 60)))
+    out = [f"<h2>Recovery Report</h2><p><b>{e(inc['cause'])}</b> ({e(inc['confidence'])} confidence)<br>"
+           f"{e(_when(inc['start']))} → {e(_when(inc['end']))} ({mins} min)</p>"]
+    if inc.get("evidence"):
+        out.append("<ul>" + "".join(f"<li>{e(x)}</li>" for x in inc["evidence"]) + "</ul>")
+    checks = inc.get("checks") or {}
+    if checks:
+        out.append("<p><b>Checklist</b></p><ul>" + "".join(
+            f"<li>{e(labels.get(k, k))}: {e(STATUS_TEXT.get(v, v))}</li>" for k, v in checks.items()) + "</ul>")
+    if inc.get("steps"):
+        out.append("<p><b>What to do</b></p><ol>" + "".join(f"<li>{e(s)}</li>" for s in inc["steps"]) + "</ol>")
+    if inc.get("log_lines"):
+        out.append("<details><summary>Log lines from before</summary><pre>"
+                   + e("\n".join(inc["log_lines"])) + "</pre></details>")
+    if not all(i.get("acked") for i in incidents):
+        out.append(f'<form method="post" action="{e(action)}"><input type="hidden" name="nonce" value="{e(nonce)}">'
+                   '<button class="a" name="choice" value="ack">Got it</button></form>')
+    if len(incidents) > 1:
+        out.append('<p class="m">Earlier:</p><ul class="m">' + "".join(
+            f"<li>{e(_when(i['start']))}: {e(i['cause'])} "
+            f"({max(1, int(round((i['end'] - i['start']) / 60)))} min)</li>" for i in incidents[1:]) + "</ul>")
+    return "".join(out)
+
+
+def render(pending: Pending | None, last: str, action: str, note: str = "", extra: str = "") -> str:
     if pending is None or pending.decision is not None:
         body = "<h1>House Brain Maintenance</h1><p>Nothing is waiting for your approval.</p>"
         if note:
             body += f"<p><b>{html.escape(note)}</b></p>"
         if last:
             body += f'<p class="m">Last: {html.escape(last)}</p>'
-        return PAGE.format(body=body)
+        return PAGE.format(body=body + extra)
     left = max(0, int(pending.deadline - time.monotonic()))
     body = (
         f"<h1>{html.escape(pending.title)}</h1>"
@@ -114,10 +157,10 @@ def render(pending: Pending | None, last: str, action: str, note: str = "") -> s
         '<button class="a" name="choice" value="approve">Approve</button>'
         '<button class="r" name="choice" value="reject">Reject</button></form>'
     )
-    return PAGE.format(body=body)
+    return PAGE.format(body=body + extra)
 
 
-def make_handler(board: ApprovalBoard, allowed_peer: str):
+def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "hbm"
         sys_version = ""
@@ -140,11 +183,19 @@ def make_handler(board: ApprovalBoard, allowed_peer: str):
         def _peer_ok(self) -> bool:
             return self.client_address[0] == allowed_peer
 
-        def _action(self) -> str:
+        def _base(self) -> str:
             base = self.headers.get("X-Ingress-Path", "")
-            if not RE_INGRESS_PATH.fullmatch(base):
-                base = ""
-            return f"{base}/decide"
+            return base if RE_INGRESS_PATH.fullmatch(base) else ""
+
+        def _action(self) -> str:
+            return f"{self._base()}/decide"
+
+        def _extra(self) -> str:
+            if recovery is None:
+                return ""
+            from .recovery import CHECK_LABELS
+            incidents, nonce = recovery.snapshot()
+            return render_recovery(incidents, nonce, f"{self._base()}/recovery/ack", CHECK_LABELS)
 
         def do_GET(self):  # noqa: N802
             if not self._peer_ok():
@@ -152,12 +203,13 @@ def make_handler(board: ApprovalBoard, allowed_peer: str):
             if urllib.parse.urlsplit(self.path).path not in ("/", ""):
                 return self._send(404, "not found")
             pending, last = board.snapshot()
-            self._send(200, render(pending, last, self._action()))
+            self._send(200, render(pending, last, self._action(), extra=self._extra()))
 
         def do_POST(self):  # noqa: N802
             if not self._peer_ok():
                 return self._send(403, "forbidden")
-            if urllib.parse.urlsplit(self.path).path != "/decide":
+            route = urllib.parse.urlsplit(self.path).path
+            if route not in ("/decide", "/recovery/ack") or (route == "/recovery/ack" and recovery is None):
                 return self._send(404, "not found")
             try:
                 length = int(self.headers.get("Content-Length") or "0")
@@ -171,13 +223,21 @@ def make_handler(board: ApprovalBoard, allowed_peer: str):
             nonce = (form.get("nonce") or [""])[0]
             choice = (form.get("choice") or [""])[0]
             user = self.headers.get("X-Remote-User-Id", "")
+            if route == "/recovery/ack":
+                status = recovery.request_ack(nonce, user) if choice == "ack" else 400
+                pending, last = board.snapshot()
+                ack_notes = {200: "Marked as read.", 403: "Only the owner account can do this.",
+                             409: "This button has expired; reload the page.", 400: "Unknown choice."}
+                return self._send(status, render(pending, last, self._action(), ack_notes.get(status, ""),
+                                                 extra=self._extra()))
             status = board.decide(nonce, user, choice)
             pending, last = board.snapshot()
             notes = {200: f"Recorded: {choice}. You can close this page.",
                      403: "Only the owner account can decide.", 409: "This request is no longer waiting.",
                      410: "This request expired (counted as Reject).", 400: "Unknown choice."}
             self._send(200 if status == 200 else status,
-                       render(None if status == 200 else pending, last, self._action(), notes.get(status, "")))
+                       render(None if status == 200 else pending, last, self._action(), notes.get(status, ""),
+                              extra=self._extra()))
 
         def do_PUT(self):  # noqa: N802
             self._send(405, "method not allowed")
@@ -189,8 +249,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str):
 
 class IngressServer:
     def __init__(self, board: ApprovalBoard, host: str = "0.0.0.0", port: int = 8099,  # noqa: S104 - ingress
-                 allowed_peer: str = INGRESS_PEER) -> None:
-        self.httpd = ThreadingHTTPServer((host, port), make_handler(board, allowed_peer))
+                 allowed_peer: str = INGRESS_PEER, recovery=None) -> None:
+        self.httpd = ThreadingHTTPServer((host, port), make_handler(board, allowed_peer, recovery))
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
