@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.2
+
+- Smarter morning summary (owner decision 2026-10-02, after the first two summaries): log errors that only show
+  the internet or DNS being unreachable (for example Sense, NWS alerts, ecobee and the relay in one blip) are
+  merged into one line, "Internet or DNS dropped briefly", listing what was affected. Repairs and other errors are
+  never merged. The "cleared" list no longer repeats the same item.
+- Unchanged by owner choice: updates for Apps set to start by hand (for example the AquaRite bridge) are still
+  offered for approval.
+
 ## 0.4.1
 
 - **UPnP router not found: the real cause instead of a reload that cannot work** (live finding 2026-10-02:

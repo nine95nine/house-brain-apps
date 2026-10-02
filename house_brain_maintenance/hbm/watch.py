@@ -221,8 +221,9 @@ class Watcher:
         day = time.strftime("%Y-%m-%d", local)
         if local.tm_hour < self.p.digest_hour or st["last_summary_day"] == day:
             return
-        total = len(st["summary"])
-        items, cleared = st["summary"][:MAX_SUMMARY_ITEMS], st["cleared"][:MAX_SUMMARY_ITEMS]
+        grouped = I.group_network(st["summary"])
+        total = len(grouped)
+        items, cleared = grouped[:MAX_SUMMARY_ITEMS], I.unique(st["cleared"])[:MAX_SUMMARY_ITEMS]
         st["last_summary_day"] = day
         st["summary"], st["cleared"] = [], []
         self.j.save_doc(DOC, st)

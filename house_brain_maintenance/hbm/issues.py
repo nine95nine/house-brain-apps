@@ -135,6 +135,44 @@ class Finding:
     facts: dict = field(default_factory=dict, compare=False, hash=False)
 
 
+# Log errors that only say "the internet/DNS was unreachable" (live summary 2026-10-02: Sense, NWS, ecobee and
+# the relay all failed in the same blip). The summary merges them into one line (owner decision 2026-10-02).
+NETWORK_ERROR_MARKERS = ("timeout while contacting dns", "cannot connect to host", "possible connectivity outage",
+                         "temporary failure in name resolution", "name or service not known",
+                         "network is unreachable", "max retries exceeded")
+
+
+def group_network(items: list[dict]) -> list[dict]:
+    """Merge summary items whose details only show an internet/DNS failure into one item."""
+    net_items, rest = [], []
+    for it in items:
+        text = " ".join(str(d) for d in it.get("detail") or ()).lower()
+        is_log = str(it.get("key", "")).startswith("log:")
+        (net_items if is_log and any(m in text for m in NETWORK_ERROR_MARKERS) else rest).append(it)
+    if len(net_items) < 2:
+        return items
+    names = []
+    for it in net_items:
+        title = str(it.get("title", ""))
+        name = title[len("Error from "):].split(" (seen", 1)[0] if title.startswith("Error from ") else title
+        if name not in names:
+            names.append(name)
+    merged = {"key": "net:blip", "title": f"Internet or DNS dropped briefly ({len(net_items)} errors)",
+              "severity": WARNING, "detail": ["Affected: " + ", ".join(names)[:300]],
+              "steps": ["Nothing to do if it was short; these recover by themselves.",
+                        "If it keeps happening, restart the router and check the internet connection."],
+              "link": None, "facts": {"merged": len(net_items)}, "fix": None}
+    return [merged] + rest
+
+
+def unique(values: list[str]) -> list[str]:
+    out: list[str] = []
+    for v in values:
+        if v not in out:
+            out.append(v)
+    return out
+
+
 def humanize(ident: str) -> str:
     text = re.sub(r"[_\-.]+", " ", ident or "").strip()
     return (text[:1].upper() + text[1:])[:80] if text else "Unknown"
