@@ -1,0 +1,30 @@
+{
+  "assets": {
+    "aarch64": {
+      "archive_sha256": "2de3fb879a18edb847e0313592c912f1983685488290a7fdba7ac403e6a4fb0a",
+      "elf_machine": 183,
+      "files": {
+        "LICENSE": "f4c1d7ba32ef5bcf5cf03e2eefec5825ebafedf50fa330a36700a49c605c1ef4",
+        "NOTICE": "1364c020d86ecf948b78b7c655175032068203d13aece70fb0bfe112d7802dc2",
+        "tunnel-client": "ab6c05258f15dc43a8e23f39460beb69892a8ced03e4c345a6f1aef0dd009b0f",
+        "tunnel-client-v0.0.14-linux-arm64-licenses.txt": "5c54c4eb12faf6e0b430e9865944e7624b4c4b025368cd9fb79d964e0d884a89",
+        "tunnel-client-v0.0.14-linux-arm64.spdx.json": "49394b81eddfe4a154ab683b887db8fdcec3335165d1f5cfaa12b6c01acbd0ee"
+      },
+      "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.14/tunnel-client-v0.0.14-linux-arm64.zip"
+    },
+    "amd64": {
+      "archive_sha256": "15bd17e805cad39d412199115bb9e10a978dd35258a114cdf25dd2ae6681c7d3",
+      "elf_machine": 62,
+      "files": {
+        "LICENSE": "f4c1d7ba32ef5bcf5cf03e2eefec5825ebafedf50fa330a36700a49c605c1ef4",
+        "NOTICE": "1364c020d86ecf948b78b7c655175032068203d13aece70fb0bfe112d7802dc2",
+        "tunnel-client": "472eb9dd9dd625b4e6023c3b4a5736b3a2e5a1b6dbe9338e001887a64ec992a6",
+        "tunnel-client-v0.0.14-linux-amd64-licenses.txt": "8bc4826626c2f1381394561099e5b8baaa43101fe3127ff553b7c4b3492ded5e",
+        "tunnel-client-v0.0.14-linux-amd64.spdx.json": "20a02414ab709f7c1d8cc79ab8c9c77a2a0693bfe75321ab0a8aed01045bb663"
+      },
+      "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.14/tunnel-client-v0.0.14-linux-amd64.zip"
+    }
+  },
+  "release": "v0.0.14",
+  "source_commit": "0f870e50a973fa820d4c409000059e181e8d242b"
+}

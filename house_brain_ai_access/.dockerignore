@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!app.py
+!child.py
+!install_vendor.py
+!vendor.lock.json
+!runtime/
+!runtime/**
+!rootfs/
+!rootfs/**

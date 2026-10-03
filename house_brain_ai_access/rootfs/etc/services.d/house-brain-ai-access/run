@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/local/bin/python3 -I /opt/house-brain-ai-access/app.py run

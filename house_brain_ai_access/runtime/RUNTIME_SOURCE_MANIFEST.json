@@ -1,0 +1,56 @@
+{
+  "control_authority": "NONE",
+  "excludes": [
+    "credentials",
+    "YAML",
+    "vendor_binary",
+    "tests",
+    "repository_history"
+  ],
+  "files": {
+    "contracts/house_brain_ai_read_plane.v2.json": {
+      "bytes": 15681,
+      "sha256": "7dc9f759518de757259edc88fc36ee7a9c36d2f75bb50c75e5171cd0c447c510"
+    },
+    "tools/ai_kill_switch_enforcement.py": {
+      "bytes": 5873,
+      "sha256": "4d0f72054d18f0ea627e2502ca10d3da8955146f231e03dcd79b108625f322d3"
+    },
+    "tools/ai_kill_switch_state.py": {
+      "bytes": 15722,
+      "sha256": "6a6e459c9ee79c1f6edcc2e2d58380e11bae5ad0013baf551909e8759afdc4ff"
+    },
+    "tools/ai_kill_switch_store.py": {
+      "bytes": 15347,
+      "sha256": "0643a64944c491ad598686162a936aee3db3337df054cfcdcc88b5f229d67f04"
+    },
+    "tools/build_house_brain_ai_snapshot_catalog.py": {
+      "bytes": 6719,
+      "sha256": "33620a84271b06e09bbf25658eb1140ef10455bb1952774b53797ab7191dabdf"
+    },
+    "tools/evaluate_ai_safety_interlock.py": {
+      "bytes": 2508,
+      "sha256": "1e059843f64c9439678fe129a8758620b4f669c30ab7fbcb6c9327ca024f30cb"
+    },
+    "tools/house_brain_ai_broker_boundary.py": {
+      "bytes": 12061,
+      "sha256": "f6abdf6af78a0935e0eaa0c801041ddeb9a768d2097eebbe4d86541fd1280e6b"
+    },
+    "tools/house_brain_ai_mcp_core.py": {
+      "bytes": 11563,
+      "sha256": "2bb6b2ee025f3f65ffa2ece42860ccef7fab21607ef100734152ccafc8a3aa0b"
+    },
+    "tools/house_brain_ai_snapshot_handlers.py": {
+      "bytes": 11928,
+      "sha256": "0da01a4d030521a286faa2529fd5453551538e667013c058ede6f5298e7e6566"
+    },
+    "tools/house_brain_ai_tunnel_stdio.py": {
+      "bytes": 16728,
+      "sha256": "20333560eb0213712442663ac467767ab1b39e5cfb3c578ee32e5b33b74a987e"
+    }
+  },
+  "product_commit": "9ef40d9303ea4d65bd62d21dc3863fe3e25e687a",
+  "runtime_source_count": 10,
+  "schema": "house_brain_runtime_source_payload.v1",
+  "scope": "SOURCE_ONLY_NOT_AN_INSTALLER_NOT_DEPLOYMENT_APPROVAL"
+}

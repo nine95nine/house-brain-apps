@@ -1,0 +1,52 @@
+name: "House Brain AI Access"
+version: "0.1.0-dev"
+slug: "house_brain_ai_access"
+description: "Private outbound MCP tunnel for three bounded House Brain engineering reads. Internal candidate; not live-qualified."
+arch:
+  - aarch64
+startup: application
+boot: manual_only
+stage: experimental
+init: false
+timeout: 30
+apparmor: true
+hassio_api: false
+homeassistant_api: false
+docker_api: false
+auth_api: false
+full_access: false
+host_network: false
+host_ipc: false
+host_dbus: false
+host_pid: false
+host_uts: false
+stdin: false
+usb: false
+uart: false
+udev: false
+gpio: false
+devicetree: false
+kernel_modules: false
+audio: false
+video: false
+ingress: false
+tmpfs: true
+backup: hot
+options:
+  enabled: false
+  tunnel_id: ""
+  tunnel_api_key: ""
+  broker_read_key: ""
+  kill_switch: FULL_STOP
+  kill_switch_repair: false
+  perimeter_heartbeat_url: ""
+  perimeter_heartbeat_key: ""
+schema:
+  enabled: bool
+  tunnel_id: str
+  tunnel_api_key: password
+  broker_read_key: password
+  kill_switch: list(FULL_STOP|READ_ONLY)
+  kill_switch_repair: bool
+  perimeter_heartbeat_url: str
+  perimeter_heartbeat_key: password
