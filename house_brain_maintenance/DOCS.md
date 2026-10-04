@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.4.2)
+## What it does (0.5.0)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -34,6 +34,17 @@ anything, at: Home Assistant **Repairs**, Supervisor health and its own suggeste
 that crashed or stopped although they start at boot, **integrations** that failed to start or keep
 retrying, **errors in the log**, **disk space** and **backups** (warns if no backup including Home
 Assistant in 7 days). A problem must be seen twice in a row before you hear about it.
+
+New in 0.5.0, all read-only:
+- **Backup copy off the Pi**: warns when no backup in the last 7 days is stored anywhere but the Pi
+  (Home Assistant Cloud, Google Drive, OneDrive or a network share count). A dead SD card or SSD
+  takes the copies on the Pi with it.
+- **Low batteries and offline devices**: about every 6 hours it reads device states and lists devices
+  at 15% battery or less (cleared above 25%) and devices whose every entity has been unavailable for
+  3 days. Phones and tablets are skipped. Only the device name and the number go into the summary.
+- **Disk filling too fast**: it notes the free space twice a day and warns when, at the current rate,
+  the disk would be full within 30 days (urgent within 7). Home Assistant does not report the size of
+  its history database itself; that database is the usual cause, and the advice says how to shrink it.
 
 - Serious problems: one notification right away, with what to do.
 - Safe fixes (only for Apps set to start at boot; an App set to start by hand, such as the
@@ -94,6 +105,7 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 | `dry_run` | Starts as `true`: updates are reviewed and reported, nothing is asked or changed. |
 | `update_mode` | `ask` (default): every update asks you. `auto_low_risk`: bug-fix updates reviewed as low risk install at night without asking, but only after 3 updates you approved went well. Everything else still asks. |
 | `auto_window_start_hour`, `auto_window_end_hour` | The night window for automatic installs (local time, default 2 to 5). |
+| `auto_wait_days` | Waiting period for automatic installs (default 3 days, 0 to 30): a low-risk update installs by itself only after this App first saw it offered this long ago, so other people find a bad release first. While it waits, it is not asked. Updates you approve install when you approve them. |
 | `update_check_minutes` | How often it looks for updates (default 60). |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |

@@ -11,6 +11,10 @@ said (Apps restarting, integrations reconnecting and update jobs settle on their
 * warning           -> queued for the summary at ``digest_hour`` (local time), with clears.
 
 In practice mode (``dry_run``) nothing is offered or run; fixable problems are reported as such.
+
+0.5.0: a backup copy off the Pi, low batteries / devices offline for days (read at most every
+``DEVICE_SWEEP_SECONDS``, reused in between) and a disk-fill forecast from one free-space sample per
+``DISK_SAMPLE_SECONDS``.
 """
 from __future__ import annotations
 
@@ -32,6 +36,9 @@ CONFIRM_POLLS = 2
 REDIAGNOSE_SECONDS = 6 * 3600
 MAX_PUSH_PER_CHECK = 3
 MAX_SUMMARY_ITEMS = 12
+DEVICE_SWEEP_SECONDS = 6 * 3600
+DISK_SAMPLE_SECONDS = 12 * 3600
+DISK_SAMPLES_KEPT = 40
 FIXED = "FIXED"
 NOT_FIXED = "NOT_FIXED"
 
@@ -69,6 +76,8 @@ class Watcher:
         st.setdefault("cleared", [])
         st.setdefault("asks", [])
         st.setdefault("last_summary_day", "")
+        st.setdefault("disk_samples", [])
+        st.setdefault("device_sweep", {"at": 0, "rows": []})
         return st
 
     # -- collection --------------------------------------------------------------------
@@ -92,8 +101,13 @@ class Watcher:
             findings += I.from_apps(rows)
         except (HAError, net.NetError, ForbiddenCall):
             failed.append("apps")
+        self.disk_now = None
+
+        def disk() -> list[I.Finding]:
+            self.disk_now = self.ha.disk()
+            return I.from_disk(self.disk_now)
         for name, fn in (("supervisor", lambda: I.from_resolution(self.ha.resolution(), names)),
-                         ("disk", lambda: I.from_disk(self.ha.disk())),
+                         ("disk", disk),
                          ("backups", lambda: I.from_backups(self.ha.backup_list(), now))):
             try:
                 findings += fn()
@@ -112,7 +126,34 @@ class Watcher:
             findings += I.from_log(core["log"])
         except Exception:  # noqa: BLE001 - Core may be restarting; try again next check
             failed.append("core")
+        try:
+            findings += I.from_offsite(self.ha.backup_locations(), now)
+        except Exception:  # noqa: BLE001 - older Core without backup/info, or Core restarting
+            failed.append("offsite")
         return findings, failed
+
+    def _device_findings(self, st: dict, now: float, failed: list[str]) -> list[I.Finding]:
+        """Low batteries / offline devices: a fresh sweep at most every DEVICE_SWEEP_SECONDS, else the last one."""
+        sweep = st["device_sweep"]
+        if now - float(sweep.get("at") or 0) >= DEVICE_SWEEP_SECONDS:
+            try:
+                open_keys = frozenset(k for k in st["open"] if k.startswith(("battery:", "offline:")))
+                found = I.device_findings(self.ha.device_health(), now, open_keys)
+                sweep.update(at=now, rows=[{"key": f.key, "title": f.title, "steps": list(f.steps), "link": f.link,
+                                            "facts": f.facts} for f in found])
+            except Exception:  # noqa: BLE001 - Core restarting or the read failed: keep open items as they are
+                failed.append("devices")
+                return []
+        return [I.Finding(r["key"], "devices", I.WARNING, r["title"], steps=tuple(r["steps"]), link=r["link"],
+                          facts=r["facts"]) for r in sweep.get("rows") or []]
+
+    def _disk_findings(self, st: dict, now: float) -> list[I.Finding]:
+        disk = getattr(self, "disk_now", None)
+        samples = st["disk_samples"]
+        if disk and (not samples or now - samples[-1][0] >= DISK_SAMPLE_SECONDS):
+            samples.append([now, round(disk[1], 3)])
+            del samples[:-DISK_SAMPLES_KEPT]
+        return I.from_disk_trend(samples, now)
 
     # -- one check ---------------------------------------------------------------------
     def check(self) -> dict:
@@ -120,6 +161,9 @@ class Watcher:
         st = self._state()
         first_seen = {k: v["first"] for k, v in st["open"].items()}
         findings, failed = self.collect(first_seen, now)
+        findings += self._device_findings(st, now, failed)
+        if "disk" not in failed:
+            findings += self._disk_findings(st, now)
         current = {f.key: f for f in findings}
         skipped_sources = {src for src in failed}
         push_now: list[I.Finding] = []
@@ -170,7 +214,7 @@ class Watcher:
     def _source_of(rec: dict) -> str:
         src = rec.get("source", "")
         return {"repairs": "core", "integration": "core", "log": "core", "app": "apps",
-                "disk": "disk", "backup": "backups"}.get(src, src)
+                "disk": "disk", "backup": "backups", "offsite": "offsite", "devices": "devices"}.get(src, src)
 
     # -- telling the owner -------------------------------------------------------------
     def _summary_item(self, f: I.Finding) -> dict:

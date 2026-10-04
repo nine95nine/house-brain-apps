@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0
+
+Owner decision 2026-10-04 ("all of the above"):
+- **Waiting period for automatic installs** (`auto_wait_days`, default 3): with `auto_low_risk`, a low-risk
+  bug-fix update installs by itself only after the App first saw it offered this many days ago, at night.
+  While such an update waits for its time or the night window it is **not asked** (0.4.x asked when it was
+  found outside the window). Risky updates and `ask` mode are unchanged.
+- **Backup copy off the Pi**: warns when no recent backup is stored anywhere but the Pi.
+- **Low batteries and devices offline for days** (about every 6 hours; phones and tablets skipped).
+- **Disk filling too fast**: a forecast from twice-daily free-space readings (urgent when full within 7 days).
+- Four more read-only Core WebSocket commands (`backup/info`, `get_states`, entity and device registry lists),
+  projected at once to the few fields these checks need.
+
 ## 0.4.2
 
 - Smarter morning summary (owner decision 2026-10-02, after the first two summaries): log errors that only show

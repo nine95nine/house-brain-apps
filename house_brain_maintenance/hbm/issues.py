@@ -9,6 +9,10 @@ Pure functions (no I/O, clock passed in). Owner decisions 2026-09-30 (Maintenanc
   restart/start one App, reload one integration, apply one of Supervisor's own safe suggestions;
 * details go to the tracking issue with secrets, IP and e-mail addresses stripped.
 
+0.5.0 (owner decision 2026-10-04, "all of the above"): a backup copy off the Pi, devices with low
+batteries or offline for days, and the disk filling too fast (the usual cause is the history database,
+whose size Home Assistant does not report).
+
 A finding never changes anything by itself; ``Action`` only names the fix the owner may approve.
 """
 from __future__ import annotations
@@ -87,6 +91,23 @@ UPNP_DIAGNOSES = {
 }
 UNSURE_DIAGNOSES = frozenset({"UPNP_UNCHECKED"})
 FULL_BACKUP_MAX_DAYS = 7
+OFFSITE_MAX_DAYS = 7
+# Home Assistant backup agents that keep the copy on the Pi itself; every other agent (Home Assistant
+# Cloud, Google Drive, OneDrive, a network share mounted as hassio.<name>, ...) stores it elsewhere.
+LOCAL_AGENTS = frozenset({"hassio.local", "backup.local"})
+AGENT_LABELS = {"cloud": "Home Assistant Cloud", "google_drive": "Google Drive", "onedrive": "OneDrive",
+                "backblaze": "Backblaze", "synology_dsm": "Synology", "webdav": "WebDAV", "kitchen_sink": "test"}
+DEVICES_LINK = "https://my.home-assistant.io/redirect/devices/"
+BATTERY_LOW_PCT = 15            # reported at or below this ...
+BATTERY_CLEAR_PCT = 25          # ... and cleared only above this (no flapping around one value)
+OFFLINE_DAYS = 3
+MAX_DEVICE_FINDINGS = 20        # per kind; the rest are counted
+EXCLUDED_PLATFORMS = frozenset({"mobile_app"})   # phones and tablets charge and roam by design
+DISK_TREND_MIN_DAYS = 4         # samples must span this long before a forecast is made
+DISK_TREND_WINDOW_DAYS = 14
+DISK_TREND_WARN_DAYS = 30       # warn when the disk would be full within this many days
+DISK_TREND_CRITICAL_DAYS = 7
+DISK_TREND_MIN_RATE_GB = 0.05   # GB per day; slower drift is noise
 DISK_CRITICAL_GB = 2.0          # below this Home Assistant can stop recording and updating
 DISK_WARNING = (5.0, 0.10)      # GB free, fraction free
 
@@ -124,7 +145,7 @@ class Action:
 @dataclass(frozen=True)
 class Finding:
     key: str
-    source: str     # supervisor | repairs | app | integration | log | disk | backup
+    source: str     # supervisor | repairs | app | integration | log | disk | backup | offsite | devices
     severity: str
     title: str
     detail: tuple[str, ...] = ()
@@ -424,3 +445,133 @@ def from_backups(backups: list[tuple[str, str]], now: float) -> list[Finding]:
                     steps=("Settings -> System -> Backups -> Backup now (full backup).",
                            "Better: turn on automatic backups there, ideally with a copy off the Pi."),
                     link=BACKUPS_LINK, facts={"last_full": age})]
+
+
+# -- 0.5.0: backup copy off the Pi --------------------------------------------------------------
+def agent_label(agent_id: str) -> str:
+    domain, _, rest = agent_id.partition(".")
+    if domain == "hassio":
+        return f"network share {rest}"[:60]
+    return AGENT_LABELS.get(domain, domain.replace("_", " "))[:60]
+
+
+def from_offsite(backups: list[dict], now: float) -> list[Finding]:
+    """``backups``: projected rows ``{"date", "agents": [agent ids], "ha": bool}`` from Home Assistant.
+
+    Silent when there is no backup at all (the full-backup finding already says so).
+    """
+    if not backups:
+        return []
+    newest = None
+    seen: set[str] = set()
+    for row in backups:
+        remote = [a for a in row.get("agents") or () if a not in LOCAL_AGENTS]
+        seen.update(remote)
+        dt = _parse(str(row.get("date") or ""))
+        if remote and row.get("ha", True) and dt and (newest is None or dt.timestamp() > newest):
+            newest = dt.timestamp()
+    if newest is not None and now - newest < OFFSITE_MAX_DAYS * 86400:
+        return []
+    age = f"{int((now - newest) // 86400)} days ago" if newest else "never"
+    title = (f"Backups are only on the Pi (last copy elsewhere: {age})" if newest
+             else "Backups are only stored on the Pi")
+    return [Finding("backup:offsite", "offsite", WARNING, title,
+                    steps=("Settings -> System -> Backups -> Backup locations (or Settings): add Home Assistant"
+                           " Cloud, Google Drive, OneDrive or a network share (NAS).",
+                           "Then under Automatic backups -> Locations, tick that location too.",
+                           "A copy off the Pi survives a dead SD card or SSD; one on the Pi does not."),
+                    link=BACKUPS_LINK,
+                    facts={"last_offsite": age, "locations": sorted(agent_label(a) for a in seen)[:5]})]
+
+
+# -- 0.5.0: low batteries and devices offline for days --------------------------------------------
+def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = frozenset()) -> list[Finding]:
+    """``snapshot`` from ``HomeAssistant.device_health()``: projected states, entity and device registry.
+
+    A device is offline when every one of its enabled entities has been ``unavailable`` for
+    ``OFFLINE_DAYS``. Phones/tablets (mobile_app), disabled devices and entities without a device are
+    skipped. ``open_keys`` keeps an already-reported low battery open until it is above BATTERY_CLEAR_PCT.
+    """
+    registry = snapshot.get("registry") or {}
+    devices = snapshot.get("devices") or {}
+    lowest: dict[str, float | None] = {}
+    per_device: dict[str, list[tuple[str, float | None]]] = {}
+    for row in snapshot.get("states") or []:
+        reg = registry.get(row.get("entity_id"))
+        if not reg or reg.get("disabled") or reg.get("platform") in EXCLUDED_PLATFORMS:
+            continue
+        dev = reg.get("device_id")
+        if not dev or dev not in devices or devices[dev].get("disabled"):
+            continue
+        state = row.get("state")
+        changed = _parse(str(row.get("last_changed") or ""))
+        per_device.setdefault(dev, []).append((state, changed.timestamp() if changed else None))
+        if row.get("device_class") != "battery":
+            continue
+        eid = str(row.get("entity_id"))
+        key = f"battery:{dev}"
+        limit = BATTERY_CLEAR_PCT if key in open_keys else BATTERY_LOW_PCT
+        if eid.startswith("sensor.") and row.get("unit") == "%":
+            try:
+                pct = float(state)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= pct <= limit and (dev not in lowest or lowest[dev] is None or pct < lowest[dev]):
+                lowest[dev] = pct
+        elif eid.startswith("binary_sensor.") and state == "on" and dev not in lowest:
+            lowest[dev] = None
+    out: list[Finding] = []
+    for dev, pct in sorted(lowest.items(), key=lambda kv: (kv[1] if kv[1] is not None else -1, kv[0])):
+        name = devices[dev].get("name") or "a device"
+        out.append(Finding(f"battery:{dev}", "devices", WARNING,
+                           f"Low battery: {name}" + (f" ({pct:.0f}%)" if pct is not None else ""),
+                           steps=("Replace or recharge its battery.",
+                                  "If it is no longer used: Settings -> Devices -> the device -> Delete."),
+                           link=DEVICES_LINK, facts={"battery_pct": pct}))
+    offline = []
+    for dev, rows in per_device.items():
+        if rows and all(state == "unavailable" for state, _ in rows):
+            times = [t for _, t in rows if t is not None]
+            since = max(times) if times else None
+            if since is not None and now - since >= OFFLINE_DAYS * 86400:
+                offline.append((since, dev))
+    for since, dev in sorted(offline):
+        name = devices[dev].get("name") or "a device"
+        days = int((now - since) // 86400)
+        out.append(Finding(f"offline:{dev}", "devices", WARNING, f"Offline for {days} days: {name}",
+                           steps=("Check it has power (battery or plug) and is within range of its hub or Wi-Fi.",
+                                  "Restart it, or re-pair it from its integration.",
+                                  "Removed for good? Settings -> Devices -> the device -> Delete."),
+                           link=DEVICES_LINK, facts={"offline_days": days}))
+    batteries = [f for f in out if f.key.startswith("battery:")][:MAX_DEVICE_FINDINGS]
+    offlines = [f for f in out if f.key.startswith("offline:")][:MAX_DEVICE_FINDINGS]
+    return batteries + offlines
+
+
+# -- 0.5.0: disk filling too fast -----------------------------------------------------------------
+def from_disk_trend(samples: list[list[float]], now: float) -> list[Finding]:
+    """``samples``: ``[timestamp, free GB]`` pairs. Forecast from the oldest sample in the window."""
+    recent = sorted((t, f) for t, f in samples if now - t <= DISK_TREND_WINDOW_DAYS * 86400 and t <= now)
+    if len(recent) < 2:
+        return []
+    (t0, f0), (t1, f1) = recent[0], recent[-1]
+    span_days = (t1 - t0) / 86400
+    if span_days < DISK_TREND_MIN_DAYS:
+        return []
+    rate = (f0 - f1) / span_days
+    if rate < DISK_TREND_MIN_RATE_GB:
+        return []
+    days_left = max(0.0, (f1 - DISK_CRITICAL_GB) / rate)
+    if days_left >= DISK_TREND_WARN_DAYS:
+        return []
+    severity = CRITICAL if days_left < DISK_TREND_CRITICAL_DAYS else WARNING
+    return [Finding("disk:trend", "disk", severity,
+                    f"Disk filling up: about {int(days_left)} days left ({rate * 7:.1f} GB a week)",
+                    steps=("Usually the history database: keep less history (recorder purge_keep_days) or exclude"
+                           " chatty sensors from the recorder.",
+                           "Delete old backups you no longer need (Settings -> System -> Backups).",
+                           "Settings -> System -> Repairs -> three dots -> System information shows the disk use."),
+                    link=SYSTEM_LINK,
+                    facts={"free_gb": round(f1, 1), "gb_per_week": round(rate * 7, 2),
+                           "days_left": int(days_left)})]
+

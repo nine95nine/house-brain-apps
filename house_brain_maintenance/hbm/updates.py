@@ -8,6 +8,12 @@ Transaction (journal ``txn.json``, kind ``update``), one App at a time:
 After a restart ``recover`` reads the App's real version and continues from the facts, never
 from the plan: an update that did not happen is reported as "nothing changed"; an update that
 happened is health-checked; a restore in flight is verified.
+
+Waiting period (0.5.0, owner decision 2026-10-04): with ``auto_low_risk`` an automatic install also
+waits ``wait_days`` after this App first saw the version offered (other people find a bad release
+first). While a low-risk update qualifies for automatic install it waits quietly for its time and the
+night window instead of asking (INTENTIONALLY MODIFIED: 0.4.x asked when such an update was found
+outside the window). Everything else still asks; ``ask`` mode is unchanged.
 """
 from __future__ import annotations
 
@@ -43,6 +49,7 @@ class Policy:
     reask_hours: float = 24.0
     poll: float = 5.0
     exclude: frozenset[str] = frozenset()
+    wait_days: float = 3.0                # automatic installs wait this long after a version is first seen
 
 
 @dataclass
@@ -68,7 +75,7 @@ class Updater:
     # -- memory ------------------------------------------------------------------
     def _mem(self) -> dict:
         mem = self.j.load_doc("updates", {})
-        for key in ("quarantine", "declined", "asked", "blocked_noted", "practiced"):
+        for key in ("quarantine", "declined", "asked", "blocked_noted", "practiced", "first_seen"):
             mem.setdefault(key, {})
         mem.setdefault("successes", 0)
         return mem
@@ -122,6 +129,15 @@ class Updater:
         start, end = self.p.window
         return start <= hour < end if start <= end else (hour >= start or hour < end)
 
+    def _window_open_ever(self) -> bool:
+        start, end = self.p.window
+        return start != end
+
+    def _waited(self, rev: Review, mem: dict) -> float:
+        """Days since this App first saw ``rev.to_version`` offered."""
+        first = mem["first_seen"].get(f"{rev.slug}@{rev.to_version}")
+        return (time.time() - float(first)) / 86400 if first else 0.0
+
     def auto_allowed(self, rev: Review, mem: dict) -> tuple[bool, str]:
         if self.p.mode != AUTO_LOW_RISK:
             return False, "update_mode is ask"
@@ -129,15 +145,35 @@ class Updater:
             return False, f"not a low-risk bug-fix update ({rev.verdict}, {rev.bump})"
         if int(mem["successes"]) < TRACK_RECORD_NEEDED:
             return False, f"needs {TRACK_RECORD_NEEDED} approved updates first ({mem['successes']} so far)"
+        waited = self._waited(rev, mem)
+        if waited < self.p.wait_days:
+            return False, f"waiting {self.p.wait_days:g} days after release ({waited:.1f} so far)"
         if not self._in_window():
             return False, "outside the night window"
         return True, "low-risk bug-fix update in the night window"
+
+    def waits_for_auto(self, rev: Review, mem: dict) -> bool:
+        """True when this update will install automatically later, so it must not be asked now."""
+        return (self.p.mode == AUTO_LOW_RISK and rev.auto_eligible and self._window_open_ever()
+                and int(mem["successes"]) >= TRACK_RECORD_NEEDED)
+
+    def _note_first_seen(self, apps: list[InstalledApp], mem: dict) -> None:
+        now = time.time()
+        offered = {f"{a.slug}@{a.version_latest}" for a in apps}
+        before = dict(mem["first_seen"])
+        mem["first_seen"] = {k: v for k, v in before.items() if k in offered}
+        for key in offered:
+            mem["first_seen"].setdefault(key, now)
+        if mem["first_seen"] != before:
+            self._save(mem)
 
     # -- one cycle -----------------------------------------------------------------
     def cycle(self) -> Outcome | None:
         """Handle at most one App update. Returns None when there is nothing to do."""
         mem = self._mem()
-        for app in self.candidates():
+        apps = self.candidates()
+        self._note_first_seen(apps, mem)
+        for app in apps:
             if not self._due(app, mem):
                 continue
             rev = self.review_app(app, mem)
@@ -158,6 +194,8 @@ class Updater:
                 mem["practiced"][f"{app.slug}@{rev.to_version}"] = time.time()
                 self._save(mem)
                 return Outcome(rid, DRY_RUN_OK, ["dry run: reviewed, nothing asked or changed"], facts)
+            if not auto and self.waits_for_auto(rev, mem):
+                continue                          # installs by itself later (waiting period / night window)
             if not auto:
                 mem["asked"][f"{app.slug}@{rev.to_version}"] = time.time()
                 self._save(mem)

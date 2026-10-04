@@ -27,6 +27,11 @@ boundary is this module:
   It is read for a few seconds, projected to device types and identities only (addresses,
   locations and headers are dropped at once), and the socket is closed.
 
+* checks added in 0.5.0 use four more read-only Core WebSocket commands: ``backup/info`` (projected to
+  each backup's date, storage locations and whether it includes Home Assistant), and ``get_states`` with the
+  entity and device registries (projected to entity id, state, last change, device class, unit, platform,
+  device id, device name and disabled flags; attributes and everything else are dropped at once).
+
 The ``ha`` CLI is never used (#223 R4 ``apps``/``addons`` escape).
 """
 from __future__ import annotations
@@ -59,7 +64,14 @@ PRIVILEGE_FIELDS = ("hassio_role", "full_access", "host_network", "host_pid", "d
                     "homeassistant_api", "apparmor")
 _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/list",
                        "repairs/list_issues", "config_entries/get", "system_log/list",
-                       "ssdp/subscribe_discovery"})
+                       "ssdp/subscribe_discovery",
+                       # 0.5.0 read-only checks: backup locations, low batteries / offline devices.
+                       "backup/info", "get_states", "config/entity_registry/list",
+                       "config/device_registry/list"})
+RE_ENTITY_ID = re.compile(r"^[a-z0-9_]{1,40}\.[a-z0-9_]{1,200}$")
+RE_DEVICE_ID = re.compile(r"^[A-Za-z0-9]{1,64}$")
+RE_AGENT_ID = re.compile(r"^[a-z0-9_]{1,40}\.[A-Za-z0-9_.-]{1,80}$")
+DEVICE_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024
 
 # Recovery Report (0.3.0): exact entities it may read, nothing else (read-only).
 RECOVERY_READ_ENTITIES = frozenset({
@@ -646,19 +658,75 @@ class HomeAssistant:
         except (net.NetError, HAError, ForbiddenCall):
             pass  # visibility only
 
+    # -- 0.5.0 read-only checks ------------------------------------------------
+    def backup_locations(self) -> list[dict]:
+        """Every backup as ``{"date", "agents": [location ids], "ha": bool}`` (names and contents dropped)."""
+        sock = self.ws()
+        try:
+            info = sock.command({"type": "backup/info"})
+        finally:
+            sock.close()
+        out = []
+        for row in ((info or {}).get("backups") or [])[:500] if isinstance(info, dict) else []:
+            if not isinstance(row, dict) or not isinstance(row.get("date"), str):
+                continue
+            agents = row.get("agents")
+            ids = list(agents) if isinstance(agents, dict) else row.get("agent_ids")
+            ids = [a for a in (ids if isinstance(ids, list) else []) if isinstance(a, str) and RE_AGENT_ID.fullmatch(a)]
+            ha_included = row.get("homeassistant_included")
+            out.append({"date": row["date"][:40], "agents": sorted(set(ids))[:20],
+                        "ha": ha_included is not False})
+        return out
+
+    def device_health(self) -> dict:
+        """Projected states + entity/device registries for the low-battery / offline sweep (read-only)."""
+        sock = self.ws(max_size=DEVICE_SNAPSHOT_MAX_BYTES)
+        try:
+            states = sock.command({"type": "get_states"}, timeout=60)
+            entities = sock.command({"type": "config/entity_registry/list"}, timeout=60)
+            devices = sock.command({"type": "config/device_registry/list"}, timeout=60)
+        finally:
+            sock.close()
+        def text(v: Any, n: int) -> str | None:
+            return str(v)[:n] if isinstance(v, (str, int, float)) and not isinstance(v, bool) else None
+        out_states = []
+        for row in (states if isinstance(states, list) else [])[:20000]:
+            if not isinstance(row, dict) or not isinstance(row.get("entity_id"), str) \
+                    or not RE_ENTITY_ID.fullmatch(row["entity_id"]):
+                continue
+            attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+            out_states.append({"entity_id": row["entity_id"], "state": text(row.get("state"), 40),
+                               "last_changed": text(row.get("last_changed"), 40),
+                               "device_class": text(attrs.get("device_class"), 40),
+                               "unit": text(attrs.get("unit_of_measurement"), 10)})
+        registry = {}
+        for row in (entities if isinstance(entities, list) else [])[:20000]:
+            if isinstance(row, dict) and isinstance(row.get("entity_id"), str) and RE_ENTITY_ID.fullmatch(row["entity_id"]):
+                dev = row.get("device_id")
+                registry[row["entity_id"]] = {
+                    "platform": text(row.get("platform"), 60),
+                    "device_id": dev if isinstance(dev, str) and RE_DEVICE_ID.fullmatch(dev) else None,
+                    "disabled": bool(row.get("disabled_by"))}
+        out_devices = {}
+        for row in (devices if isinstance(devices, list) else [])[:10000]:
+            if isinstance(row, dict) and isinstance(row.get("id"), str) and RE_DEVICE_ID.fullmatch(row["id"]):
+                out_devices[row["id"]] = {"name": text(row.get("name_by_user") or row.get("name"), 80),
+                                          "disabled": bool(row.get("disabled_by"))}
+        return {"states": out_states, "registry": registry, "devices": out_devices}
+
     # -- WebSocket ------------------------------------------------------------
-    def ws(self) -> CoreSocket:
-        return CoreSocket(self.ws_url, self._token, self._ws_guard)
+    def ws(self, max_size: int = 4 * 1024 * 1024) -> CoreSocket:
+        return CoreSocket(self.ws_url, self._token, self._ws_guard, max_size=max_size)
 
 
 class CoreSocket:
     """Synchronous Core WebSocket session restricted to the allowlist (Deployer lineage)."""
 
-    def __init__(self, url: str, token: str, guard) -> None:
+    def __init__(self, url: str, token: str, guard, max_size: int = 4 * 1024 * 1024) -> None:
         from websockets.sync.client import connect
 
         self._guard = guard
-        self._conn = connect(url, open_timeout=20, close_timeout=5, max_size=4 * 1024 * 1024)
+        self._conn = connect(url, open_timeout=20, close_timeout=5, max_size=max_size)
         self._next = 1
         if self._recv(20).get("type") != "auth_required":
             raise HAError("WS_HANDSHAKE")

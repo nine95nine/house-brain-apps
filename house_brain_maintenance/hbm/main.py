@@ -55,6 +55,7 @@ class Options:
     update_check_minutes: int = 60
     auto_window_start_hour: int = 2
     auto_window_end_hour: int = 5
+    auto_wait_days: int = 3
     health_check_minutes: int = 3
     report_issue: int = 0
     issue_checks: bool = True
@@ -114,6 +115,7 @@ def load_options(path: str) -> Options:
         update_check_minutes=i("update_check_minutes", 15, 1440) if "update_check_minutes" in raw else 60,
         auto_window_start_hour=i("auto_window_start_hour", 0, 23) if "auto_window_start_hour" in raw else 2,
         auto_window_end_hour=i("auto_window_end_hour", 0, 23) if "auto_window_end_hour" in raw else 5,
+        auto_wait_days=i("auto_wait_days", 0, 30) if "auto_wait_days" in raw else 3,
         health_check_minutes=i("health_check_minutes", 1, 30) if "health_check_minutes" in raw else 3,
         report_issue=i("report_issue", 0, 10**7) if "report_issue" in raw else 0,
         issue_checks=raw.get("issue_checks", True) if isinstance(raw.get("issue_checks", True), bool)
@@ -246,7 +248,7 @@ class Service:
             policy = Policy(mode=self.o.update_mode,
                             window=(self.o.auto_window_start_hour, self.o.auto_window_end_hour),
                             health_seconds=health, grace_seconds=min(45.0, health / 4), poll=self.poll,
-                            exclude=frozenset())
+                            exclude=frozenset(), wait_days=float(self.o.auto_wait_days))
             self.updater = Updater(self.ha, self.j, settings, policy)
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
                                 max_fix_asks_per_day=self.o.max_approval_requests_per_day,

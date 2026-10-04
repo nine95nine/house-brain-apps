@@ -1,5 +1,5 @@
 name: "House Brain Maintenance"
-version: "0.4.2"
+version: "0.5.0"
 slug: "house_brain_maintenance"
 description: >-
   Reviews pending App updates and applies them after your iPhone approval
@@ -64,6 +64,7 @@ options:
   update_check_minutes: 60
   auto_window_start_hour: 2
   auto_window_end_hour: 5
+  auto_wait_days: 3
   health_check_minutes: 3
   report_issue: 0
   issue_checks: true
@@ -92,6 +93,7 @@ schema:
   update_check_minutes: "int(15,1440)"
   auto_window_start_hour: "int(0,23)"
   auto_window_end_hour: "int(0,23)"
+  auto_wait_days: "int(0,30)"
   health_check_minutes: "int(1,30)"
   report_issue: "int(0,10000000)"
   issue_checks: bool
