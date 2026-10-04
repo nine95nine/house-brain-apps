@@ -52,6 +52,10 @@ HEARTBEAT_URL = re.compile(r'https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a
                            r'\.workers\.dev/v1/kill-switch/heartbeat', re.ASCII)
 HEARTBEAT_KEY = re.compile(r'[\x21-\x7e]{32,4096}', re.ASCII)
 HEARTBEAT_INTERVAL = 60.0
+# `claude_only` (0.1.1-dev, owner approval 2026-10-04 "Build it"): the Claude perimeter needs the heartbeat,
+# and before this mode the heartbeat ran only beside the OpenAI tunnel, which needs ChatGPT credentials.
+# In this mode the wrapper applies the kill switch and publishes only the heartbeat: no tunnel process, no
+# OpenAI egress, no tunnel or Broker capability accepted. It adds no tool, scope or Home Assistant access.
 HEARTBEAT_TIMEOUT = 10.0
 UID = GID = 10001
 MANIFEST_SHA = 'ec20847b87a53dc8459a942f57dd458e7db537dc5b57cd6970ee6f0c25a562f5'
@@ -141,12 +145,13 @@ def read_file(root: Path, relative: str, limit: int, *, protect: bool = False) -
 def options(raw: bytes) -> dict[str, Any]:
     value = decode(raw)
     names = {'enabled', 'tunnel_id', 'tunnel_api_key', 'broker_read_key', 'kill_switch', 'kill_switch_repair',
-             'perimeter_heartbeat_url', 'perimeter_heartbeat_key'}
-    optional = {'perimeter_heartbeat_url', 'perimeter_heartbeat_key'}  # absent = '' (heartbeat off)
-    booleans = {'enabled', 'kill_switch_repair'}
-    if type(value) is not dict or not names - optional <= set(value) <= names:
+             'perimeter_heartbeat_url', 'perimeter_heartbeat_key', 'claude_only'}
+    optional = {'perimeter_heartbeat_url': '', 'perimeter_heartbeat_key': '',  # absent = '' (heartbeat off)
+                'claude_only': False}  # absent = False (older option files stay valid)
+    booleans = {'enabled', 'kill_switch_repair', 'claude_only'}
+    if type(value) is not dict or not names - set(optional) <= set(value) <= names:
         raise AdmissionError('OPTIONS_SCHEMA_INVALID')
-    value = {**{k: '' for k in optional}, **value}
+    value = {**optional, **value}
     if any(type(value[k]) is not bool for k in booleans):
         raise AdmissionError('OPTIONS_SCHEMA_INVALID')
     if any(type(value[k]) is not str or len(value[k]) > 4096 for k in names - booleans):
@@ -155,12 +160,22 @@ def options(raw: bytes) -> dict[str, Any]:
         raise AdmissionError('KILL_SWITCH_OPTION_INVALID')
     if not value['enabled']:
         return value
+    url, hb_key = value['perimeter_heartbeat_url'], value['perimeter_heartbeat_key']
+    if value['claude_only']:
+        # Heartbeat only: no tunnel or Broker capability may sit in the options unused, and the heartbeat
+        # settings are required (without them this mode would do nothing but hold the App up).
+        if value['tunnel_id'] or value['tunnel_api_key'] or value['broker_read_key']:
+            raise AdmissionError('CLAUDE_ONLY_TUNNEL_FIELDS_SET')
+        if url == '' or hb_key == '':
+            raise AdmissionError('CLAUDE_ONLY_HEARTBEAT_REQUIRED')
+        if HEARTBEAT_URL.fullmatch(url) is None or HEARTBEAT_KEY.fullmatch(hb_key) is None:
+            raise AdmissionError('HEARTBEAT_OPTIONS_INVALID')
+        return value
     if re.fullmatch(r'tunnel_[0-9a-f]{32}', value['tunnel_id']) is None:
         raise AdmissionError('TUNNEL_ID_INVALID')
     for key in ('tunnel_api_key', 'broker_read_key'):
         if not 20 <= len(value[key]) <= 4096 or KEY_PATTERN.fullmatch(value[key]) is None:
             raise AdmissionError('CAPABILITY_INVALID')
-    url, hb_key = value['perimeter_heartbeat_url'], value['perimeter_heartbeat_key']
     if (url == '') != (hb_key == ''):
         raise AdmissionError('HEARTBEAT_OPTIONS_INCOMPLETE')
     if url and (HEARTBEAT_URL.fullmatch(url) is None or HEARTBEAT_KEY.fullmatch(hb_key) is None):
@@ -342,6 +357,23 @@ def heartbeat_loop(stop: threading.Event, url: str, key: str, *, store_dir: Path
             emit(reason)
             last_reason = reason
         stop.wait(interval)
+
+
+def run_heartbeat_only(url: str, key: str, *, loop=heartbeat_loop) -> int:
+    """`claude_only` lifetime: publish the heartbeat until s6 stops the App (TERM/INT). Returns 0.
+
+    No native process and no OpenAI egress. On stop the edge simply stops hearing from the house and
+    denies within the 300 s staleness window (dead man); no synthetic FULL_STOP is sent, because it would
+    raise the edge generation mark above the store and block the next start.
+    """
+    stop = threading.Event()
+    old = {sig: signal.signal(sig, lambda *_: stop.set()) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        loop(stop, url, key)
+        return 0
+    finally:
+        for sig, handler in old.items():
+            signal.signal(sig, handler)
 
 
 def repair_kill_switch(*, store_dir: Path | None = None, view: Path | None = None,
@@ -681,6 +713,11 @@ def main() -> int:
                 repair_kill_switch()
             else:
                 apply_kill_switch(value['kill_switch'])
+            if value['claude_only']:
+                emit('CLAUDE_ONLY_HEARTBEAT_STARTING')
+                code = run_heartbeat_only(value['perimeter_heartbeat_url'], value['perimeter_heartbeat_key'])
+                emit('CLAUDE_ONLY_STOPPED', exit_code=code)
+                return 0
             command, env = plan(value)
             stop = threading.Event()
             if value['perimeter_heartbeat_url']:

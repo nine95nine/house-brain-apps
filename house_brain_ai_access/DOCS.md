@@ -11,8 +11,9 @@ execution only; it does not establish target Python/base/native-s6 parity.
 
 ## Configuration and secrets
 
-Only eight options exist: `enabled`, `tunnel_id`, `tunnel_api_key`, `broker_read_key`,
-`kill_switch`, `kill_switch_repair`, `perimeter_heartbeat_url` and `perimeter_heartbeat_key`.
+Only nine options exist: `enabled`, `tunnel_id`, `tunnel_api_key`, `broker_read_key`,
+`kill_switch`, `kill_switch_repair`, `perimeter_heartbeat_url`, `perimeter_heartbeat_key` and
+`claude_only`.
 The default is disabled with empty credentials. Enabling requires an exact tunnel
 identifier and bounded ASCII keys. Unknown options, duplicate JSON keys, invalid
 identities and missing credentials fail before any native process or network call.
@@ -91,6 +92,17 @@ Requests use no proxy and no redirects, and time out after 10 s. A store that do
 nothing. When the App stops, the heartbeats stop, and the Worker blocks Claude within 5 minutes.
 The Log shows only changes: `HEARTBEAT_ACCEPTED`, `HEARTBEAT_REFUSED_<status>` or
 `HEARTBEAT_NOT_SENT_STORE_UNREADABLE`. It never shows the key or the body.
+
+**Claude-only mode (`claude_only`, off by default; 0.1.1-dev, owner approval 2026-10-04).** The Claude
+perimeter needs the heartbeat, and without this mode the heartbeat ran only beside the OpenAI tunnel,
+which needs ChatGPT credentials. With `enabled` and `claude_only` on, the wrapper verifies the source,
+applies the kill switch and then publishes only the heartbeat until the App stops. It starts no tunnel
+process and makes no OpenAI connection. The three tunnel fields must stay empty
+(`CLAUDE_ONLY_TUNNEL_FIELDS_SET`), and both heartbeat fields are required
+(`CLAUDE_ONLY_HEARTBEAT_REQUIRED`). The Log shows `CLAUDE_ONLY_HEARTBEAT_STARTING`, then the heartbeat
+changes. The mode adds no tool, scope, Home Assistant access or authority. `kill_switch` still decides:
+`FULL_STOP` makes the perimeter refuse every read. When the App stops, the Worker blocks Claude within
+5 minutes (no synthetic FULL_STOP is sent, so the next start is not locked out).
 
 ## Network and privileges
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.1-dev
+
+Claude-only heartbeat mode (owner approval 2026-10-04 "Build it"). New option `claude_only` (default off).
+With `enabled` and `claude_only` on, the wrapper verifies the source, applies the kill switch and publishes
+only the #56 edge heartbeat to the Claude perimeter until the App stops: no tunnel process, no OpenAI
+egress, and no tunnel or Broker capability accepted (`CLAUDE_ONLY_TUNNEL_FIELDS_SET`). Both heartbeat
+fields are required (`CLAUDE_ONLY_HEARTBEAT_REQUIRED`). Before this, the heartbeat ran only beside the
+OpenAI tunnel, so the Claude connector could not be used without ChatGPT credentials. The option is
+optional in the options file, so older option files stay valid. The runtime files and the image's
+native binary are unchanged; the App tree changes, so the ARM64 qualification is re-run on the new tree.
+
 ## 0.1.0-dev
 
 Initial owner-approved HAOS App packaging candidate. Preserves the six qualified

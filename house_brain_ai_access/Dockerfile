@@ -3,7 +3,7 @@
 # Python 3.14 / Alpine 3.24 / s6-overlay 3.2.2.0: final image parity still required.
 FROM ghcr.io/home-assistant/base-python:3.14-alpine3.24-2026.08.0@sha256:fb41585796deece71afd5a965e9a8aa1b5c2ceb4f020389d998fbe578dbbde6a
 ARG BUILD_ARCH=aarch64
-ARG BUILD_VERSION=0.1.0-dev
+ARG BUILD_VERSION=0.1.1-dev
 LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="app" io.hass.arch="${BUILD_ARCH}"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     S6_SERVICES_GRACETIME=15000 S6_KILL_GRACETIME=3000

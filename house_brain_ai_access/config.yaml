@@ -1,5 +1,5 @@
 name: "House Brain AI Access"
-version: "0.1.0-dev"
+version: "0.1.1-dev"
 slug: "house_brain_ai_access"
 description: "Private outbound MCP tunnel for three bounded House Brain engineering reads. Internal candidate; not live-qualified."
 arch:
@@ -41,6 +41,7 @@ options:
   kill_switch_repair: false
   perimeter_heartbeat_url: ""
   perimeter_heartbeat_key: ""
+  claude_only: false
 schema:
   enabled: bool
   tunnel_id: str
@@ -50,3 +51,4 @@ schema:
   kill_switch_repair: bool
   perimeter_heartbeat_url: str
   perimeter_heartbeat_key: password
+  claude_only: bool
