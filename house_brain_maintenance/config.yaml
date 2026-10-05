@@ -1,5 +1,5 @@
 name: "House Brain Maintenance"
-version: "0.5.1"
+version: "0.5.2"
 slug: "house_brain_maintenance"
 description: >-
   Reviews pending App updates and applies them after your iPhone approval

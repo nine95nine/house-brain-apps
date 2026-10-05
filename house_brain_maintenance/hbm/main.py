@@ -331,7 +331,16 @@ class Service:
             return
         self.ensure_engine()
         summary = self.watcher.check()
-        self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary})
+        self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary, **self._ledger_attrs()})
+
+    def _ledger_attrs(self) -> dict:
+        """0.5.2: restart ledger counts and MTBF from the Recovery Report (empty when it is off)."""
+        if self.recovery is None:
+            return {}
+        try:
+            return self.recovery.status_attrs()
+        except Exception:  # noqa: BLE001 - visibility only
+            return {}
 
     def poll_updates(self) -> None:
         if time.monotonic() - self.last_update_check < self.o.update_check_minutes * 60 and self.last_update_check:
@@ -340,7 +349,8 @@ class Service:
         self.ensure_engine()
         out = self.updater.cycle()
         if out is None:
-            self.status("IDLE", {"version": VERSION, "dry_run": self.o.dry_run, "pending_updates": 0})
+            self.status("IDLE", {"version": VERSION, "dry_run": self.o.dry_run, "pending_updates": 0,
+                                 **self._ledger_attrs()})
             return
         result = Result(out.result_outcome, out.reasons, out.facts)
         self.finish(out.request_id, UPDATE_JOB, f"update:{out.facts.get('slug')}@{out.facts.get('to')}",

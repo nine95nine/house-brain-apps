@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.2
+
+Recovery Report follow-ups (owner decision 2026-10-05, "All of the above"), all read-only:
+
+- **Fix: no stale restart verdict.** Home Assistant answers before the Connection Forensics start marker
+  runs, so the report could show the *previous* restart's CLEAN/UNCLEAN. The verdict is now used only when
+  its `last_start` is not older than the outage start. The report waits up to 5 minutes for it, then says
+  "verdict not yet available". The restart that installs Connection Forensics (`FIRST_RUN`) no longer pushes.
+- **Planned or not:** a clean Core restart is tagged **PLANNED** with the House Brain Deployer request id when
+  the Deployer was installing just before it, or published a restart result after it. Otherwise it is tagged
+  **UNPLANNED_CLEAN**. UNCLEAN stays UNCLEAN. One more pinned read: `sensor.house_brain_deployer_status`
+  (state, request id, dry run and last result only).
+- **Restart ledger:** 90 days of Core restarts by class (PLANNED, UPDATE, INSTALL, UNPLANNED_CLEAN, UNCLEAN,
+  HOST_REBOOT, HOST_UNEXPECTED, POWER_CUT, UNKNOWN). It shows 30/90-day counts and the mean time between
+  unplanned failures on the page and in the status entity, plus a text block for the #152/#163 stability
+  ledger.
+- **Mesh rejoin:** after a Core restart, how many seconds Zigbee (ZHA), Z-Wave JS and Matter took until their
+  devices were back, or how many were still unavailable after 10 minutes. Devices that were already
+  unavailable before the restart are not counted. Meshes not used here are skipped. Page only, no push.
+
 ## 0.5.1
 
 - **Fix (live 2026-10-05):** Cloudflare refused the Scout key switch with HTTP 403, because the App sent Python's

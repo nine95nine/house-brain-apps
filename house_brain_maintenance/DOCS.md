@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.5.1)
+## What it does (0.5.2)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -54,6 +54,15 @@ New in 0.5.1, all read-only:
   purpose can be ignored, and nothing is removed.
 - **Backup size jump**: the newest full backup is much smaller than usual (something left out) or much bigger
   (something growing fast).
+
+New in 0.5.2 (Recovery Report), all read-only:
+- **Right verdict for each restart**: Connection Forensics' clean/unclean verdict is used only once it was
+  written for this restart. The report waits up to 5 minutes, then says "verdict not yet available". Installing
+  Connection Forensics does not send a push.
+- **PLANNED or UNPLANNED_CLEAN**: a clean restart caused by a House Brain Deployer install shows its request id.
+- **Restart ledger**: restarts in the last 30 and 90 days by kind, and the mean time between unplanned failures
+  (crashes, unexpected reboots, power cuts). A text block is ready to paste into the stability ledger.
+- **Mesh rejoin**: how long Zigbee (ZHA), Z-Wave and Matter devices took to come back after a restart.
 
 - Serious problems: one notification right away, with what to do.
 - Safe fixes (only for Apps set to start at boot; an App set to start by hand, such as the

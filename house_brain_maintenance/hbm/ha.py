@@ -35,6 +35,13 @@ boundary is this module:
 * 0.5.1 adds one more read-only Core WebSocket command, ``config_entries/flow/progress``, projected
   to the entry ids of pending re-login ("reauth") flows only, and reads backup sizes from ``/backups``.
 
+* 0.5.2 (Recovery Report follow-ups, all read-only): one more pinned state read,
+  ``sensor.house_brain_deployer_status`` (projected to its state, a validated request id, ``dry_run`` and the
+  request id / outcome of its ``last_result``; nothing else), a few named attributes of the Connection
+  Forensics sensor (``last_start``, ``stop_to_ready_seconds`` as integers), and ``mesh_counts``: the already
+  allowed ``get_states`` and entity registry reads, reduced at once to per-mesh counts (ZHA, Z-Wave JS,
+  Matter: entities and how many are unavailable). No new route kind and no write.
+
 The ``ha`` CLI is never used (#223 R4 ``apps``/``addons`` escape).
 """
 from __future__ import annotations
@@ -79,14 +86,49 @@ RE_AGENT_ID = re.compile(r"^[a-z0-9_]{1,40}\.[A-Za-z0-9_.-]{1,80}$")
 DEVICE_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024
 
 # Recovery Report (0.3.0): exact entities it may read, nothing else (read-only).
+FORENSICS_ENTITY = "sensor.house_brain_connection_forensics_last_restart"
+DEPLOYER_STATUS_ENTITY = "sensor.house_brain_deployer_status"      # 0.5.2: PLANNED vs UNPLANNED_CLEAN join
 RECOVERY_READ_ENTITIES = frozenset({
-    "sensor.house_brain_connection_forensics_last_restart",
+    FORENSICS_ENTITY, DEPLOYER_STATUS_ENTITY,
     "sensor.house_brain_network_outage_class", "sensor.house_brain_network_outage_summary",
     "sensor.house_brain_network_wan_status", "sensor.ups_status_data", "sensor.ups_battery_charge",
     "binary_sensor.any_smoke_detected", "binary_sensor.any_co_detected", "climate.ecobee_thermostat",
     "sensor.sense_51446_l1_voltage", "sensor.enphase_solar_power_now",
 })
 RECOVERY_NOTIFICATION_ID = "hbm_recovery_report"
+# 0.5.2: Deployer request ids (``hbd/manifest.py`` RE_REQUEST_ID, optionally the Undo suffix) and the
+# ``last_result`` text it publishes ("<request id>: <OUTCOME>").
+RE_DEPLOYER_RID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}(?:#undo)?$")
+RE_DEPLOYER_LAST = re.compile(r"^([a-z0-9][a-z0-9-]{2,63}(?:#undo)?): ([A-Z][A-Z_]{1,39})$")
+MESH_PLATFORMS = ("zha", "zwave_js", "matter")
+
+
+def _whole(v: Any) -> int | None:
+    """An integer attribute (epoch seconds, a duration), or None. Booleans and fractions are refused."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, str) and v.isdigit() and len(v) <= 12:
+        return int(v)
+    return None
+
+
+def project_attrs(entity_id: str, attrs: Any) -> dict:
+    """The few named attributes the Recovery Report may keep (0.5.2); every other attribute is dropped."""
+    attrs = attrs if isinstance(attrs, dict) else {}
+    if entity_id == FORENSICS_ENTITY:
+        return {"last_start": _whole(attrs.get("last_start")),
+                "stop_to_ready_seconds": _whole(attrs.get("stop_to_ready_seconds"))}
+    if entity_id == DEPLOYER_STATUS_ENTITY:
+        rid, last = attrs.get("request_id"), attrs.get("last_result")
+        m = RE_DEPLOYER_LAST.fullmatch(last) if isinstance(last, str) else None
+        return {"request_id": rid if isinstance(rid, str) and RE_DEPLOYER_RID.fullmatch(rid) else None,
+                "dry_run": attrs.get("dry_run") is True,
+                "last_rid": m.group(1) if m else None, "last_outcome": m.group(2) if m else None}
+    return {}
 
 _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/addons/self/info"),
@@ -640,7 +682,8 @@ class HomeAssistant:
             return None
         state = data.get("state")
         return {"state": str(state)[:255] if state is not None else None,
-                "last_changed": str(data.get("last_changed") or "")[:40]}
+                "last_changed": str(data.get("last_changed") or "")[:40],
+                "attrs": project_attrs(entity_id, data.get("attributes"))}
 
     def host_boot_info(self) -> tuple[str | None, str | None]:
         """(host boot timestamp, operating system string) from ``/host/info``."""
@@ -731,6 +774,30 @@ class HomeAssistant:
                 out_devices[row["id"]] = {"name": text(row.get("name_by_user") or row.get("name"), 80),
                                           "disabled": bool(row.get("disabled_by"))}
         return {"states": out_states, "registry": registry, "devices": out_devices}
+
+    def mesh_counts(self) -> dict[str, dict[str, int]]:
+        """0.5.2: per mesh platform present (ZHA, Z-Wave JS, Matter), how many enabled entities it has and
+        how many are unavailable or not loaded yet. Only these counts leave this method (read-only)."""
+        sock = self.ws(max_size=DEVICE_SNAPSHOT_MAX_BYTES)
+        try:
+            states = sock.command({"type": "get_states"}, timeout=60)
+            entities = sock.command({"type": "config/entity_registry/list"}, timeout=60)
+        finally:
+            sock.close()
+        live: dict[str, Any] = {}
+        for row in (states if isinstance(states, list) else [])[:20000]:
+            if isinstance(row, dict) and isinstance(row.get("entity_id"), str):
+                live[row["entity_id"]] = row.get("state")
+        out: dict[str, dict[str, int]] = {}
+        for row in (entities if isinstance(entities, list) else [])[:20000]:
+            if not isinstance(row, dict) or row.get("platform") not in MESH_PLATFORMS or row.get("disabled_by") \
+                    or not isinstance(row.get("entity_id"), str) or not RE_ENTITY_ID.fullmatch(row["entity_id"]):
+                continue
+            c = out.setdefault(str(row["platform"]), {"total": 0, "unavailable": 0})
+            c["total"] += 1
+            if live.get(row["entity_id"]) in (None, "unavailable"):
+                c["unavailable"] += 1
+        return out
 
     # -- WebSocket ------------------------------------------------------------
     def ws(self, max_size: int = 4 * 1024 * 1024) -> CoreSocket:

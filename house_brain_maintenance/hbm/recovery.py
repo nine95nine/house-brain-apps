@@ -16,6 +16,19 @@ A background thread runs ``tick()`` every ``HEARTBEAT_SECONDS``:
   that stays in ATTENTION pushes to every ``safety_notify_services`` phone, once;
 * optionally sends a signed "still alive" ping to the owner's liveness Worker (off by default).
 
+0.5.2 (owner "All of the above", 2026-10-05), still read-only:
+
+* the Connection Forensics verdict is trusted only when it was written for *this* start (its ``last_start``
+  is not older than the outage start); until then the report waits (at most ``FORENSICS_WAIT``) and then
+  says "verdict not yet available" instead of using the previous restart's verdict. The install restart
+  itself (``FIRST_RUN``) is recorded quietly (no push);
+* a CLEAN Core restart is tagged PLANNED (with the Deployer request id) or UNPLANNED_CLEAN from the House
+  Brain Deployer's status entity (``DEPLOYING`` seen just before the outage, or a restart outcome published
+  after it); UNCLEAN stays UNCLEAN;
+* a rolling 90-day restart ledger (counts by class, mean time between unplanned failures, a feed text for
+  the #152/#163 stability ledger);
+* after a Core restart, how long ZHA / Z-Wave JS / Matter took until their devices were back (P2 checks).
+
 Only exact, pinned entity ids are read (``READ_ENTITIES``). Log text is scrubbed before it is kept.
 """
 from __future__ import annotations
@@ -32,7 +45,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import issues as I, net
-from .ha import RECOVERY_NOTIFICATION_ID, RECOVERY_READ_ENTITIES, ForbiddenCall, HAError, HomeAssistant
+from .ha import (DEPLOYER_STATUS_ENTITY, FORENSICS_ENTITY, RECOVERY_NOTIFICATION_ID, RECOVERY_READ_ENTITIES,
+                 ForbiddenCall, HAError, HomeAssistant)
 
 LOG = logging.getLogger("hbm")
 
@@ -48,9 +62,21 @@ RETRY_FOR = 86400.0              # an undelivered push is retried for 24 h
 RETRY_EVERY = 300.0
 MAX_INCIDENTS = 10
 MAX_LOG_LINES = 20
+# 0.5.2
+FORENSICS_WAIT = 300.0           # wait this long after Core answers for this start's forensics verdict
+FORENSICS_TOLERANCE = 5.0        # last_start may be this much older than the first missed check
+DEPLOYER_LOOKBACK = 180.0        # DEPLOYING must have been read this close before the outage started
+DEPLOYER_JOIN_WINDOW = 1800.0    # after Core is back, a Deployer restart outcome is joined this long
+RESTART_OUTCOMES = frozenset({"SUCCEEDED", "ROLLED_BACK_RESTARTED", "FAILED_MANUAL"})  # hbd/engine.py
+MESH_WINDOW = 600.0              # mesh rejoin is measured for 10 minutes after Core answers again
+MESH_BASELINE_EVERY = 21600.0    # "unavailable before the restart" baseline, refreshed every 6 h
+MESH_RETRY = 3600.0
+LEDGER_DAYS = 90
+LEDGER_MAX = 400
 
 # -- pinned inputs (exact entity ids; nothing else is read) --------------------------------------
-FORENSICS = "sensor.house_brain_connection_forensics_last_restart"
+FORENSICS = FORENSICS_ENTITY
+DEPLOYER = DEPLOYER_STATUS_ENTITY
 NET_CLASS = "sensor.house_brain_network_outage_class"
 NET_SUMMARY = "sensor.house_brain_network_outage_summary"
 NET_WAN = "sensor.house_brain_network_wan_status"
@@ -86,7 +112,18 @@ CHECKS: tuple[Check, ...] = (
 )
 UPS_CHECK = Check("UPS_RECHARGED", P1, (UPS_STATUS, UPS_CHARGE), 0, "UPS back on mains and recharged",
                   "UPS not back on mains or not recharging: check the UPS display and its wall outlet.")
-READ_ENTITIES = frozenset({FORENSICS, NET_CLASS, NET_SUMMARY, NET_WAN, UPS_STATUS, UPS_CHARGE}
+# 0.5.2: mesh rejoin after a Core restart (read from get_states + the entity registry; absent meshes skipped).
+MESH_CHECKS: tuple[Check, ...] = (
+    Check("MESH_ZHA", P2, (), MESH_WINDOW, "Zigbee (ZHA) devices back",
+          "Zigbee devices still unavailable after 10 min: check the Zigbee coordinator, then the devices in "
+          "Settings › Devices & services › Zigbee."),
+    Check("MESH_ZWAVE", P2, (), MESH_WINDOW, "Z-Wave devices back",
+          "Z-Wave devices still unavailable after 10 min: check the Z-Wave JS App is running, then the devices."),
+    Check("MESH_MATTER", P2, (), MESH_WINDOW, "Matter devices back",
+          "Matter devices still unavailable after 10 min: check the Matter Server App and the Thread border router."),
+)
+MESH_PLATFORM = {"MESH_ZHA": "zha", "MESH_ZWAVE": "zwave_js", "MESH_MATTER": "matter"}
+READ_ENTITIES = frozenset({FORENSICS, DEPLOYER, NET_CLASS, NET_SUMMARY, NET_WAN, UPS_STATUS, UPS_CHARGE}
                           | {e for c in CHECKS for e in c.entities})
 assert READ_ENTITIES == RECOVERY_READ_ENTITIES  # noqa: S101 - the allowlist in ha.py is the single source
 
@@ -158,9 +195,109 @@ def classify_host_return(*, ups_on_battery: bool | None, forensics: str | None,
     return "R5"
 
 
-def notify_worthy(rule: str, duration: float) -> bool:
-    """Planned restarts shorter than QUIET_PLANNED_SECONDS stay on the page only."""
+def notify_worthy(rule: str, duration: float, verdict: str | None = None) -> bool:
+    """Planned restarts shorter than QUIET_PLANNED_SECONDS stay on the page only. The restart that installs
+    Connection Forensics (verdict FIRST_RUN, 0.5.2) is page-only too, unless the UPS ran out (R4)."""
+    if verdict == "FIRST_RUN" and rule != "R4":
+        return False
     return not (rule in ("R1", "R2", "R3") and duration < QUIET_PLANNED_SECONDS)
+
+
+def fresh_verdict(row: dict | None, outage_start: float) -> str | None:
+    """The Connection Forensics verdict, only when it was written for THIS start (0.5.2 race fix).
+
+    Core answers ``/core/api/`` before its start-marker automation runs, so right after a restart the
+    sensor still shows the previous restart's verdict. Its ``last_start`` tells: it must not be older than
+    the outage start (less ``FORENSICS_TOLERANCE``). A missing ``last_start`` is never trusted."""
+    if not row or row.get("state") not in ("CLEAN", "UNCLEAN", "FIRST_RUN"):
+        return None
+    last_start = (row.get("attrs") or {}).get("last_start")
+    if not isinstance(last_start, int) or isinstance(last_start, bool) \
+            or last_start < outage_start - FORENSICS_TOLERANCE:
+        return None
+    return row["state"]
+
+
+def deployer_signal(row: dict | None) -> dict:
+    """What the Deployer status entity says (0.5.2): a request it is installing (``DEPLOYING``, its marker
+    state), a restart outcome it just published, and its ``last_result`` (request id + outcome)."""
+    state = (row or {}).get("state")
+    attrs = (row or {}).get("attrs") or {}
+    rid = attrs.get("request_id")
+    live = not attrs.get("dry_run")
+    last = (f"{attrs['last_rid']}: {attrs['last_outcome']}"
+            if attrs.get("last_rid") and attrs.get("last_outcome") else None)
+    return {"deploying": rid if state == "DEPLOYING" and rid else None,
+            "done": rid if state in RESTART_OUTCOMES and rid and live else None,
+            "last": last,
+            "last_rid": attrs.get("last_rid") if attrs.get("last_outcome") in RESTART_OUTCOMES and live else None}
+
+
+def restart_class(rule: str, verdict: str | None, tag: str | None) -> str | None:
+    """Ledger class of a Core restart (None for a network outage, which is not a restart)."""
+    if rule == "R7":
+        return None
+    if rule == "R4":
+        return "POWER_CUT"
+    if rule == "R1":
+        return "UPDATE"
+    if verdict == "FIRST_RUN":
+        return "INSTALL"
+    if rule == "R2":
+        return "PLANNED" if tag == "PLANNED" else "UNPLANNED_CLEAN"
+    return {"R3": "HOST_REBOOT", "R5": "HOST_UNEXPECTED", "R6": "UNCLEAN"}.get(rule, "UNKNOWN")
+
+
+LEDGER_CLASSES = ("PLANNED", "UPDATE", "INSTALL", "UNPLANNED_CLEAN", "UNCLEAN", "HOST_REBOOT", "HOST_UNEXPECTED",
+                  "POWER_CUT", "UNKNOWN")
+MTBF_CLASSES = frozenset({"UNCLEAN", "HOST_UNEXPECTED", "POWER_CUT"})
+
+
+def prune_ledger(ledger: list[dict], now: float) -> list[dict]:
+    """Keep 90 days, at most LEDGER_MAX rows, oldest first."""
+    keep = [e for e in ledger if isinstance(e, dict) and float(e.get("t") or 0) >= now - LEDGER_DAYS * 86400]
+    return sorted(keep, key=lambda e: float(e["t"]))[-LEDGER_MAX:]
+
+
+def ledger_stats(ledger: list[dict], now: float, since: float | None) -> dict:
+    """30/90-day counts by class and the mean time between unplanned failures (observed time / failures).
+
+    Unplanned failures are UNCLEAN, HOST_UNEXPECTED and POWER_CUT. UNPLANNED_CLEAN (a clean restart the
+    Deployer did not cause, e.g. from Settings) and UNKNOWN are counted but are not failures."""
+    out: dict[str, Any] = {}
+    for days in (30, 90):
+        rows = [e for e in ledger if float(e.get("t") or 0) >= now - days * 86400]
+        out[f"restarts_{days}d"] = {c: n for c in LEDGER_CLASSES
+                                    if (n := sum(1 for e in rows if e.get("c") == c))}
+    failures = [e for e in ledger if e.get("c") in MTBF_CLASSES
+                and float(e.get("t") or 0) >= now - LEDGER_DAYS * 86400]
+    observed = max(0.0, min(LEDGER_DAYS * 86400.0, now - (since if since is not None else now)))
+    out["observed_days"] = round(observed / 86400, 1)
+    out["unplanned_failures_90d"] = len(failures)
+    out["mtbf_unplanned_days"] = round(observed / 86400 / len(failures), 1) if failures else None
+    out["last_restart_class"] = ledger[-1].get("c") if ledger else None
+    return out
+
+
+def ledger_feed(ledger: list[dict], now: float, since: float | None) -> str:
+    """Plain text for the #152 / #163 stability ledger (the owner or an AI session pastes it; nothing is posted)."""
+    st = ledger_stats(ledger, now, since)
+
+    def counts(d: dict) -> str:
+        return ", ".join(f"{k} {v}" for k, v in d.items()) or "none"
+    mtbf = (f"{st['mtbf_unplanned_days']} days" if st["mtbf_unplanned_days"] is not None
+            else f"no unplanned failure in {st['observed_days']} days observed")
+    lines = [f"House Brain Maintenance restart ledger ({time.strftime('%Y-%m-%d', time.gmtime(now))} UTC; "
+             f"observed {st['observed_days']} of {LEDGER_DAYS} days)",
+             f"30 d: {counts(st['restarts_30d'])}", f"90 d: {counts(st['restarts_90d'])}",
+             f"Unplanned failures (UNCLEAN, HOST_UNEXPECTED, POWER_CUT) 90 d: {st['unplanned_failures_90d']}; "
+             f"mean time between them: {mtbf}"]
+    for e in ledger[-10:][::-1]:
+        mesh = ", ".join(f"{k} {v if v is not None else '>600'} s" for k, v in (e.get("m") or {}).items())
+        lines.append(f"- {time.strftime('%Y-%m-%d %H:%M', time.gmtime(float(e['t'])))}Z {e.get('c')} "
+                     f"{e.get('r')} verdict {e.get('v') or '-'} down {int(e.get('d') or 0)} s"
+                     + (f" request {e['q']}" if e.get("q") else "") + (f" mesh: {mesh}" if mesh else ""))
+    return "\n".join(lines)
 
 
 def error_lines(text: str, *, before: float | None = None, limit: int = MAX_LOG_LINES) -> list[str]:
@@ -217,7 +354,7 @@ def push_text(inc: dict) -> tuple[str, str]:
     return title, f"{head} {cause}{tail} Open Maintenance for details."[:900]
 
 
-CHECK_LABELS = {c.check_id: c.label for c in (*CHECKS, UPS_CHECK)}
+CHECK_LABELS = {c.check_id: c.label for c in (*CHECKS, UPS_CHECK, *MESH_CHECKS)}
 
 
 def sign(key: str, body: bytes) -> str:
@@ -259,6 +396,11 @@ class Recovery:
         self._boot: str | None = None
         self._os_now: str | None = None
         self._down_count = 0
+        self._streak_opened = True
+        self._dep_mem: dict | None = None      # 0.5.2: last Deployer status read while Core was up
+        self._mesh_base_try = 0.0
+        self._ledger_view: tuple[list[dict], float | None] = (json.loads(json.dumps(self.st["ledger"])),
+                                                              self.st.get("ledger_since"))
 
     # -- persistence -------------------------------------------------------------
     def _load(self) -> dict:
@@ -272,6 +414,13 @@ class Recovery:
         st.setdefault("last_core_version", None)
         st.setdefault("last_os_version", None)
         st.setdefault("ups_ob_since", None)
+        # 0.5.2
+        st.setdefault("return_seen_at", None)   # first time Core answered after the outage (verdict wait)
+        st.setdefault("dep_at_down", None)      # Deployer status as last read before the outage
+        st.setdefault("mesh_run", None)         # mesh rejoin measurement of the latest Core return
+        st.setdefault("mesh_baseline", None)    # mesh entities unavailable before the restart
+        st.setdefault("ledger", [])
+        st.setdefault("ledger_since", None)
         return st
 
     def _save(self) -> None:
@@ -283,6 +432,7 @@ class Recovery:
             self._saved = text
         with self._ack_lock:
             self._view = json.loads(json.dumps(self.st["incidents"]))
+            self._ledger_view = (json.loads(json.dumps(self.st["ledger"])), self.st.get("ledger_since"))
 
     def heartbeat(self) -> dict:
         return self.j.load_doc(DOC_HEART, {})
@@ -355,20 +505,30 @@ class Recovery:
         with self.lock:
             now = self.clock()
             self._detect(now)
+            if self.st.get("ledger_since") is None:
+                self.st["ledger_since"] = now           # 0.5.2: MTBF counts observed time from here
             alive = self.ha.core_alive()
             if not alive:
                 self._down_count += 1
+                if self._down_count == 1:
+                    # Only a streak that opened the outage may be forgiven as a one-check blip.
+                    self._streak_opened = self.st["core_down_since"] is None
                 if self.st["core_down_since"] is None:
                     self.st["core_down_since"] = now
+                    self.st["dep_at_down"] = self._dep_before(now)
                     self.j.audit("recovery", "CORE_DOWN_SEEN")
+                # Core went away again while the report waited for this start's verdict: wait anew.
+                self.st["return_seen_at"] = None
             else:
                 if self._down_count == 1 and self.st["core_down_since"] is not None \
-                        and not self.st.get("startup_pending"):
+                        and not self.st.get("startup_pending") and self._streak_opened:
                     # One missed check is a slow answer, not an outage.
                     self.st["core_down_since"] = None
                     self.j.audit("recovery", "CORE_BLIP_IGNORED")
                 self._down_count = 0
                 self._core_up(now)
+                self._mesh_tick(now)
+                self._deployer_tick(now)
                 self._network(now)
             self._advance(now)
             self._deliver(now)
@@ -388,9 +548,27 @@ class Recovery:
             version = None
         pending = self.st.get("startup_pending")
         down = self.st.get("core_down_since")
+        if not pending and down is None:
+            if version:
+                self.st["last_core_version"] = version
+            return
+        # 0.5.2 race fix: Core answers /core/api/ before its start-marker automation has run, so the sensor
+        # may still hold the previous restart's verdict. Use it only once it was written for this start;
+        # wait at most FORENSICS_WAIT, then say the verdict is not available (never a stale one).
+        start = float(pending["start"]) if pending else float(down)
+        first = self.st.get("return_seen_at")
+        if first is None:
+            first = self.st["return_seen_at"] = now
+            self._mesh_begin(first)
+            self.j.audit("recovery", "CORE_BACK_SEEN")
+        row = self._states([FORENSICS]).get(FORENSICS)
+        verdict = fresh_verdict(row, start)
+        if verdict is None and now - first < FORENSICS_WAIT * self.s.scale:
+            return                                   # not trusted yet: look again next tick
+        shown = verdict if verdict is not None else ("LATE" if row is not None else None)
+        ready = (row or {}).get("attrs", {}).get("stop_to_ready_seconds") if verdict else None
         if pending:
-            forensics = self._forensics()
-            rule = classify_host_return(ups_on_battery=pending.get("ups_on_battery"), forensics=forensics,
+            rule = classify_host_return(ups_on_battery=pending.get("ups_on_battery"), forensics=verdict,
                                         os_before=pending.get("os_before"), os_after=self._os_now)
             evidence = ["The Home Assistant host restarted (its boot time changed)."]
             if pending.get("ups_on_battery"):
@@ -405,23 +583,28 @@ class Recovery:
                                 + ", ".join(str(c) for c in pending["net_before"]) + ".")
             if rule == "R1":
                 evidence.append(f"Operating system {pending.get('os_before')} → {self._os_now}.")
-            evidence.append(self._forensics_line(forensics))
+            evidence.append(self._forensics_line(shown))
+            if isinstance(ready, int):
+                evidence.append(f"Home Assistant was ready {ready} s after it stopped (Connection Forensics).")
             logs = self._logs(previous_boot=True) if rule in ("R5", "R4") else []
-            self._new_incident("host_down", pending["start"], now, rule, evidence, logs,
-                               ups_check=bool(pending.get("ups_on_battery")))
+            self._new_incident("host_down", pending["start"], first, rule, evidence, logs,
+                               ups_check=bool(pending.get("ups_on_battery")), verdict=verdict)
             self.st["startup_pending"] = None
             self.st["core_down_since"] = None
-        elif down is not None:
+        else:
             before = self.st.get("last_core_version")
-            forensics = self._forensics()
-            rule = classify_core_return(version_before=before, version_after=version, forensics=forensics)
+            rule = classify_core_return(version_before=before, version_after=version, forensics=verdict)
             evidence = ["Home Assistant Core stopped answering while the host kept running."]
             if rule == "R1":
                 evidence.append(f"Home Assistant {before} → {version}.")
-            evidence.append(self._forensics_line(forensics))
+            evidence.append(self._forensics_line(shown))
+            if isinstance(ready, int):
+                evidence.append(f"Home Assistant was ready {ready} s after it stopped (Connection Forensics).")
             logs = self._logs(previous_boot=False, before=down) if rule == "R6" else []
-            self._new_incident("ha_down", down, now, rule, evidence, logs, ups_check=False)
+            self._new_incident("ha_down", down, first, rule, evidence, logs, ups_check=False, verdict=verdict)
             self.st["core_down_since"] = None
+        self.st["return_seen_at"] = None
+        self.st["dep_at_down"] = None
         if version:
             self.st["last_core_version"] = version
 
@@ -434,8 +617,133 @@ class Recovery:
     def _forensics_line(verdict: str | None) -> str:
         return {"CLEAN": "Connection Forensics: Home Assistant shut down cleanly first.",
                 "UNCLEAN": "Connection Forensics: no clean shutdown ran first.",
-                "FIRST_RUN": "Connection Forensics was just installed; no verdict yet."}.get(
+                "FIRST_RUN": "Connection Forensics was just installed: this restart was its install, so there "
+                             "is no verdict for it.",
+                "LATE": "Connection Forensics verdict not yet available for this restart (it had not written "
+                        "one 5 minutes after Home Assistant answered), so planned and unplanned look the same."}.get(
             verdict or "", "Connection Forensics is not installed, so planned and unplanned look the same.")
+
+    # -- 0.5.2: Deployer join (PLANNED vs UNPLANNED_CLEAN) -----------------------------------------
+    def _dep_before(self, now: float) -> dict:
+        """The Deployer status as last read just before the outage (only a read this recent counts)."""
+        mem = self._dep_mem
+        if not mem or now - float(mem.get("at") or 0) > DEPLOYER_LOOKBACK * self.s.scale:
+            return {"seen": False, "deploying": None, "last": None}
+        return {"seen": True, "deploying": mem.get("deploying"), "last": mem.get("last")}
+
+    def _deployer_tick(self, now: float) -> None:
+        """One read of the Deployer status per tick: remembered while no outage is open, and joined to a
+        CLEAN restart for DEPLOYER_JOIN_WINDOW after Core is back."""
+        open_outage = self.st.get("core_down_since") is not None or bool(self.st.get("startup_pending"))
+        joins = [i for i in self.st["incidents"][:3] if i.get("join_until") and not i.get("tag_final")]
+        if open_outage and not joins:
+            return
+        sig = deployer_signal(self._states([DEPLOYER]).get(DEPLOYER))
+        if not open_outage:
+            self._dep_mem = {**sig, "at": now}
+        for inc in joins:
+            if now > float(inc["join_until"]):
+                inc["tag_final"] = True
+                self.j.audit("recovery", "DEPLOYER_JOIN_CLOSED", incident=inc["id"], tag=inc.get("tag"))
+                continue
+            before = inc.get("dep_before") or {}
+            rid = sig["done"]
+            if rid is None and sig["last_rid"] and before.get("seen") and sig["last"] != before.get("last"):
+                rid = sig["last_rid"]                  # a new restart outcome appeared across the outage
+            if rid is None:
+                continue
+            if inc.get("tag") == "PLANNED" and inc.get("request_id") not in (None, rid):
+                continue                               # another request's result; keep waiting for ours
+            if inc.get("tag") != "PLANNED":
+                inc["evidence"] = (inc["evidence"] + [I.scrub(
+                    f"House Brain Deployer request {rid} restarted Home Assistant (planned).", 300)])[:8]
+            else:
+                inc["evidence"] = (inc["evidence"] + [I.scrub(
+                    f"House Brain Deployer request {rid} finished after the restart.", 300)])[:8]
+            inc.update(tag="PLANNED", request_id=rid, tag_final=True)
+            self._ledger_put(inc)
+            self.j.audit("recovery", "DEPLOYER_JOINED", incident=inc["id"], request=rid)
+
+    # -- 0.5.2: mesh rejoin ------------------------------------------------------------------------
+    def _mesh_begin(self, first: float) -> None:
+        self.st["mesh_run"] = {"since": first, "res": {}, "done": False, "read": False}
+
+    def _mesh_read(self) -> dict | None:
+        try:
+            counts = self.ha.mesh_counts()
+        except Exception:  # noqa: BLE001 - Core still starting or the read failed: try again next tick
+            return None
+        return counts if isinstance(counts, dict) else None
+
+    def _mesh_tick(self, now: float) -> None:
+        run = self.st.get("mesh_run")
+        open_outage = self.st.get("core_down_since") is not None or bool(self.st.get("startup_pending"))
+        if run and not run["done"]:
+            elapsed = now - float(run["since"])
+            counts = self._mesh_read()
+            if counts is not None:
+                run["read"] = True
+                base = ((self.st.get("mesh_baseline") or {}).get("counts") or {})
+                for plat in sorted(counts):
+                    c = counts[plat]
+                    r = run["res"].setdefault(plat, {"seconds": None, "baseline": int(
+                        (base.get(plat) or {}).get("unavailable") or 0)})
+                    r.update(total=int(c.get("total") or 0), unavailable=int(c.get("unavailable") or 0))
+                    if r["seconds"] is None and r["unavailable"] <= r["baseline"]:
+                        r["seconds"] = int(round(elapsed / self.s.scale))
+            all_back = run["read"] and all(r["seconds"] is not None for r in run["res"].values())
+            if all_back or elapsed >= MESH_WINDOW * self.s.scale:
+                run["done"] = True
+                self.j.audit("recovery", "MESH_REJOIN", **{p: r["seconds"] for p, r in run["res"].items()})
+            return
+        if open_outage or now - self._mesh_base_try < MESH_RETRY * self.s.scale:
+            return
+        base = self.st.get("mesh_baseline") or {}
+        if now - float(base.get("at") or 0) < MESH_BASELINE_EVERY * self.s.scale:
+            return
+        self._mesh_base_try = now
+        counts = self._mesh_read()
+        if counts is not None:
+            self.st["mesh_baseline"] = {"at": now, "counts": {
+                p: {"unavailable": int(c.get("unavailable") or 0), "total": int(c.get("total") or 0)}
+                for p, c in counts.items()}}
+
+    def _mesh_checks(self, inc: dict) -> dict[str, str]:
+        mesh = inc.get("mesh") or {}
+        out = {}
+        for c in MESH_CHECKS:
+            r = (mesh.get("res") or {}).get(MESH_PLATFORM[c.check_id])
+            if r is None:
+                continue                                 # this mesh is not used here
+            out[c.check_id] = (RECOVERED if r.get("seconds") is not None
+                               else ATTENTION if mesh.get("done") else PENDING)
+        return out
+
+    # -- 0.5.2: restart ledger ---------------------------------------------------------------------
+    def _ledger_put(self, inc: dict) -> None:
+        klass = restart_class(inc["rule"], inc.get("verdict"), inc.get("tag"))
+        if klass is None:
+            return
+        row = {"id": inc["id"], "t": int(inc["end"]), "d": int(inc["end"] - inc["start"]), "c": klass,
+               "r": inc["rule"], "v": inc.get("verdict"), "q": inc.get("request_id")}
+        mesh = inc.get("mesh") or {}
+        if mesh.get("done"):
+            row["m"] = {p: r.get("seconds") for p, r in (mesh.get("res") or {}).items()}
+        ledger = [e for e in self.st["ledger"] if e.get("id") != inc["id"]] + [row]
+        self.st["ledger"] = prune_ledger(ledger, float(inc["end"]))
+
+    def ledger_view(self) -> dict:
+        """Page / status entity view (never waits for a running tick)."""
+        with self._ack_lock:
+            ledger, since = json.loads(json.dumps(self._ledger_view[0])), self._ledger_view[1]
+        now = self.clock()
+        return {**ledger_stats(ledger, now, since), "feed": ledger_feed(ledger, now, since)}
+
+    def status_attrs(self) -> dict:
+        """Attributes added to the App's status entity (counts only; the feed text stays on the page)."""
+        view = self.ledger_view()
+        return {k: view[k] for k in ("restarts_30d", "restarts_90d", "unplanned_failures_90d",
+                                     "mtbf_unplanned_days", "last_restart_class")}
 
     def _logs(self, *, previous_boot: bool, before: float | None = None) -> list[str]:
         try:
@@ -485,30 +793,55 @@ class Recovery:
 
     # -- incidents ---------------------------------------------------------------------
     def _new_incident(self, kind: str, start: float, end: float, rule: str, evidence: list[str],
-                      logs: list[str], *, ups_check: bool) -> None:
+                      logs: list[str], *, ups_check: bool, verdict: str | None = None) -> None:
         inc = {"id": time.strftime("%Y%m%d-%H%M%S", time.gmtime(end)), "kind": kind,
                "start": float(start), "end": float(end), "rule": rule,
                "cause": RULE_TEXT[rule], "confidence": CONFIDENCE[rule],
                "evidence": [I.scrub(e, 300) for e in evidence if e][:8],
                "steps": list(RULE_STEPS[rule]), "log_lines": logs[:MAX_LOG_LINES],
-               "checks": {}, "ups_check": ups_check, "notify": notify_worthy(rule, end - start),
+               "checks": {}, "ups_check": ups_check, "notify": notify_worthy(rule, end - start, verdict),
                "pushed": False, "push_failed_at": None, "first_push_try": None, "p0_pushed": False,
-               "acked": False, "local_note_done": False}
+               "acked": False, "local_note_done": False, "verdict": verdict, "tag": None, "request_id": None}
+        if kind != "network":
+            # 0.5.2: PLANNED vs UNPLANNED_CLEAN for a clean Core restart; UNCLEAN stays UNCLEAN.
+            if rule == "R2":
+                before = self.st.get("dep_at_down") or {"seen": False}
+                inc.update(dep_before=before, tag_final=False,
+                           join_until=float(end) + DEPLOYER_JOIN_WINDOW * self.s.scale)
+                if before.get("deploying"):
+                    inc.update(tag="PLANNED", request_id=before["deploying"])
+                    inc["evidence"] = (inc["evidence"] + [I.scrub(
+                        f"House Brain Deployer was installing request {before['deploying']} when Home Assistant "
+                        "went down (planned restart).", 300)])[:8]
+                else:
+                    inc["tag"] = "UNPLANNED_CLEAN"
+            elif rule == "R6":
+                inc["tag"] = "UNCLEAN"
+            run = self.st.get("mesh_run") or {}
+            if run.get("since") == float(end):
+                inc["mesh"] = json.loads(json.dumps(run))
+            self._ledger_put(inc)
         self.st["incidents"] = ([inc] + self.st["incidents"])[:MAX_INCIDENTS]
         self.j.audit("recovery", "INCIDENT", kind=kind, rule=rule, duration=int(end - start),
-                     notify=inc["notify"])
+                     notify=inc["notify"], verdict=verdict, tag=inc["tag"])
 
     def _checks_for(self, inc: dict) -> tuple[Check, ...]:
         return (*CHECKS, UPS_CHECK) if inc.get("ups_check") else CHECKS
 
     def _advance(self, now: float) -> None:
+        run = self.st.get("mesh_run") or {}
         for inc in self.st["incidents"][:3]:
+            if inc.get("mesh") and not inc["mesh"].get("done") and run.get("since") == inc["mesh"].get("since"):
+                inc["mesh"] = json.loads(json.dumps(run))            # 0.5.2: latest mesh rejoin reading
+                if run.get("done"):
+                    self._ledger_put(inc)
             since = now - inc["end"]
             if since > CHECK_WINDOW * self.s.scale and inc["checks"]:
                 continue
             checks = self._checks_for(inc)
             states = self._states({e for c in checks for e in c.entities})
             inc["checks"] = {c.check_id: eval_check(c, states, since / self.s.scale) for c in checks}
+            inc["checks"].update(self._mesh_checks(inc))
 
     # -- delivery ----------------------------------------------------------------------
     def _wan_down(self) -> bool:

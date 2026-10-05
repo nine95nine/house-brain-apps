@@ -109,21 +109,55 @@ def _when(ts: float) -> str:
     return f"{time.strftime('%a %b %d', lt)} {lt.tm_hour % 12 or 12}:{lt.tm_min:02d} {'am' if lt.tm_hour < 12 else 'pm'}"
 
 
-def render_recovery(incidents: list[dict], nonce: str, action: str, labels: dict[str, str]) -> str:
+MESH_IDS = {"MESH_ZHA": "zha", "MESH_ZWAVE": "zwave_js", "MESH_MATTER": "matter"}
+
+
+def _mesh_note(inc: dict, check_id: str) -> str:
+    """0.5.2: "after 84 s" or "3 still unavailable (1 before the restart)" for a mesh check."""
+    r = ((inc.get("mesh") or {}).get("res") or {}).get(MESH_IDS.get(check_id, ""))
+    if not r:
+        return ""
+    if r.get("seconds") is not None:
+        return f" (after {r['seconds']} s)"
+    return f" ({r.get('unavailable')} still unavailable, {r.get('baseline')} before the restart)"
+
+
+def render_ledger(view: dict | None) -> str:
+    """0.5.2: restart ledger (30/90-day counts by class, mean time between unplanned failures, feed text)."""
+    if not view:
+        return ""
+    e = html.escape
+
+    def counts(d: dict) -> str:
+        return ", ".join(f"{k} {v}" for k, v in d.items()) or "none"
+    mtbf = (f"{view['mtbf_unplanned_days']} days" if view.get("mtbf_unplanned_days") is not None
+            else f"no unplanned failure in {view.get('observed_days')} days")
+    return (f'<p class="m"><b>Restarts</b> 30 d: {e(counts(view.get("restarts_30d") or {}))}; '
+            f'90 d: {e(counts(view.get("restarts_90d") or {}))}. Mean time between unplanned failures: '
+            f'{e(mtbf)}.</p><details><summary>Stability ledger text (#152 / #163)</summary><pre>'
+            f'{e(view.get("feed") or "")}</pre></details>')
+
+
+def render_recovery(incidents: list[dict], nonce: str, action: str, labels: dict[str, str],
+                    ledger: dict | None = None) -> str:
     """The Recovery Report card: latest incident in full, then one line per earlier incident."""
     if not incidents:
-        return '<h2>Recovery Report</h2><p class="m">No outages recorded yet.</p>'
+        return '<h2>Recovery Report</h2><p class="m">No outages recorded yet.</p>' + render_ledger(ledger)
     e = html.escape
     inc = incidents[0]
     mins = max(1, int(round((inc["end"] - inc["start"]) / 60)))
+    tag = inc.get("tag")
+    tag_text = (f"<br>{e(tag)}" + (f" (Deployer request {e(inc['request_id'])})" if inc.get("request_id") else "")
+                if tag else "")
     out = [f"<h2>Recovery Report</h2><p><b>{e(inc['cause'])}</b> ({e(inc['confidence'])} confidence)<br>"
-           f"{e(_when(inc['start']))} → {e(_when(inc['end']))} ({mins} min)</p>"]
+           f"{e(_when(inc['start']))} → {e(_when(inc['end']))} ({mins} min){tag_text}</p>"]
     if inc.get("evidence"):
         out.append("<ul>" + "".join(f"<li>{e(x)}</li>" for x in inc["evidence"]) + "</ul>")
     checks = inc.get("checks") or {}
     if checks:
         out.append("<p><b>Checklist</b></p><ul>" + "".join(
-            f"<li>{e(labels.get(k, k))}: {e(STATUS_TEXT.get(v, v))}</li>" for k, v in checks.items()) + "</ul>")
+            f"<li>{e(labels.get(k, k))}: {e(STATUS_TEXT.get(v, v))}{e(_mesh_note(inc, k))}</li>"
+            for k, v in checks.items()) + "</ul>")
     if inc.get("steps"):
         out.append("<p><b>What to do</b></p><ol>" + "".join(f"<li>{e(s)}</li>" for s in inc["steps"]) + "</ol>")
     if inc.get("log_lines"):
@@ -135,7 +169,9 @@ def render_recovery(incidents: list[dict], nonce: str, action: str, labels: dict
     if len(incidents) > 1:
         out.append('<p class="m">Earlier:</p><ul class="m">' + "".join(
             f"<li>{e(_when(i['start']))}: {e(i['cause'])} "
-            f"({max(1, int(round((i['end'] - i['start']) / 60)))} min)</li>" for i in incidents[1:]) + "</ul>")
+            f"({max(1, int(round((i['end'] - i['start']) / 60)))} min)"
+            + (f" {e(i['tag'])}" if i.get("tag") else "") + "</li>" for i in incidents[1:]) + "</ul>")
+    out.append(render_ledger(ledger))
     return "".join(out)
 
 
@@ -195,7 +231,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None):
                 return ""
             from .recovery import CHECK_LABELS
             incidents, nonce = recovery.snapshot()
-            return render_recovery(incidents, nonce, f"{self._base()}/recovery/ack", CHECK_LABELS)
+            ledger = recovery.ledger_view() if hasattr(recovery, "ledger_view") else None
+            return render_recovery(incidents, nonce, f"{self._base()}/recovery/ack", CHECK_LABELS, ledger)
 
         def do_GET(self):  # noqa: N802
             if not self._peer_ok():
