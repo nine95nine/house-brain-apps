@@ -91,6 +91,17 @@ UPNP_DIAGNOSES = {
 }
 UNSURE_DIAGNOSES = frozenset({"UPNP_UNCHECKED"})
 FULL_BACKUP_MAX_DAYS = 7
+# 0.5.1 (owner decision 2026-10-05 "All of the above"): re-login needed, liveness ping failing,
+# Apps stopped for a month, backup size jump.
+REAUTH_STEPS = ("Settings -> Devices & services: open it and follow 'Reconfigure' / 'Re-authenticate' to log in"
+                " again.",
+                "Usually after a password change, an expired login or a new account security setting.")
+LIVENESS_FAIL_SECONDS = 30 * 60
+STOPPED_APP_DAYS = 30
+BACKUP_SIZE_HISTORY = 5         # previous full backups compared against
+BACKUP_SMALLER = 0.5            # newest below half the usual size
+BACKUP_BIGGER = 2.0             # ... or above double the usual size
+BACKUP_BIGGER_MIN_GB = 1.0      # and at least this much bigger
 OFFSITE_MAX_DAYS = 7
 # Home Assistant backup agents that keep the copy on the Pi itself; every other agent (Home Assistant
 # Cloud, Google Drive, OneDrive, a network share mounted as hassio.<name>, ...) stores it elsewhere.
@@ -350,8 +361,11 @@ def network_summary(heard: list[dict] | None) -> dict:
 
 
 def from_entries(entries: list[dict], first_seen: dict[str, float], now: float,
-                 power_cycle_entity: str = "", heard: list[dict] | None = None) -> list[Finding]:
+                 power_cycle_entity: str = "", heard: list[dict] | None = None,
+                 reauth: frozenset[str] = frozenset()) -> list[Finding]:
+    """``reauth``: entry ids with a pending "log in again" flow (0.5.1); a reload cannot fix those."""
     out = []
+    seen_reauth = set()
     for e in entries:
         state = e.get("state")
         if e.get("disabled") or state not in ENTRY_PROBLEM_STATES:
@@ -385,8 +399,21 @@ def from_entries(entries: list[dict], first_seen: dict[str, float], now: float,
             title, steps = f"{known_title} ({name})", list(known_steps)
             action = action if keep_reload else None
             facts |= {"diagnosis": diagnosis} | network_summary(heard)
+        if e["entry_id"] in reauth:
+            seen_reauth.add(e["entry_id"])
+            title, steps, action = f"Needs you to log in again: {name}", list(REAUTH_STEPS), None
+            facts |= {"reauth": True}
         out.append(Finding(key, "integration", severity, title, detail=detail,
                            steps=tuple(steps), link=INTEGRATIONS_LINK, action=action, facts=facts))
+    by_id = {e["entry_id"]: e for e in entries}
+    for entry_id in sorted(reauth - seen_reauth):
+        e = by_id.get(entry_id)
+        if e is None or e.get("disabled"):
+            continue
+        name = f"{humanize(e.get('domain', ''))} ({e.get('title') or 'no name'})"
+        out.append(Finding(f"reauth:{entry_id}", "integration", WARNING, f"Needs you to log in again: {name}",
+                           steps=REAUTH_STEPS, link=INTEGRATIONS_LINK,
+                           facts={"domain": e.get("domain"), "reauth": True}))
     return out
 
 
@@ -434,8 +461,8 @@ def _parse(date: str) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def from_backups(backups: list[tuple[str, str]], now: float) -> list[Finding]:
-    full = [d for t, d in backups if t == "full"]
+def from_backups(backups: list[tuple], now: float) -> list[Finding]:
+    full = [row[1] for row in backups if row[0] == "full"]
     dates = [dt for dt in (_parse(d) for d in full) if dt]
     newest = max(dates).timestamp() if dates else None
     if newest is not None and now - newest < FULL_BACKUP_MAX_DAYS * 86400:
@@ -574,4 +601,68 @@ def from_disk_trend(samples: list[list[float]], now: float) -> list[Finding]:
                     link=SYSTEM_LINK,
                     facts={"free_gb": round(f1, 1), "gb_per_week": round(rate * 7, 2),
                            "days_left": int(days_left)})]
+
+
+# -- 0.5.1: backup size jump ---------------------------------------------------------------------
+def from_backup_size(backups: list[tuple]) -> list[Finding]:
+    """``backups``: ``(type, ISO date, size GB or None)``. Newest full backup against the median of the
+    previous ``BACKUP_SIZE_HISTORY`` full backups (at least 3 needed)."""
+    full = sorted(((dt.timestamp(), row[2]) for row in backups
+                   if row[0] == "full" and len(row) > 2 and isinstance(row[2], (int, float)) and row[2] > 0
+                   for dt in [_parse(row[1])] if dt), key=lambda x: x[0])
+    if len(full) < 4:
+        return []
+    newest = full[-1][1]
+    previous = sorted(size for _, size in full[-1 - BACKUP_SIZE_HISTORY:-1])
+    usual = previous[len(previous) // 2]
+    facts = {"newest_gb": round(newest, 2), "usual_gb": round(usual, 2)}
+    if newest < usual * BACKUP_SMALLER:
+        return [Finding("backup:size", "backup", WARNING,
+                        f"Latest full backup is much smaller than usual ({newest:.1f} GB, usually {usual:.1f} GB)",
+                        steps=("Settings -> System -> Backups: open the latest backup and check that Home Assistant,"
+                               " the history database and your Apps are included.",
+                               "If automatic backups changed what they include, set it back there."),
+                        link=BACKUPS_LINK, facts=facts)]
+    if newest > usual * BACKUP_BIGGER and newest - usual >= BACKUP_BIGGER_MIN_GB:
+        return [Finding("backup:size", "backup", WARNING,
+                        f"Latest full backup is much bigger than usual ({newest:.1f} GB, usually {usual:.1f} GB)",
+                        steps=("Usually the history database or an App's data grew fast; see the disk advice.",
+                               "Settings -> System -> Backups: open it to see which part grew."),
+                        link=BACKUPS_LINK, facts=facts)]
+    return []
+
+
+# -- 0.5.1: liveness ping failing --------------------------------------------------------------
+def from_liveness(doc: dict, now: float) -> list[Finding]:
+    """``doc``: the Recovery Report's ping state ``{"fail_since", "status", "detail"}`` (only when configured)."""
+    since = doc.get("fail_since")
+    if not isinstance(since, (int, float)) or now - since < LIVENESS_FAIL_SECONDS:
+        return []
+    status = doc.get("status")
+    blocked = status == 403
+    hours = (now - since) / 3600
+    when = f"{hours:.0f} hours" if hours >= 2 else f"{int((now - since) // 60)} minutes"
+    steps = (("Cloudflare is refusing the ping (403). Update this App if an update is offered; if it stays,"
+              " check the liveness Worker in the Cloudflare dashboard.",) if blocked else
+             ("Check the liveness Worker in the Cloudflare dashboard (Workers & Pages) is deployed.",
+              "If the internet is down, this clears by itself when it is back."))
+    return [Finding("liveness:ping", "liveness", WARNING,
+                    f"Outside 'home reachable' ping failing for {when}" + (f" (HTTP {status})" if status else ""),
+                    steps=steps, facts={"status": status, "detail": str(doc.get("detail") or "")[:120]})]
+
+
+# -- 0.5.1: Apps stopped for a month -----------------------------------------------------------
+def from_stopped_apps(stopped_since: dict[str, float], names: dict[str, str], now: float) -> list[Finding]:
+    out = []
+    for slug, since in sorted(stopped_since.items()):
+        days = int((now - since) // 86400)
+        if days >= STOPPED_APP_DAYS:
+            name = names.get(slug) or slug
+            out.append(Finding(f"stopped:{slug}", "app", WARNING, f"App stopped for {days} days: {name}",
+                               steps=("Still needed? If not: Settings -> Apps -> the App -> Uninstall frees its disk"
+                                      " space. Nothing is removed by this App.",
+                                      "Kept stopped on purpose (like a commissioning bridge)? Ignore this; it is"
+                                      " said only once."),
+                               link=APPS_LINK, announce_clear=False, facts={"stopped_days": days}))
+    return out
 

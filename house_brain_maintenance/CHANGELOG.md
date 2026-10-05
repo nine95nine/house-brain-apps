@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.1
+
+- **Fix (live 2026-10-05):** Cloudflare refused the Scout key switch with HTTP 403, because the App sent Python's
+  default "Python-urllib" user agent; the Scout and Observer always named themselves. Every request now says
+  `house-brain-maintenance/<version>`. This also fixes the Recovery Report's outside liveness ping. The key switch
+  had failed safely: the Scout kept its working key.
+- Owner decision 2026-10-05 ("All of the above"), all read-only:
+  - **Re-login needed**: an integration waiting for you to log in again (Tesla, Ring, Google, ecobee ...) is
+    named, with the steps. A reload is no longer offered for it, because it cannot help. One more read-only
+    WebSocket command, `config_entries/flow/progress`, keeps only the entry ids of pending re-login flows.
+  - **Liveness ping failing**: if the outside "home reachable" ping keeps failing for 30 minutes, you are told.
+  - **App stopped for 30+ days**: said once, with how to uninstall it if it is no longer needed. Nothing is
+    removed. Counting starts when 0.5.1 is installed.
+  - **Backup size jump**: the newest full backup is under half, or over double (and at least 1 GB more than),
+    the usual size of the previous ones.
+
 ## 0.5.0
 
 Owner decision 2026-10-04 ("all of the above"):

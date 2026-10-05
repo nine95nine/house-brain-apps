@@ -60,6 +60,7 @@ OUTAGE_CLASSES = frozenset({"ISP_OUTAGE", "UTILITY_POWER_OUTAGE", "LOCAL_LAN_FAU
 
 P0, P1, P2 = "P0", "P1", "P2"
 RECOVERED, PENDING, ATTENTION, NOT_OBSERVED = "RECOVERED", "PENDING", "ATTENTION", "NOT_OBSERVED"
+LIVENESS_DOC = "liveness"           # read by the problem watch (0.5.1)
 
 
 @dataclass(frozen=True)
@@ -606,6 +607,15 @@ class Recovery:
             if now - self._ping_failed_logged > 3600:
                 self._ping_failed_logged = now
                 LOG.info("liveness ping failed (logged at most hourly): %s", str(err)[:120])
+            # 0.5.1: the problem watch says so when the ping keeps failing (written on change and hourly).
+            doc = self.j.load_doc(LIVENESS_DOC, {})
+            if doc.get("fail_since") is None or doc.get("status") != err.status \
+                    or now - float(doc.get("written") or 0) >= 3600:
+                self.j.save_doc(LIVENESS_DOC, {"fail_since": doc.get("fail_since") or now, "status": err.status,
+                                               "detail": net.redact(str(err))[:120], "written": now})
+            return
+        if self.j.load_doc(LIVENESS_DOC, {}).get("fail_since") is not None:
+            self.j.save_doc(LIVENESS_DOC, {"fail_since": None, "ok_at": now, "written": now})
 
 
 def run_forever(rec: Recovery, should_stop: Callable[[], bool], period: float) -> None:

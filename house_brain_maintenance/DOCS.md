@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.5.0)
+## What it does (0.5.1)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -45,6 +45,15 @@ New in 0.5.0, all read-only:
 - **Disk filling too fast**: it notes the free space twice a day and warns when, at the current rate,
   the disk would be full within 30 days (urgent within 7). Home Assistant does not report the size of
   its history database itself; that database is the usual cause, and the advice says how to shrink it.
+
+New in 0.5.1, all read-only:
+- **Re-login needed**: an integration waiting for you to log in again is named, with the steps. No reload is
+  offered for it, because a reload cannot fix a login.
+- **Liveness ping failing**: when the optional outside "home reachable" ping has failed for 30 minutes.
+- **App stopped for 30+ days**: said once, so you can uninstall Apps you no longer need. Apps kept stopped on
+  purpose can be ignored, and nothing is removed.
+- **Backup size jump**: the newest full backup is much smaller than usual (something left out) or much bigger
+  (something growing fast).
 
 - Serious problems: one notification right away, with what to do.
 - Safe fixes (only for Apps set to start at boot; an App set to start by hand, such as the

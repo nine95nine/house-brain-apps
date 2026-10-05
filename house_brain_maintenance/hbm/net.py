@@ -11,6 +11,10 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _SECRETS: set[str] = set()
 
 
+from . import VERSION as _VERSION  # noqa: E402
+
+USER_AGENT = f"house-brain-maintenance/{_VERSION}"
+
 def register_secret(value: str | None) -> None:
     if value and len(value) >= 8:
         _SECRETS.add(value)
@@ -49,6 +53,9 @@ def request(method: str, url: str, headers: dict[str, str] | None = None,
             raw_body: bytes | None = None) -> tuple[int, Any]:
     data = raw_body
     hdrs = dict(headers or {})
+    # 0.5.1 (live 2026-10-05): Cloudflare answered 403 to Python's default "Python-urllib" user agent
+    # (the Broker key probe); the Scout and Observer always named themselves. Every request now does.
+    hdrs.setdefault("User-Agent", USER_AGENT)
     if body is not None and raw_body is None:
         data = json.dumps(body).encode("utf-8")
         hdrs.setdefault("Content-Type", "application/json")

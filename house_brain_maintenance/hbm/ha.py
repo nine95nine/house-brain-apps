@@ -32,6 +32,9 @@ boundary is this module:
   entity and device registries (projected to entity id, state, last change, device class, unit, platform,
   device id, device name and disabled flags; attributes and everything else are dropped at once).
 
+* 0.5.1 adds one more read-only Core WebSocket command, ``config_entries/flow/progress``, projected
+  to the entry ids of pending re-login ("reauth") flows only, and reads backup sizes from ``/backups``.
+
 The ``ha`` CLI is never used (#223 R4 ``apps``/``addons`` escape).
 """
 from __future__ import annotations
@@ -67,7 +70,9 @@ _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/li
                        "ssdp/subscribe_discovery",
                        # 0.5.0 read-only checks: backup locations, low batteries / offline devices.
                        "backup/info", "get_states", "config/entity_registry/list",
-                       "config/device_registry/list"})
+                       "config/device_registry/list",
+                       # 0.5.1: pending "log in again" flows (read-only list; never starts or answers one).
+                       "config_entries/flow/progress"})
 RE_ENTITY_ID = re.compile(r"^[a-z0-9_]{1,40}\.[a-z0-9_]{1,200}$")
 RE_DEVICE_ID = re.compile(r"^[A-Za-z0-9]{1,64}$")
 RE_AGENT_ID = re.compile(r"^[a-z0-9_]{1,40}\.[A-Za-z0-9_.-]{1,80}$")
@@ -444,8 +449,8 @@ class HomeAssistant:
             return float(total), float(free)
         return None
 
-    def backup_list(self) -> list[tuple[str, str]]:
-        """(type, ISO date) of every backup; names and contents are not kept.
+    def backup_list(self) -> list[tuple[str, str, float | None]]:
+        """(type, ISO date, size GB or None) of every backup; names and contents are not kept.
 
         A backup that includes Home Assistant itself counts as ``full``: Home Assistant's own
         automatic backups are stored by Supervisor as type ``partial`` with everything selected.
@@ -456,7 +461,11 @@ class HomeAssistant:
             if isinstance(row, dict) and isinstance(row.get("date"), str):
                 content = row.get("content") if isinstance(row.get("content"), dict) else {}
                 kind = "full" if row.get("type") == "full" or content.get("homeassistant") is True else "partial"
-                out.append((kind, row["date"][:40]))
+                size_b, size_mb = row.get("size_bytes"), row.get("size")
+                gb = (size_b / 1024 ** 3 if isinstance(size_b, int) and not isinstance(size_b, bool) and size_b > 0
+                      else size_mb / 1024 if isinstance(size_mb, (int, float)) and not isinstance(size_mb, bool)
+                      and size_mb > 0 else None)
+                out.append((kind, row["date"][:40], round(gb, 3) if gb else None))
         return out
 
     def app_boot(self, slug: str) -> str:
@@ -481,6 +490,10 @@ class HomeAssistant:
             repairs = sock.command({"type": "repairs/list_issues"})
             entries = sock.command({"type": "config_entries/get"})
             log = sock.command({"type": "system_log/list"})
+            try:
+                flows = sock.command({"type": "config_entries/flow/progress"})
+            except HAError:
+                flows = []                            # older Core / not allowed: no re-login information
         finally:
             sock.close()
         def s(v: Any, n: int) -> str:
@@ -509,7 +522,12 @@ class HomeAssistant:
                 out_log.append({"name": s(row.get("name"), 120), "level": row["level"], "message": s(first, 400),
                                 "source": source, "count": row.get("count") if isinstance(row.get("count"), int) else 1,
                                 "exception": "\n".join(str(exc).strip().splitlines()[-3:])[:600] if exc else ""})
-        return {"repairs": out_repairs, "entries": out_entries, "log": out_log}
+        reauth = sorted({str(f["context"]["entry_id"]) for f in (flows if isinstance(flows, list) else [])[:200]
+                         if isinstance(f, dict) and isinstance(f.get("context"), dict)
+                         and f["context"].get("source") == "reauth"
+                         and isinstance(f["context"].get("entry_id"), str)
+                         and RE_ENTRY_ID.fullmatch(f["context"]["entry_id"])})
+        return {"repairs": out_repairs, "entries": out_entries, "log": out_log, "reauth": reauth}
 
     def ssdp_heard(self, seconds: float = SSDP_READ_SECONDS) -> list[dict]:
         """What Home Assistant hears announced on the network right now (read-only).

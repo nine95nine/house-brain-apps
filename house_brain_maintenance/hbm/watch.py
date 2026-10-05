@@ -36,6 +36,7 @@ CONFIRM_POLLS = 2
 REDIAGNOSE_SECONDS = 6 * 3600
 MAX_PUSH_PER_CHECK = 3
 MAX_SUMMARY_ITEMS = 12
+LIVENESS_DOC = "liveness"           # written by the Recovery Report's ping (0.5.1)
 DEVICE_SWEEP_SECONDS = 6 * 3600
 DISK_SAMPLE_SECONDS = 12 * 3600
 DISK_SAMPLES_KEPT = 40
@@ -78,6 +79,7 @@ class Watcher:
         st.setdefault("last_summary_day", "")
         st.setdefault("disk_samples", [])
         st.setdefault("device_sweep", {"at": 0, "rows": []})
+        st.setdefault("stopped_since", {})
         return st
 
     # -- collection --------------------------------------------------------------------
@@ -85,11 +87,14 @@ class Watcher:
         """All current findings, plus the names of sources that could not be read this time."""
         findings: list[I.Finding] = []
         failed: list[str] = []
+        self.apps_now = None              # set below only when the App list was read this time
         names: dict[str, str] = {}
         own = self.ha.self_slug()
         try:
             apps = self.ha.installed_apps()
             names = {a.slug: a.name for a in apps}
+            self.apps_now = [(a.slug, a.state) for a in apps if a.slug not in (own, self.ha.scout)]
+            self.app_names = names
             rows = []
             for a in apps:
                 if a.slug in (own, self.ha.scout) or not RE_SLUG.fullmatch(a.slug):
@@ -103,12 +108,16 @@ class Watcher:
             failed.append("apps")
         self.disk_now = None
 
+        def backups() -> list[I.Finding]:
+            rows = self.ha.backup_list()
+            return I.from_backups(rows, now) + I.from_backup_size(rows)
+
         def disk() -> list[I.Finding]:
             self.disk_now = self.ha.disk()
             return I.from_disk(self.disk_now)
         for name, fn in (("supervisor", lambda: I.from_resolution(self.ha.resolution(), names)),
                          ("disk", disk),
-                         ("backups", lambda: I.from_backups(self.ha.backup_list(), now))):
+                         ("backups", backups)):
             try:
                 findings += fn()
             except (HAError, net.NetError, ForbiddenCall):
@@ -122,7 +131,8 @@ class Watcher:
                     heard = self.ha.ssdp_heard()
                 except Exception:  # noqa: BLE001 - unreadable: the finding says it was not checked
                     heard = None
-            findings += I.from_entries(core["entries"], first_seen, now, self.ha.power_cycle_entity, heard)
+            findings += I.from_entries(core["entries"], first_seen, now, self.ha.power_cycle_entity, heard,
+                                       frozenset(core.get("reauth") or ()))
             findings += I.from_log(core["log"])
         except Exception:  # noqa: BLE001 - Core may be restarting; try again next check
             failed.append("core")
@@ -162,6 +172,16 @@ class Watcher:
         first_seen = {k: v["first"] for k, v in st["open"].items()}
         findings, failed = self.collect(first_seen, now)
         findings += self._device_findings(st, now, failed)
+        findings += I.from_liveness(self.j.load_doc(LIVENESS_DOC, {}), now)
+        if getattr(self, "apps_now", None) is not None:
+            stopped = st["stopped_since"]
+            stopped_now = {slug for slug, state in self.apps_now if state == "stopped"}
+            for slug in list(stopped):
+                if slug not in stopped_now:
+                    del stopped[slug]
+            for slug in stopped_now:
+                stopped.setdefault(slug, now)
+            findings += I.from_stopped_apps(stopped, getattr(self, "app_names", {}), now)
         if "disk" not in failed:
             findings += self._disk_findings(st, now)
         current = {f.key: f for f in findings}
@@ -214,7 +234,8 @@ class Watcher:
     def _source_of(rec: dict) -> str:
         src = rec.get("source", "")
         return {"repairs": "core", "integration": "core", "log": "core", "app": "apps",
-                "disk": "disk", "backup": "backups", "offsite": "offsite", "devices": "devices"}.get(src, src)
+                "disk": "disk", "backup": "backups", "offsite": "offsite", "devices": "devices",
+                "liveness": "liveness"}.get(src, src)
 
     # -- telling the owner -------------------------------------------------------------
     def _summary_item(self, f: I.Finding) -> dict:
