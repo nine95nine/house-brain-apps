@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.1
+
+Fix at the source (owner decision 2026-10-06, Connection Forensics chat → Maintenance chat): `sensor.connected_clients`
+flipped by 1 about once a minute, around the clock (~2,500 history rows a day), hiding real phone and browser drops.
+
+- **Cause (confirmed from code):** the problem watch (every 3 min) opened, logged in and closed **two** fresh Core
+  websockets per check (`core_problems`, `backup_locations`) — about 960 sessions and ~1,900 state changes a day. The
+  Engineering Inspector adds one per 5 minutes (fixed separately in Inspector 0.2.4). The Recovery Report heartbeat
+  (60 s) uses REST and was not involved.
+- **Fix:** the periodic reads (`core_problems`, `backup_locations`, `device_health`, `mesh_counts`) share **one**
+  long-lived, authenticated Core socket. One user at a time (lock), so the watch, the Recovery Report and jobs never
+  interleave. A dropped socket (for example a Core restart) reconnects on the next read, with backoff from 1 s doubling
+  to 60 s, so a restarting Core is not hammered; an "error" answer from Core keeps the connection. Closed on App stop.
+  The network check's short subscription (`ssdp_heard`) and approval waits keep their own short sockets (rare).
+- **Unchanged:** the same reads, the same pinned WebSocket command allowlist, no new route, read-only.
+- **Expected:** `connected_clients` holds a constant +1 for this App instead of flipping every few minutes.
+
 ## 0.6.0
 
 Core/OS update gate (owner decision 2026-10-06, verbatim: "The Maintenance App would post a review whenever Core or OS

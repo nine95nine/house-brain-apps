@@ -71,6 +71,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -106,6 +107,9 @@ RE_ENTITY_ID = re.compile(r"^[a-z0-9_]{1,40}\.[a-z0-9_]{1,200}$")
 RE_DEVICE_ID = re.compile(r"^[A-Za-z0-9]{1,64}$")
 RE_AGENT_ID = re.compile(r"^[a-z0-9_]{1,40}\.[A-Za-z0-9_.-]{1,80}$")
 DEVICE_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024
+# 0.6.1 (owner 2026-10-06, "Fix at the source"): the periodic reads share ONE long-lived Core socket. Opening a
+# fresh socket per read made sensor.connected_clients flip about once a minute (~1,900 history rows a day).
+SHARED_WS_BACKOFF_MAX = 60.0
 
 # Recovery Report (0.3.0): exact entities it may read, nothing else (read-only).
 FORENSICS_ENTITY = "sensor.house_brain_connection_forensics_last_restart"
@@ -371,6 +375,12 @@ class HomeAssistant:
         self._fix: tuple[str, str] | None = None
         self._system: dict | None = None          # 0.6.0: {"kind", "version", "backup"} while open
         self._self_slug: str | None = None
+        # 0.6.1 shared Core socket (see shared_ws)
+        self._shared_lock = threading.Lock()
+        self._shared: CoreSocket | None = None
+        self._shared_backoff = 0.0
+        self._shared_retry_at = 0.0
+        self.shared_connects = 0
 
     # -- guard --------------------------------------------------------------
     def _guard(self, method: str, path: str, body: Any = None) -> None:
@@ -710,7 +720,7 @@ class HomeAssistant:
 
     def core_problems(self) -> dict:
         """Repairs issues, integration entries and system-log errors over one Core socket."""
-        sock = self.ws()
+        sock = self.shared_ws()
         try:
             repairs = sock.command({"type": "repairs/list_issues"})
             entries = sock.command({"type": "config_entries/get"})
@@ -935,7 +945,7 @@ class HomeAssistant:
     # -- 0.5.0 read-only checks ------------------------------------------------
     def backup_locations(self) -> list[dict]:
         """Every backup as ``{"date", "agents": [location ids], "ha": bool}`` (names and contents dropped)."""
-        sock = self.ws()
+        sock = self.shared_ws()
         try:
             info = sock.command({"type": "backup/info"})
         finally:
@@ -954,7 +964,7 @@ class HomeAssistant:
 
     def device_health(self) -> dict:
         """Projected states + entity/device registries for the low-battery / offline sweep (read-only)."""
-        sock = self.ws(max_size=DEVICE_SNAPSHOT_MAX_BYTES)
+        sock = self.shared_ws()
         try:
             states = sock.command({"type": "get_states"}, timeout=60)
             entities = sock.command({"type": "config/entity_registry/list"}, timeout=60)
@@ -991,7 +1001,7 @@ class HomeAssistant:
     def mesh_counts(self) -> dict[str, dict[str, int]]:
         """0.5.2: per mesh platform present (ZHA, Z-Wave JS, Matter), how many enabled entities it has and
         how many are unavailable or not loaded yet. Only these counts leave this method (read-only)."""
-        sock = self.ws(max_size=DEVICE_SNAPSHOT_MAX_BYTES)
+        sock = self.shared_ws()
         try:
             states = sock.command({"type": "get_states"}, timeout=60)
             entities = sock.command({"type": "config/entity_registry/list"}, timeout=60)
@@ -1015,6 +1025,67 @@ class HomeAssistant:
     # -- WebSocket ------------------------------------------------------------
     def ws(self, max_size: int = 4 * 1024 * 1024) -> CoreSocket:
         return CoreSocket(self.ws_url, self._token, self._ws_guard, max_size=max_size)
+
+    # -- 0.6.1: one shared, long-lived Core socket for the periodic reads ---------------------
+    def shared_ws(self) -> "SharedLease":
+        """Lease the shared socket (one user at a time). ``close()`` on the lease releases it; the
+        connection stays open. A transport failure drops it; the next lease reconnects, with backoff
+        (1 s doubling to SHARED_WS_BACKOFF_MAX) so a restarting Core is not hammered."""
+        self._shared_lock.acquire()
+        try:
+            if self._shared is None:
+                now = time.monotonic()
+                if now < self._shared_retry_at:
+                    raise HAError("WS_BACKOFF", f"{self._shared_retry_at - now:.0f}s")
+                try:
+                    self._shared = self.ws(max_size=DEVICE_SNAPSHOT_MAX_BYTES)
+                except Exception:
+                    self._shared_backoff = min(SHARED_WS_BACKOFF_MAX, max(1.0, self._shared_backoff * 2))
+                    self._shared_retry_at = now + self._shared_backoff
+                    raise
+                self._shared_backoff = 0.0
+                self.shared_connects += 1
+            return SharedLease(self)
+        except BaseException:
+            self._shared_lock.release()
+            raise
+
+    def _drop_shared(self) -> None:
+        sock, self._shared = self._shared, None
+        if sock is not None:
+            sock.close()
+
+    def close_shared_ws(self) -> None:
+        """Close the shared socket (App shutdown)."""
+        with self._shared_lock:
+            self._drop_shared()
+
+
+class SharedLease:
+    """One user's turn on the shared socket. Same ``command``/``close`` shape as ``CoreSocket``."""
+
+    def __init__(self, owner: HomeAssistant) -> None:
+        self._owner = owner
+        self._released = False
+
+    def command(self, msg: dict, timeout: float = 30.0) -> Any:
+        sock = self._owner._shared
+        if sock is None or self._released:
+            raise HAError("WS_LEASE")
+        try:
+            return sock.command(msg, timeout=timeout)
+        except HAError as err:
+            if err.code != "WS_COMMAND":      # Core answered "error": the connection itself is fine
+                self._owner._drop_shared()
+            raise
+        except Exception:
+            self._owner._drop_shared()
+            raise
+
+    def close(self) -> None:
+        if not self._released:
+            self._released = True
+            self._owner._shared_lock.release()
 
 
 class CoreSocket:

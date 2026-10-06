@@ -520,6 +520,7 @@ def main() -> int:
     service.stop = True
     if rec_thread is not None:
         rec_thread.join(timeout=10)   # writes the clean-stop heartbeat
+    service.ha.close_shared_ws()      # 0.6.1: the one shared Core socket
     LOG.info("stopped")
     return 0
 
