@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2-dev
+
+Live fix (2026-10-06): the kill-switch heartbeat now sends `User-Agent: house-brain-ai-access/0.1.2-dev`.
+Cloudflare's edge answers 403 to Python's default "Python-urllib" user agent before the perimeter Worker
+runs (the same edge refusal the Maintenance App fixed in 0.5.1 and the Inspector hit on its first export),
+so every heartbeat would have been refused. Nothing else changes: same options, same signature, same
+single URL, no redirects, no proxy.
+
 ## 0.1.1-dev
 
 Claude-only heartbeat mode (owner approval 2026-10-04 "Build it"). New option `claude_only` (default off).

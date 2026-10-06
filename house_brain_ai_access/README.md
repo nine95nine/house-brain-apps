@@ -1,6 +1,6 @@
 # House Brain AI Access
 
-**0.1.1-dev — internal HAOS App candidate. Not install-ready or live-qualified.** 0.1.1-dev adds the Claude-only heartbeat mode (`claude_only`, see DOCS.md).
+**0.1.2-dev — internal HAOS App candidate. Not install-ready or live-qualified.** 0.1.2-dev names itself to Cloudflare (live 403 fix, 2026-10-06). 0.1.1-dev added the Claude-only heartbeat mode (`claude_only`, see DOCS.md).
 
 The approved target is the existing Home Assistant Pi (aarch64). This is a separate,
 private, outbound-only connection for House Brain status, platform versions and

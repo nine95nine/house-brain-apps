@@ -313,11 +313,17 @@ class _NoHeartbeatRedirect(urlrequest.HTTPRedirectHandler):
         return None
 
 
+HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.2-dev'
+
+
 def post_heartbeat(url: str, key: str, heartbeat: dict[str, Any], *, opener: Any = None) -> int:
     """One signed POST. Returns the HTTP status (0 on transport failure). Never raises, never logs bodies."""
     body = json.dumps(heartbeat, sort_keys=True, separators=(',', ':')).encode('ascii')
+    # 0.1.2-dev (live 2026-10-06): Cloudflare's edge answers 403 to Python's default "Python-urllib" user agent
+    # before the Worker runs, so the App names itself (as the Maintenance App, Observer and Scout do).
     req = urlrequest.Request(url, data=body, method='POST', headers={
-        'content-type': 'application/json', 'X-HB-Heartbeat-Signature': sign_heartbeat(key, body)})
+        'content-type': 'application/json', 'X-HB-Heartbeat-Signature': sign_heartbeat(key, body),
+        'User-Agent': HEARTBEAT_USER_AGENT})
     if opener is None:
         # No proxy, no redirect, verified TLS: the key reaches only the exact configured Worker URL.
         opener = urlrequest.build_opener(urlrequest.ProxyHandler({}), _NoHeartbeatRedirect(),

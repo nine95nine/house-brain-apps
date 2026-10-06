@@ -1,5 +1,5 @@
 name: "House Brain AI Access"
-version: "0.1.1-dev"
+version: "0.1.2-dev"
 slug: "house_brain_ai_access"
 description: "Private outbound MCP tunnel for three bounded House Brain engineering reads. Internal candidate; not live-qualified."
 arch:
