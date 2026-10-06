@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.5.4)
+## What it does (0.6.0)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -28,6 +28,26 @@ bug-fix updates at night.
 
 If you tap Reject, that version is not offered again. If you do not answer, it asks again the
 next day.
+
+**Home Assistant Core and OS updates** (new in 0.6.0, owner decision 2026-10-06). On the same hourly check it
+reads whether Core or the OS has an update. It never installs one by itself, also not with `auto_low_risk`:
+
+1. **Review.** It posts one review on the tracking issue (`report_issue`): the kind (CORE or OS), from and to
+   version, how old the latest backup with Home Assistant is, the free disk, and "Release-note check: by the AI
+   in chat; approve only after it". The House Brain AI adds its release-note check there.
+2. **Ask.** About an hour later your phone asks, with the same facts. Approve needs Face ID. Reject means that
+   version is not offered again; no answer asks again the next day. Only one Core or OS update is asked at a
+   time (Core first), and never in the same run as an App update or the other one.
+3. **Full backup.** After Approve it makes a full backup (`hbm-pre-core-<version>` or `hbm-pre-os-<version>`)
+   and checks it exists. If there is not enough free disk, or the backup fails, it stops: nothing is updated.
+4. **Core:** it updates Core to exactly the approved version and checks that Core answers, reports that
+   version, runs normally (not safe mode) and that Home Assistant did not become unhealthy. If that fails, it
+   **restores Home Assistant only** from that backup by itself (not your Apps or folders), checks the old
+   version is back and reports ROLLED_BACK. If even the restore fails, it pauses all work and tells you.
+5. **OS:** it updates the OS to exactly the approved version; the Pi reboots. When this App starts again it
+   reads the OS version: the new one is DONE; the old one means the new OS could not boot and the Pi fell
+   back to the previous version by itself (A/B), reported as ROLLED_BACK. Core health is checked after the
+   reboot; there is no other automatic restore for the OS, so if Core is not healthy it pauses and tells you.
 
 **Problem alerts** (`issue_checks`, on by default). Every check it looks, without changing
 anything, at: Home Assistant **Repairs**, Supervisor health and its own suggested fixes, **Apps**
@@ -118,12 +138,17 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 
 ## What it can never do
 
-- Update Home Assistant Core, the OS or the Supervisor, or update itself.
+- Update Home Assistant Core or the OS without your Approve, automatically, or to another version than
+  the one you approved; update Core and the OS together.
+- Update the Supervisor, or update itself.
+- Reboot or shut down the Pi; the only reboot is the one the OS update you approved does.
 - Update more than one App at a time, or any App without a backup of it first.
 - Uninstall, stop or rebuild Apps, change other Apps' settings (except the Scout's key), make
-  full backups, or restore anything but the one App it just updated.
+  full backups except right before a Core/OS update you approved, or restore anything but the one App
+  it just updated or, after a failed Core update, Home Assistant only from the backup it just made.
 - Keep, log or report other Apps' settings or passwords (it reads only versions and states).
-- Touch files, restart Home Assistant, or control any device.
+- Touch files, restart Home Assistant (except as part of the Core update or restore above), or control
+  any device.
 
 ## Settings
 
@@ -136,7 +161,7 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 | `update_mode` | `ask` (default): every update asks you. `auto_low_risk`: bug-fix updates reviewed as low risk install at night without asking, but only after 3 updates you approved went well. Everything else still asks. |
 | `auto_window_start_hour`, `auto_window_end_hour` | The night window for automatic installs (local time, default 2 to 5). |
 | `auto_wait_days` | Waiting period for automatic installs (default 3 days, 0 to 30): a low-risk update installs by itself only after this App first saw it offered this long ago, so other people find a bad release first. While it waits, it is not asked. Updates you approve install when you approve them. |
-| `update_check_minutes` | How often it looks for updates (default 60). |
+| `update_check_minutes` | How often it looks for App, Core and OS updates (default 60). |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |
 | `scout_slug`, `observer_slug` | The Scout and Observer Apps. Leave the defaults. |

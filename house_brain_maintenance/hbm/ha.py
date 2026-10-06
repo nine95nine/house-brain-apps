@@ -9,7 +9,8 @@ boundary is this module:
 * App routes are pinned at construction to the two configured target slugs (the Scout and
   the Observer). There is no generic ``/addons`` listing, no uninstall, stop, rebuild,
   stdin, security, store-repository, host, OS, network or Docker route (0.5.4 exceptions, both read-only: the
-  House Brain App log read and the host boot list, below);
+  House Brain App log read and the host boot list, below; 0.6.0 exceptions: the read-only OS info and the
+  owner-approved Core/OS update inside ``system_target``, below);
 * other Apps' info replies are projected to a few named fields at once
   (``_project``); the raw reply, and with it any other option value, is never returned,
   logged or stored;
@@ -48,6 +49,20 @@ boundary is this module:
   Forensics sensor (``last_start``, ``stop_to_ready_seconds`` as integers), and ``mesh_counts``: the already
   allowed ``get_states`` and entity registry reads, reduced at once to per-mesh counts (ZHA, Z-Wave JS,
   Matter: entities and how many are unavailable). No new route kind and no write.
+
+* 0.6.0 (owner decision 2026-10-06, "Core/OS update gate"): two more read-only reads, ``/os/info`` (and the
+  already allowed ``/core/info``) projected to version, latest version and ``update_available``, and
+  ``/core/api/config`` projected to Core's run state and its safe/recovery-mode flags. Exactly one *mutating*
+  system target at a time, opened only after the owner's Approve: ``with ha.system_target(kind, version)`` for
+  ``kind`` ``core`` or ``os`` and the one approved version. Inside it, and nowhere else, the guard allows
+  ``POST /backups/new/full`` with the body exactly ``{"name": "hbm-pre-<kind>-<version>"}``, ``GET
+  /backups/<slug>/info``, and either ``POST /core/update`` with exactly ``{"version": <version>, "backup":
+  false}`` or ``POST /os/update`` with exactly ``{"version": <version>}``. Only for ``core``, and only for the
+  backup this App just made (pinned in the block), ``POST /backups/<slug>/restore/partial`` with exactly
+  ``{"homeassistant": true}`` (Home Assistant only; never Apps, folders or a full restore). Bodies are compared
+  whole in ``_guard`` before any I/O. Core and OS are never opened together, never inside an App update or a
+  fix. The Supervisor, this App, a host reboot or a shutdown are never routes; the only reboot is the one the
+  Supervisor performs as part of the OS update the owner approved.
 
 The ``ha`` CLI is never used (#223 R4 ``apps``/``addons`` escape).
 """
@@ -117,6 +132,9 @@ DRIVE_BACKUP_STATES = ("backed_up", "waiting", "error")
 RE_DEPLOYER_RID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}(?:#undo)?$")
 RE_DEPLOYER_LAST = re.compile(r"^([a-z0-9][a-z0-9-]{2,63}(?:#undo)?): ([A-Z][A-Z_]{1,39})$")
 MESH_PLATFORMS = ("zha", "zwave_js", "matter")
+# 0.6.0 Core/OS update gate (owner decision 2026-10-06)
+SYSTEM_KINDS = ("core", "os")
+CORE_STATES = ("NOT_RUNNING", "STARTING", "RUNNING", "STOPPING", "FINAL_WRITE", "STOPPED")
 
 
 def _whole(v: Any) -> int | None:
@@ -153,6 +171,8 @@ _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/addons/[a-z0-9][a-z0-9_]{0,99}/changelog"),
     ("GET", r"/store/addons/[a-z0-9][a-z0-9_]{0,99}"),
     ("GET", r"/core/info"),
+    ("GET", r"/os/info"),                                   # 0.6.0: OS version / update (read-only, projected)
+    ("GET", r"/core/api/config"),                           # 0.6.0: Core run state / safe mode (projected)
     ("GET", r"/resolution/info"),
     ("GET", r"/host/info"),
     ("GET", r"/backups"),
@@ -220,6 +240,40 @@ class AppDetail:
     privileges: tuple[tuple[str, str], ...]
     services: tuple[str, ...]      # e.g. ("mqtt:provide",)
     installed: bool
+
+
+@dataclass(frozen=True)
+class SystemInfo:
+    """Core or OS version facts (0.6.0). Nothing else from the reply is kept."""
+
+    kind: str
+    version: str | None
+    version_latest: str | None
+    update_available: bool
+
+
+def system_call_ok(kind: str, version: str, method: str, path: str, body: Any, backup: str | None) -> bool:
+    """True only for the exact system-update calls of one open ``system_target`` (bodies compared whole)."""
+    if method == "POST" and path == "/backups/new/full":
+        return body == {"name": f"hbm-pre-{kind}-{version}"}
+    if method == "GET" and re.fullmatch(r"/backups/[a-f0-9]{8,64}/info", path):
+        return body is None
+    if kind == "core" and method == "POST" and path == "/core/update":
+        return body == {"version": version, "backup": False} and body["backup"] is False
+    if kind == "os" and method == "POST" and path == "/os/update":
+        return body == {"version": version}
+    if kind == "core" and backup and method == "POST" and path == f"/backups/{backup}/restore/partial":
+        return body == {"homeassistant": True} and body["homeassistant"] is True
+    return False
+
+
+def app_backup_body_ok(slug: str, path: str, body: Any) -> bool:
+    """0.6.0 (tightened): an App-update backup or restore names that one App only, never Home Assistant."""
+    if not isinstance(body, dict) or body.get("addons") != [slug] or body.get("folders") != [] \
+            or body.get("homeassistant") is not False:
+        return False
+    keys = {"addons", "folders", "homeassistant"} | ({"name"} if path == "/backups/new/partial" else set())
+    return set(body) == keys
 
 
 def _detail(slug: str, data: Any, *, installed: bool) -> AppDetail:
@@ -315,10 +369,11 @@ class HomeAssistant:
         self._allow = tuple((m, re.compile(p)) for m, p in routes)
         self._target: str | None = None
         self._fix: tuple[str, str] | None = None
+        self._system: dict | None = None          # 0.6.0: {"kind", "version", "backup"} while open
         self._self_slug: str | None = None
 
     # -- guard --------------------------------------------------------------
-    def _guard(self, method: str, path: str) -> None:
+    def _guard(self, method: str, path: str, body: Any = None) -> None:
         for allowed_method, pattern in self._allow:
             if method == allowed_method and pattern.fullmatch(path):
                 if path.startswith("/addons/self/") or not path.startswith("/addons/"):
@@ -334,6 +389,9 @@ class HomeAssistant:
                                             ("GET", r"/backups/[a-f0-9]{8,64}/info"),
                                             ("POST", r"/backups/[a-f0-9]{8,64}/restore/partial")):
                 if method == allowed_method and re.fullmatch(pattern, path):
+                    if method == "POST" and path.startswith("/backups/") \
+                            and not app_backup_body_ok(target, path, body):
+                        break                     # 0.6.0: never Home Assistant, folders or another App here
                     return
         fix = self._fix
         if fix is not None and method == "POST":
@@ -347,6 +405,10 @@ class HomeAssistant:
             }[kind]
             if path in allowed:
                 return
+        system = self._system
+        if system is not None and system_call_ok(system["kind"], system["version"], method, path, body,
+                                                 system["backup"]):
+            return
         raise ForbiddenCall(f"{method} {path}")
 
     @contextmanager
@@ -366,7 +428,7 @@ class HomeAssistant:
             raise ForbiddenCall("fix entry id")
         elif kind == "power_cycle" and (not self.power_cycle_entity or ref != self.power_cycle_entity):
             raise ForbiddenCall("power-cycle target is not the configured switch")
-        if self._fix is not None or self._target is not None:
+        if self._fix is not None or self._target is not None or self._system is not None:
             raise ForbiddenCall("nested target")
         self._fix = (kind, ref)
         try:
@@ -379,13 +441,31 @@ class HomeAssistant:
         """Open the mutating update routes for exactly one App for the duration of a job."""
         if not RE_SLUG.fullmatch(slug) or slug == "self" or slug == self.self_slug():
             raise ForbiddenCall(f"update target {slug}")
-        if self._target is not None or self._fix is not None:
+        if self._target is not None or self._fix is not None or self._system is not None:
             raise ForbiddenCall("nested update target")
         self._target = slug
         try:
             yield
         finally:
             self._target = None
+
+    @contextmanager
+    def system_target(self, kind: str, version: str, backup: str | None = None):
+        """0.6.0: open the Core *or* OS update routes for one owner-approved version (see the module docstring).
+
+        ``backup`` pins the one backup a Core restore may use; ``backup_full`` sets it inside the block.
+        """
+        if kind not in SYSTEM_KINDS or not isinstance(version, str) or not RE_APP_VERSION.fullmatch(version):
+            raise ForbiddenCall(f"system target {str(kind)[:8]}")
+        if backup is not None and not RE_BACKUP_SLUG.fullmatch(backup):
+            raise ForbiddenCall("system backup slug")
+        if self._target is not None or self._fix is not None or self._system is not None:
+            raise ForbiddenCall("nested system target")
+        self._system = {"kind": kind, "version": version, "backup": backup}
+        try:
+            yield
+        finally:
+            self._system = None
 
     @staticmethod
     def _ws_guard(msg: dict) -> None:
@@ -398,7 +478,7 @@ class HomeAssistant:
     # -- HTTP ---------------------------------------------------------------
     def _call(self, method: str, path: str, body: Any = None, timeout: float = 30.0,
               raw: bool = False, query: str = "") -> Any:
-        self._guard(method, path)
+        self._guard(method, path, body)
         app_log = path.startswith("/addons/") and "/logs/boots/" in path
         allowed_query = r"\?verbose&no_colors&lines=[0-9]{1,5}" if app_log else r"\?lines=[0-9]{1,4}"
         if (query or app_log) and not re.fullmatch(allowed_query, query):
@@ -480,6 +560,28 @@ class HomeAssistant:
         if not isinstance(version, str) or not RE_APP_VERSION.fullmatch(version):
             raise HAError("CORE_VERSION")
         return version
+
+    def system_info(self, kind: str) -> SystemInfo:
+        """0.6.0: ``/core/info`` or ``/os/info`` projected to version, latest version and update flag."""
+        if kind not in SYSTEM_KINDS:
+            raise ForbiddenCall(f"system info {str(kind)[:8]}")
+        data = self._supervisor("GET", f"/{kind}/info")
+        def ver(key: str) -> str | None:
+            v = data.get(key) if isinstance(data, dict) else None
+            return v if isinstance(v, str) and RE_APP_VERSION.fullmatch(v) else None
+        return SystemInfo(kind=kind, version=ver("version"), version_latest=ver("version_latest"),
+                          update_available=isinstance(data, dict) and data.get("update_available") is True)
+
+    def core_state(self) -> dict:
+        """0.6.0: Core's run state and safe/recovery-mode flags (``/core/api/config``); everything else dropped."""
+        try:
+            data = self._call("GET", "/core/api/config", timeout=15)
+        except (net.NetError, HAError):
+            return {"state": "UNREACHABLE", "safe_mode": False, "recovery_mode": False}
+        data = data if isinstance(data, dict) else {}
+        state = data.get("state")
+        return {"state": state if state in CORE_STATES else "UNKNOWN",
+                "safe_mode": data.get("safe_mode") is True, "recovery_mode": data.get("recovery_mode") is True}
 
     def core_alive(self) -> bool:
         try:
@@ -730,6 +832,36 @@ class HomeAssistant:
     def restore_app(self, bslug: str, slug: str) -> None:
         self._supervisor("POST", f"/backups/{bslug}/restore/partial",
                          body={"addons": [slug], "folders": [], "homeassistant": False}, timeout=3600)
+
+    # -- 0.6.0 Core/OS update (only inside system_target, after the owner's Approve) ------------
+    def backup_full(self, name: str) -> str:
+        """A full backup; its slug becomes the only one a Core restore may use in this block."""
+        data = self._supervisor("POST", "/backups/new/full", body={"name": name}, timeout=7200)
+        bslug = data.get("slug") if isinstance(data, dict) else None
+        if not isinstance(bslug, str) or not RE_BACKUP_SLUG.fullmatch(bslug):
+            raise HAError("BACKUP_SLUG")
+        if self._system is not None:
+            self._system["backup"] = bslug
+        return bslug
+
+    def backup_facts(self, bslug: str) -> dict:
+        """``{"type", "homeassistant"}`` of one backup (type and its Core version); everything else dropped."""
+        data = self._supervisor("GET", f"/backups/{bslug}/info")
+        data = data if isinstance(data, dict) else {}
+        ha_version = data.get("homeassistant")
+        return {"type": data.get("type") if data.get("type") in ("full", "partial") else "unknown",
+                "homeassistant": ha_version if isinstance(ha_version, str) and RE_APP_VERSION.fullmatch(ha_version)
+                else None}
+
+    def update_core(self, version: str) -> None:
+        self._supervisor("POST", "/core/update", body={"version": version, "backup": False}, timeout=3600)
+
+    def update_os(self, version: str) -> None:
+        self._supervisor("POST", "/os/update", body={"version": version}, timeout=3600)
+
+    def restore_core(self, bslug: str) -> None:
+        """Home Assistant only (config and its Core version) from ``bslug``; never Apps or folders."""
+        self._supervisor("POST", f"/backups/{bslug}/restore/partial", body={"homeassistant": True}, timeout=3600)
 
     def set_scout_options(self, broker_url: str, inventory_key: str) -> None:
         net.register_secret(inventory_key)

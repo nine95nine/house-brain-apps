@@ -17,6 +17,7 @@ from .github import REQUESTS_DIR, RE_REPO, GitHub
 from .ha import RE_SLUG, HomeAssistant, RE_SWITCH
 from .jobs import DONE, FAILED_MANUAL, REFUSED, Engine, Result, Settings
 from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Updater
+from .system import JOBS as SYSTEM_JOBS, ROLLED_BACK, SystemPolicy, SystemUpdater
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
@@ -202,6 +203,7 @@ class Service:
         self.poll = poll
         self.engine: Engine | None = None
         self.updater: Updater | None = None
+        self.system: SystemUpdater | None = None
         self.watcher: Watcher | None = None
         self.health_scale = health_scale
         self.last_update_check = 0.0
@@ -254,6 +256,11 @@ class Service:
                             health_seconds=health, grace_seconds=min(45.0, health / 4), poll=self.poll,
                             exclude=frozenset(), wait_days=float(self.o.auto_wait_days))
             self.updater = Updater(self.ha, self.j, settings, policy)
+            # 0.6.0 Core/OS update gate: never automatic (update_mode does not apply), times scale in test mode.
+            scale = self.health_scale
+            self.system = SystemUpdater(self.ha, self.j, settings, SystemPolicy(
+                lead_seconds=3600.0 * scale, boot_seconds=900.0 * scale, settle_seconds=60.0 * scale,
+                reboot_seconds=3600.0 * scale, poll=self.poll), self.report_text)
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
                                 max_fix_asks_per_day=self.o.max_approval_requests_per_day,
                                 verify_seconds=60.0 * self.health_scale, poll=self.poll,
@@ -284,7 +291,7 @@ class Service:
                 self.j.audit(request_id, "REPORT_FAILED", error=str(err)[:200])
         if result.outcome == FAILED_MANUAL:
             self.j.freeze(request_id)
-        elif result.outcome in (DONE, RESTORED) and self.j.frozen_by() == request_id:
+        elif result.outcome in (DONE, RESTORED, ROLLED_BACK) and self.j.frozen_by() == request_id:
             self.j.clear_freeze()
             self.j.audit(request_id, "FREEZE_CLEARED_BY_RECOVERY")
 
@@ -305,6 +312,14 @@ class Service:
                 result = Result(out.result_outcome, out.reasons, out.facts)
                 self.finish(out.request_id, UPDATE_JOB, f"update:{txn.get('slug')}@{txn.get('to')}",
                             self.o.report_issue or None, result)
+                return
+            if txn.get("kind") == "system":
+                out = self.system.recover(txn)
+                if out is None:                       # OS update: waiting for the host to reboot
+                    self.status("SYSTEM_UPDATING", {"version": VERSION, "kind": txn.get("system"),
+                                                    "to": txn.get("to"), "request_id": txn.get("request_id")})
+                    return
+                self.finish_system(str(txn.get("system")), str(txn.get("to")), out)
                 return
             rid, job, result = self.engine.recover(txn)
             previous = self.j.ledger().get(self.key(rid), {}).get("digest")
@@ -353,12 +368,23 @@ class Service:
         self.ensure_engine()
         out = self.updater.cycle()
         if out is None:
+            # 0.6.0: Core/OS only when no App update ran in this cycle (never in the same run).
+            sys_out = self.system.cycle()
+            if sys_out is not None:
+                self.finish_system(str(sys_out.facts.get("kind", "")).lower(), str(sys_out.facts.get("to")), sys_out)
+                return
+            if (self.j.load_txn() or {}).get("kind") == "system":
+                return                                  # OS update started; the result follows after the reboot
             self.status("IDLE", {"version": VERSION, "dry_run": self.o.dry_run, "pending_updates": 0,
                                  **self._ledger_attrs()})
             return
         result = Result(out.result_outcome, out.reasons, out.facts)
         self.finish(out.request_id, UPDATE_JOB, f"update:{out.facts.get('slug')}@{out.facts.get('to')}",
                     self.o.report_issue or None, result)
+
+    def finish_system(self, kind: str, to: str, out) -> None:
+        self.finish(out.request_id, SYSTEM_JOBS.get(kind, "UPDATE_SYSTEM"), f"system:{kind}@{to}",
+                    self.o.report_issue or None, Result(out.result_outcome, out.reasons, out.facts))
 
     def poll_requests(self) -> bool:
         """Handle at most one new manifest request. True when one was handled."""

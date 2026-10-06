@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.0
+
+Core/OS update gate (owner decision 2026-10-06, verbatim: "The Maintenance App would post a review whenever Core or OS
+has an update; I add the release-note check. You tap Approve on your phone. The App then takes a full backup, updates
+(Core and OS separately, never automatically), checks health, and restores the backup on its own if Core fails. OS
+falls back to its previous version if it can't boot.").
+
+- **Detection (read-only):** `/core/info` and the new `/os/info`, on the App-update cadence, projected to version,
+  latest version and `update_available`. One review per offered version on the tracking issue (kind, from -> to,
+  latest backup age, free disk, "Release-note check: by the AI in chat; approve only after it"); the iPhone asks
+  about an hour later. Never automatic (`update_mode` does not apply); one Core/OS item at a time, Core first, never
+  in the same run as an App update or the other one. Reject is final for that version; no answer asks again in 24 h.
+- **After Approve:** free-disk check (twice the newest full backup, at least 2 GB), full backup
+  `hbm-pre-<core|os>-<version>` verified by `/backups/<slug>/info` (type full, current Core version), re-check that
+  the offer did not change, then `POST /core/update {"version": <to>, "backup": false}` or
+  `POST /os/update {"version": <to>}`.
+- **Core health:** Core answers, `/core/info` version is the new one, Core `/api/config` state `RUNNING` and not
+  safe/recovery mode, no new Supervisor unhealthy reason; within 15 minutes and still after 1 more minute. On failure:
+  `POST /backups/<that backup>/restore/partial {"homeassistant": true}` (Home Assistant only), old version verified ->
+  `ROLLED_BACK` and the version is not offered again; if the restore does not bring it back -> `FAILED_MANUAL`, all
+  work pauses (as for App updates).
+- **OS:** journalled before the call; the host reboots and the App resumes from the journal: new version -> `DONE`,
+  previous version -> `ROLLED_BACK` "OS fell back to previous version (RAUC A/B)"; Core health checked after the
+  reboot (no automatic restore for the OS; unhealthy Core or no reboot within an hour -> `FAILED_MANUAL`).
+- **Boundary:** new read-only routes `GET /os/info`, `GET /core/api/config` (projected); mutating routes only inside
+  `system_target(kind, version)` with exact bodies. App-update backup/restore bodies are now pinned too (that App only,
+  never Home Assistant). Still never the Supervisor, itself, a host reboot or shutdown.
+
 ## 0.5.4
 
 App log window (owner decision 2026-10-06, Connection Forensics chat → Maintenance chat). Read-only.
