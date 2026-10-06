@@ -96,6 +96,10 @@ RECOVERY_READ_ENTITIES = frozenset({
     "sensor.sense_51446_l1_voltage", "sensor.enphase_solar_power_now",
 })
 RECOVERY_NOTIFICATION_ID = "hbm_recovery_report"
+# 0.5.3: the Google Drive Backup App (sabeechen/hassio-google-drive-backup) copies backups to Google Drive
+# outside Home Assistant's own backup locations and reports it on this one entity (read-only, projected).
+DRIVE_BACKUP_ENTITY = "sensor.backup_state"
+DRIVE_BACKUP_STATES = ("backed_up", "waiting", "error")
 # 0.5.2: Deployer request ids (``hbd/manifest.py`` RE_REQUEST_ID, optionally the Undo suffix) and the
 # ``last_result`` text it publishes ("<request id>: <OUTCOME>").
 RE_DEPLOYER_RID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}(?:#undo)?$")
@@ -147,6 +151,7 @@ _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/core/logs"),
     ("GET", r"/core/logs/boots/-1"),
     ("GET", r"/core/api/states/(?:" + "|".join(re.escape(e) for e in sorted(RECOVERY_READ_ENTITIES)) + r")"),
+    ("GET", r"/core/api/states/" + re.escape(DRIVE_BACKUP_ENTITY)),
     ("POST", r"/core/api/services/persistent_notification/create"),
     ("POST", r"/core/api/services/persistent_notification/dismiss"),
 )
@@ -240,6 +245,18 @@ def _project(slug: str, data: Any, key_option: str | None) -> AppView:
         broker_url=url if isinstance(url, str) and len(url) <= 300 else None,
         key_fingerprint=fingerprint(key) if isinstance(key, str) and key else None,
     )
+
+
+def backup_content_kind(row: dict) -> str:
+    """Which parts a Supervisor backup holds: ``full``, or ``partial`` + Home Assistant / Apps / folders."""
+    if row.get("type") == "full":
+        return "full"
+    content = row.get("content") if isinstance(row.get("content"), dict) else {}
+    addons, folders = content.get("addons"), content.get("folders")
+    names = sorted(f for f in folders if isinstance(f, str) and re.fullmatch(r"[a-z_]{1,20}", f))[:8] \
+        if isinstance(folders, list) else []
+    return (f"partial:ha={content.get('homeassistant') is True}"
+            f":apps={isinstance(addons, list) and len(addons) > 0}:folders={'+'.join(names) or '-'}")
 
 
 def _ssdp_row(item: dict) -> dict:
@@ -491,11 +508,13 @@ class HomeAssistant:
             return float(total), float(free)
         return None
 
-    def backup_list(self) -> list[tuple[str, str, float | None]]:
-        """(type, ISO date, size GB or None) of every backup; names and contents are not kept.
+    def backup_list(self) -> list[tuple[str, str, float | None, str]]:
+        """(type, ISO date, size GB or None, content kind) of every backup; names and contents are not kept.
 
         A backup that includes Home Assistant itself counts as ``full``: Home Assistant's own
         automatic backups are stored by Supervisor as type ``partial`` with everything selected.
+        The content kind (0.5.3) groups backups that hold the same parts, so sizes are compared like
+        with like: a settings-only backup is never measured against one with every App and folder.
         """
         data = self._supervisor("GET", "/backups")
         out = []
@@ -507,8 +526,30 @@ class HomeAssistant:
                 gb = (size_b / 1024 ** 3 if isinstance(size_b, int) and not isinstance(size_b, bool) and size_b > 0
                       else size_mb / 1024 if isinstance(size_mb, (int, float)) and not isinstance(size_mb, bool)
                       and size_mb > 0 else None)
-                out.append((kind, row["date"][:40], round(gb, 3) if gb else None))
+                out.append((kind, row["date"][:40], round(gb, 3) if gb else None, backup_content_kind(row)))
         return out
+
+    def drive_backup_state(self) -> dict | None:
+        """The Google Drive Backup App's own status, or None when that App is not installed.
+
+        Kept: its state, the date of the newest backup that is in Google Drive and how many are there.
+        Backup names, sizes and the backup list are dropped.
+        """
+        try:
+            data = self._call("GET", f"/core/api/states/{DRIVE_BACKUP_ENTITY}", timeout=15)
+        except net.NetError as err:
+            if err.status == 404:
+                return None
+            raise
+        attrs = data.get("attributes") if isinstance(data, dict) else None
+        if not isinstance(attrs, dict) or "backups_in_google_drive" not in attrs:
+            return None                 # another integration's entity with that name, or the old snapshot mode
+        state = data.get("state")
+        count = attrs.get("backups_in_google_drive")
+        last = attrs.get("last_uploaded")
+        return {"state": state if state in DRIVE_BACKUP_STATES else "unknown",
+                "last_uploaded": last[:40] if isinstance(last, str) and last != "Never" else None,
+                "in_drive": count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None}
 
     def app_boot(self, slug: str) -> str:
         """``auto`` only when the App starts at boot and is not ``manual_only``; anything else is manual."""

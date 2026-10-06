@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from . import approval, net
 from .ha import AppView, HAError, HomeAssistant, fingerprint
 from .journal import Journal
-from .manifest import ROTATE_SCOUT_KEY, RUN_SCOUT_ONCE, Manifest
+from .manifest import CHECK_BROKER, ROTATE_SCOUT_KEY, RUN_SCOUT_ONCE, Manifest
 from .web import ApprovalBoard
 
 DONE = "DONE"
@@ -38,6 +38,8 @@ FAILED_MANUAL = "FAILED_MANUAL"
 
 BROKER_HOST_RE = re.compile(r"^house-brain-maintenance-broker\.[a-z0-9-]+\.workers\.dev$")
 INVENTORY_PATH = "/v1/inventory"
+HEALTH_PATH = "/healthz"
+RE_BROKER_VERSION = re.compile(r"^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$")
 SCOUT_RESULT_RE = re.compile(r"maintenance_inventory_scout=(?:pass|failed)\b[^\r\n]{0,300}")
 SCOUT_PASS_RE = re.compile(
     r"^maintenance_inventory_scout=pass count=([0-9]{1,4}) truncated=false "
@@ -96,6 +98,17 @@ def parse_scout_result(logs: str) -> tuple[str, dict]:
         return "pass", {"app_count": int(passed.group(1)), "disposition": passed.group(2)}
     failed = SCOUT_FAIL_RE.fullmatch(last)
     return "failed", {"scout_reason": failed.group(1) if failed else "unparsed_result"}
+
+
+def broker_version(inventory_url: str, timeout: float = 20.0) -> str:
+    """The live Broker version from its public ``/healthz`` (no key is sent); ``unknown`` when unreadable."""
+    host = urllib.parse.urlsplit(inventory_url).hostname
+    try:
+        _, data = net.request("GET", f"https://{host}{HEALTH_PATH}", {}, timeout=timeout)
+    except net.NetError as err:
+        return f"unknown (HTTP {err.status})"
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) and RE_BROKER_VERSION.fullmatch(version) else "unknown"
 
 
 def broker_accepts(inventory_url: str, key: str, timeout: float = 20.0) -> tuple[bool, str]:
@@ -158,6 +171,8 @@ class Engine:
                 return self._activate(m)
             if m.job == RUN_SCOUT_ONCE:
                 return self._run_scout(m)
+            if m.job == CHECK_BROKER:
+                return self._check_broker(m)
         except (HAError, net.NetError) as err:
             reason = net.redact(str(err))[:200]
             if self.j.load_txn():
@@ -251,7 +266,8 @@ class Engine:
             f"Scout: {self.ha.scout} {scout.version}",
             f"Key fingerprint: {str(scout.key_fingerprint)[:12]}",
         ]
-        facts = {"scout_version": scout.version, "fingerprint_prefix": str(scout.key_fingerprint)[:12]}
+        facts = {"scout_version": scout.version, "fingerprint_prefix": str(scout.key_fingerprint)[:12],
+                 "broker_version": broker_version(checked_inventory_url(scout.broker_url))}
         if self.s.dry_run:
             return Result(DRY_RUN_OK, ["dry run: preflight passed, nothing changed"],
                           {**facts, "would_ask": lines})
@@ -267,6 +283,17 @@ class Engine:
             self.j.clear_txn()
             return Result(FAILED, [f"start: {net.redact(str(err))[:200]}"], facts)
         return self._scout_readback(m.request_id, time.monotonic() + self.s.scout_run_timeout, facts)
+
+    def _check_broker(self, m: Manifest) -> Result:
+        """Read-only, no approval: the Broker the Scout publishes to, and the version live there now."""
+        scout = self.ha.scout_view()
+        url = checked_inventory_url(scout.broker_url)
+        version = broker_version(url)
+        facts = {"broker_host": urllib.parse.urlsplit(url).hostname, "broker_version": version,
+                 "scout_version": scout.version, "fingerprint_prefix": str(scout.key_fingerprint)[:12]}
+        if not RE_BROKER_VERSION.fullmatch(version):
+            return Result(FAILED, ["the Broker's /healthz could not be read"], facts)
+        return Result(DONE, [f"the Broker answers with version {version}; nothing was changed"], facts)
 
     def _scout_readback(self, request_id: str, deadline: float, facts: dict) -> Result:
         # The Scout is one-shot: once it is stopped again, /logs/latest holds exactly that run.

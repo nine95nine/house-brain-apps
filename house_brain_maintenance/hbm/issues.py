@@ -99,6 +99,8 @@ REAUTH_STEPS = ("Settings -> Devices & services: open it and follow 'Reconfigure
 LIVENESS_FAIL_SECONDS = 30 * 60
 STOPPED_APP_DAYS = 30
 BACKUP_SIZE_HISTORY = 5         # previous full backups compared against
+BACKUP_SIZE_RECENT_DAYS = 8         # 0.5.3: an old anomaly of a kind no longer made is not repeated
+DRIVE_APP_LOCATION = "Google Drive Backup App"
 BACKUP_SMALLER = 0.5            # newest below half the usual size
 BACKUP_BIGGER = 2.0             # ... or above double the usual size
 BACKUP_BIGGER_MIN_GB = 1.0      # and at least this much bigger
@@ -482,13 +484,13 @@ def agent_label(agent_id: str) -> str:
     return AGENT_LABELS.get(domain, domain.replace("_", " "))[:60]
 
 
-def from_offsite(backups: list[dict], now: float) -> list[Finding]:
+def from_offsite(backups: list[dict], now: float, drive: dict | None = None) -> list[Finding]:
     """``backups``: projected rows ``{"date", "agents": [agent ids], "ha": bool}`` from Home Assistant.
+    ``drive`` (0.5.3): the Google Drive Backup App's ``{"state", "last_uploaded", "in_drive"}``, or None
+    when it is not installed. Its copies in Google Drive count as off the Pi.
 
     Silent when there is no backup at all (the full-backup finding already says so).
     """
-    if not backups:
-        return []
     newest = None
     seen: set[str] = set()
     for row in backups:
@@ -497,18 +499,39 @@ def from_offsite(backups: list[dict], now: float) -> list[Finding]:
         dt = _parse(str(row.get("date") or ""))
         if remote and row.get("ha", True) and dt and (newest is None or dt.timestamp() > newest):
             newest = dt.timestamp()
-    if newest is not None and now - newest < OFFSITE_MAX_DAYS * 86400:
+    drive_newest = None
+    if drive is not None:
+        seen.add(DRIVE_APP_LOCATION)
+        dt = _parse(str(drive.get("last_uploaded") or ""))
+        if dt and (drive.get("in_drive") or 0) > 0:
+            drive_newest = dt.timestamp()
+            if newest is None or drive_newest > newest:
+                newest = drive_newest
+    if not backups and drive_newest is None:
         return []
     age = f"{int((now - newest) // 86400)} days ago" if newest else "never"
+    locations = sorted(DRIVE_APP_LOCATION if a == DRIVE_APP_LOCATION else agent_label(a) for a in seen)[:5]
+    if drive is not None and drive.get("state") == "error":
+        return [Finding("backup:offsite", "offsite", WARNING, "The Google Drive Backup App reports a problem",
+                        steps=("Settings -> Apps -> Home Assistant Google Drive Backup -> Open web UI: read"
+                               " its message there.",
+                               "Most often Google needs you to sign in again: follow the link on that page.",
+                               "Until it is fixed, new backups stay only on the Pi."),
+                        link=BACKUPS_LINK, facts={"last_offsite": age, "app_state": "error",
+                                                  "locations": locations})]
+    if newest is not None and now - newest < OFFSITE_MAX_DAYS * 86400:
+        return []
     title = (f"Backups are only on the Pi (last copy elsewhere: {age})" if newest
              else "Backups are only stored on the Pi")
-    return [Finding("backup:offsite", "offsite", WARNING, title,
-                    steps=("Settings -> System -> Backups -> Backup locations (or Settings): add Home Assistant"
-                           " Cloud, Google Drive, OneDrive or a network share (NAS).",
-                           "Then under Automatic backups -> Locations, tick that location too.",
-                           "A copy off the Pi survives a dead SD card or SSD; one on the Pi does not."),
-                    link=BACKUPS_LINK,
-                    facts={"last_offsite": age, "locations": sorted(agent_label(a) for a in seen)[:5]})]
+    steps = (("The Google Drive Backup App has not put a new backup in Google Drive lately: Settings -> Apps"
+              " -> Home Assistant Google Drive Backup -> Open web UI and check its status.",)
+             if drive is not None else ()) + (
+             "Settings -> System -> Backups -> Backup locations (or Settings): add Home Assistant"
+             " Cloud, Google Drive, OneDrive or a network share (NAS).",
+             "Then under Automatic backups -> Locations, tick that location too.",
+             "A copy off the Pi survives a dead SD card or SSD; one on the Pi does not.")
+    return [Finding("backup:offsite", "offsite", WARNING, title, steps=steps, link=BACKUPS_LINK,
+                    facts={"last_offsite": age, "locations": locations})]
 
 
 # -- 0.5.0: low batteries and devices offline for days --------------------------------------------
@@ -604,14 +627,29 @@ def from_disk_trend(samples: list[list[float]], now: float) -> list[Finding]:
 
 
 # -- 0.5.1: backup size jump ---------------------------------------------------------------------
-def from_backup_size(backups: list[tuple]) -> list[Finding]:
-    """``backups``: ``(type, ISO date, size GB or None)``. Newest full backup against the median of the
-    previous ``BACKUP_SIZE_HISTORY`` full backups (at least 3 needed)."""
-    full = sorted(((dt.timestamp(), row[2]) for row in backups
-                   if row[0] == "full" and len(row) > 2 and isinstance(row[2], (int, float)) and row[2] > 0
-                   for dt in [_parse(row[1])] if dt), key=lambda x: x[0])
-    if len(full) < 4:
-        return []
+def from_backup_size(backups: list[tuple], now: float | None = None) -> list[Finding]:
+    """``backups``: ``(type, ISO date, size GB or None[, content kind])``. Within each content kind (0.5.3:
+    like with like), the newest full backup against the median of the previous ``BACKUP_SIZE_HISTORY`` of
+    that kind (at least 3 needed). With ``now``, a kind whose newest backup is older than
+    ``BACKUP_SIZE_RECENT_DAYS`` is not judged again. The kind with the most recent backup is judged first."""
+    groups: dict[str, list[tuple[float, float]]] = {}
+    for row in backups:
+        if row[0] != "full" or len(row) < 3 or not isinstance(row[2], (int, float)) or row[2] <= 0:
+            continue
+        dt = _parse(row[1])
+        if dt:
+            kind = row[3] if len(row) > 3 and isinstance(row[3], str) else "full"
+            groups.setdefault(kind, []).append((dt.timestamp(), row[2]))
+    for full in sorted((sorted(g) for g in groups.values()), key=lambda g: g[-1][0], reverse=True):
+        if len(full) < 4 or (now is not None and now - full[-1][0] > BACKUP_SIZE_RECENT_DAYS * 86400):
+            continue
+        found = _backup_size_finding(full)
+        if found:
+            return found
+    return []
+
+
+def _backup_size_finding(full: list[tuple[float, float]]) -> list[Finding]:
     newest = full[-1][1]
     previous = sorted(size for _, size in full[-1 - BACKUP_SIZE_HISTORY:-1])
     usual = previous[len(previous) // 2]

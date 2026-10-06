@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.3
+
+Two false warnings in the 2026-10-05 morning summary fixed, plus a Broker version check (owner decision
+2026-10-05, "Both, fixes first"). All read-only.
+
+- **Fix: "Backups are only stored on the Pi"** although the Home Assistant Google Drive Backup App copies them to
+  Google Drive. That App works outside Home Assistant's own backup locations, which were the only thing checked.
+  Its status entity `sensor.backup_state` is now read (one pinned GET; kept: state, date of the newest backup in
+  Google Drive, how many). A copy there counts as off the Pi. Its `error` state is reported as its own warning.
+  When it is not installed nothing changes.
+- **Fix: "Latest full backup is much bigger than usual (2.4 GB, usually 0.0 GB)"**: settings-only backups (about
+  30 MB) were compared with full backups of everything. Backups are now grouped by what they contain (full, or
+  Home Assistant / Apps / folders) and compared only within a group. A group whose newest backup is older than 8
+  days is not judged again.
+- **New: `CHECK_BROKER`** (no approval): the live Maintenance Broker version from its public `/healthz` (no key
+  sent), so a Broker deploy can be confirmed without the owner. `RUN_SCOUT_ONCE` results carry it too.
+
 ## 0.5.2
 
 Recovery Report follow-ups (owner decision 2026-10-05, "All of the above"), all read-only:

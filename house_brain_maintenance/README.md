@@ -5,7 +5,8 @@ Owner-approved App updates and maintenance jobs for the House Brain Home Assista
 
 - App updates: review -> iPhone approval -> single-App backup -> update -> health watch ->
   automatic restore on failure. Optional night-time auto-install of low-risk bug-fix updates.
-- Scout jobs: `ROTATE_SCOUT_KEY` (prepare / activate), `RUN_SCOUT_ONCE`.
+- Scout jobs: `ROTATE_SCOUT_KEY` (prepare / activate), `RUN_SCOUT_ONCE`, `CHECK_BROKER` (0.5.3: read-only, no
+  approval; the live Broker version from its public `/healthz`).
 - Supervisor manager role, used only through a pinned route allowlist (`hbm/ha.py`); mutating
   update routes open for exactly one App at a time.
 - Never updates Home Assistant Core/OS/Supervisor or itself. No host port, no `ha` CLI, no

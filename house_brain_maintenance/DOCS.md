@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.5.2)
+## What it does (0.5.3)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -64,6 +64,16 @@ New in 0.5.2 (Recovery Report), all read-only:
   (crashes, unexpected reboots, power cuts). A text block is ready to paste into the stability ledger.
 - **Mesh rejoin**: how long Zigbee (ZHA), Z-Wave and Matter devices took to come back after a restart.
 
+New in 0.5.3 (fixes for two false warnings seen on 2026-10-05), all read-only:
+- **Google Drive Backup App counts as off the Pi**: if you use the Home Assistant Google Drive Backup App, its
+  copies in Google Drive count. It reads only that App's status entity (`sensor.backup_state`): its state, the
+  date of the newest backup in Google Drive and how many are there. If that App reports an error, you are told
+  to open it (usually Google needs you to sign in again).
+- **Backup sizes compared like with like**: a settings-only backup (a few MB) is no longer compared with a full
+  backup of everything (GB). Each kind is compared with earlier backups of the same kind.
+- **Broker check**: the House Brain AI can ask which Maintenance Broker version is live (`CHECK_BROKER`). It reads
+  the Broker's public health page only, needs no approval and changes nothing. A Scout run reports it too.
+
 - Serious problems: one notification right away, with what to do.
 - Safe fixes (only for Apps set to start at boot; an App set to start by hand, such as the
   AquaRite bridge, is only reported and never restarted): restart or start that App, reload that integration, or let Home Assistant run its own
@@ -103,6 +113,7 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 |---|---|
 | Run the Scout once | The Inventory Scout lists your Apps and sends the list to the Maintenance Broker. |
 | Rotate the Scout key | A new key is made here (only its fingerprint leaves this Home Assistant). The Scout switches to it only after the Broker already accepts it, so it never stops working. |
+| Check the Broker (0.5.3, no approval) | Reads the Broker's public health page and reports its version. Nothing is sent, started or changed. |
 
 ## What it can never do
 

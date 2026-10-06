@@ -24,11 +24,13 @@ REQUESTERS = ("claude", "chatgpt", "owner")
 
 ROTATE_SCOUT_KEY = "ROTATE_SCOUT_KEY"
 RUN_SCOUT_ONCE = "RUN_SCOUT_ONCE"
+CHECK_BROKER = "CHECK_BROKER"   # 0.5.3: read-only, no approval: which Broker version is live
 PHASES = ("prepare", "activate")
 # job -> (required params, optional params)
 JOBS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ROTATE_SCOUT_KEY: (frozenset({"expect_scout_version", "phase"}), frozenset({"expect_new_fingerprint"})),
     RUN_SCOUT_ONCE: (frozenset({"expect_scout_version"}), frozenset({"expect_key_fingerprint"})),
+    CHECK_BROKER: (frozenset({"expect_scout_version"}), frozenset()),
 }
 _TOP = frozenset({"schema", "request_id", "job", "requested_by", "tracking_issue", "note", "params"})
 _REQUIRED_TOP = frozenset({"schema", "request_id", "job", "requested_by", "params"})

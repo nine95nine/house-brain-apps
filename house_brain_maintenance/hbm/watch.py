@@ -110,7 +110,7 @@ class Watcher:
 
         def backups() -> list[I.Finding]:
             rows = self.ha.backup_list()
-            return I.from_backups(rows, now) + I.from_backup_size(rows)
+            return I.from_backups(rows, now) + I.from_backup_size(rows, now)
 
         def disk() -> list[I.Finding]:
             self.disk_now = self.ha.disk()
@@ -137,7 +137,11 @@ class Watcher:
         except Exception:  # noqa: BLE001 - Core may be restarting; try again next check
             failed.append("core")
         try:
-            findings += I.from_offsite(self.ha.backup_locations(), now)
+            try:
+                drive = self.ha.drive_backup_state()
+            except Exception:  # noqa: BLE001 - unreadable: judged on Home Assistant's own locations only
+                drive = None
+            findings += I.from_offsite(self.ha.backup_locations(), now, drive)
         except Exception:  # noqa: BLE001 - older Core without backup/info, or Core restarting
             failed.append("offsite")
         return findings, failed
