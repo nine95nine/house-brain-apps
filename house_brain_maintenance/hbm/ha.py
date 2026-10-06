@@ -8,7 +8,8 @@ boundary is this module:
 * every HTTP call and WebSocket command passes ``_guard``/``_ws_guard`` before any I/O;
 * App routes are pinned at construction to the two configured target slugs (the Scout and
   the Observer). There is no generic ``/addons`` listing, no uninstall, stop, rebuild,
-  stdin, security, store-repository, host, OS, network or Docker route;
+  stdin, security, store-repository, host, OS, network or Docker route (0.5.4 exceptions, both read-only: the
+  House Brain App log read and the host boot list, below);
 * other Apps' info replies are projected to a few named fields at once
   (``_project``); the raw reply, and with it any other option value, is never returned,
   logged or stored;
@@ -34,6 +35,12 @@ boundary is this module:
 
 * 0.5.1 adds one more read-only Core WebSocket command, ``config_entries/flow/progress``, projected
   to the entry ids of pending re-login ("reauth") flows only, and reads backup sizes from ``/backups``.
+
+* 0.5.4 (owner decision 2026-10-06, "App log window"): read-only log reads of **House Brain Apps only**:
+  ``/addons/<slug>/logs/boots/<n>`` for ``n`` 0 to -5 with exactly ``?verbose&no_colors&lines=N`` (N <= 20000,
+  4 MiB, 60 s), where the slug must look like ``local_house_brain_*`` / ``<8 hex>_house_brain_*`` **and** be
+  installed (never this App itself), and the host boot list ``/host/logs/boots`` (boot ids only; the one host
+  route, owner choice). Lines are filtered to a UTC window and keywords and scrubbed before they leave.
 
 * 0.5.2 (Recovery Report follow-ups, all read-only): one more pinned state read,
   ``sensor.house_brain_deployer_status`` (projected to its state, a validated request id, ``dry_run`` and the
@@ -99,6 +106,11 @@ RECOVERY_NOTIFICATION_ID = "hbm_recovery_report"
 # 0.5.3: the Google Drive Backup App (sabeechen/hassio-google-drive-backup) copies backups to Google Drive
 # outside Home Assistant's own backup locations and reports it on this one entity (read-only, projected).
 DRIVE_BACKUP_ENTITY = "sensor.backup_state"
+# 0.5.4: App log window (read-only; House Brain Apps only)
+RE_HB_APP_SLUG = re.compile(r"^(?:local|[0-9a-f]{8})_house_brain_[a-z0-9_]{1,60}$")
+LOG_BOOTS = (0, -1, -2, -3, -4, -5)
+LOG_MAX_LINES = 20000
+LOG_MAX_BYTES = 4 * 1024 * 1024
 DRIVE_BACKUP_STATES = ("backed_up", "waiting", "error")
 # 0.5.2: Deployer request ids (``hbd/manifest.py`` RE_REQUEST_ID, optionally the Undo suffix) and the
 # ``last_result`` text it publishes ("<request id>: <OUTCOME>").
@@ -152,6 +164,9 @@ _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/core/logs/boots/-1"),
     ("GET", r"/core/api/states/(?:" + "|".join(re.escape(e) for e in sorted(RECOVERY_READ_ENTITIES)) + r")"),
     ("GET", r"/core/api/states/" + re.escape(DRIVE_BACKUP_ENTITY)),
+    # 0.5.4 App log window: House Brain App logs by boot, and the host boot list (ids only)
+    ("GET", r"/addons/(?:local|[0-9a-f]{8})_house_brain_[a-z0-9_]{1,60}/logs/boots/(?:0|-[1-5])"),
+    ("GET", r"/host/logs/boots"),
     ("POST", r"/core/api/services/persistent_notification/create"),
     ("POST", r"/core/api/services/persistent_notification/dismiss"),
 )
@@ -384,7 +399,9 @@ class HomeAssistant:
     def _call(self, method: str, path: str, body: Any = None, timeout: float = 30.0,
               raw: bool = False, query: str = "") -> Any:
         self._guard(method, path)
-        if query and not re.fullmatch(r"\?lines=[0-9]{1,4}", query):
+        app_log = path.startswith("/addons/") and "/logs/boots/" in path
+        allowed_query = r"\?verbose&no_colors&lines=[0-9]{1,5}" if app_log else r"\?lines=[0-9]{1,4}"
+        if (query or app_log) and not re.fullmatch(allowed_query, query):
             raise ForbiddenCall(f"query {query[:40]}")
         headers = {"Authorization": f"Bearer {self._token}"}
         if raw:
@@ -528,6 +545,29 @@ class HomeAssistant:
                       and size_mb > 0 else None)
                 out.append((kind, row["date"][:40], round(gb, 3) if gb else None, backup_content_kind(row)))
         return out
+
+    def host_boots(self) -> list[int]:
+        """Boot offsets the host journal still holds (0 = this boot, -1 = the one before ...). Ids are dropped."""
+        data = self._supervisor("GET", "/host/logs/boots", timeout=20)
+        boots = data.get("boots") if isinstance(data, dict) else None
+        out = []
+        for key in (boots if isinstance(boots, dict) else {}):
+            if isinstance(key, str) and re.fullmatch(r"0|-[1-9][0-9]{0,3}", key):
+                out.append(int(key))
+        return sorted(out, reverse=True)[:200]
+
+    def app_log_boot(self, slug: str, boot: int, lines: int = LOG_MAX_LINES) -> str:
+        """Verbose (UTC-stamped) log of one House Brain App for one boot. Read-only, bounded."""
+        if not isinstance(slug, str) or not RE_HB_APP_SLUG.fullmatch(slug) or slug == self.self_slug():
+            raise ForbiddenCall(f"log of {str(slug)[:40]}")
+        if isinstance(boot, bool) or boot not in LOG_BOOTS:
+            raise ForbiddenCall(f"log boot {str(boot)[:8]}")
+        if slug not in {a.slug for a in self.installed_apps()}:
+            raise HAError("LOG_APP_NOT_INSTALLED", slug)
+        n = min(max(int(lines), 2), LOG_MAX_LINES)
+        data = self._call("GET", f"/addons/{slug}/logs/boots/{boot}", timeout=60, raw=True,
+                          query=f"?verbose&no_colors&lines={n}")
+        return bytes(data or b"")[:LOG_MAX_BYTES].decode("utf-8", "replace")
 
     def drive_backup_state(self) -> dict | None:
         """The Google Drive Backup App's own status, or None when that App is not installed.

@@ -180,6 +180,10 @@ def report_markdown(request_id: str, job: str, result: Result, dry_run: bool) ->
         facts = json.dumps(result.facts, indent=1, sort_keys=True, default=str)
         lines += ["", "<details><summary>Facts</summary>", "", "```json", net.redact(facts)[:6000], "```",
                   "", "</details>"]
+    if result.text:
+        # 0.5.4 APP_LOG_WINDOW: already scrubbed and capped; redacted once more for registered secrets
+        lines += ["", "<details><summary>Log lines (UTC)</summary>", "", "```text",
+                  net.redact("\n".join(result.text))[:40000], "```", "", "</details>"]
     lines += ["", "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._"]
     return "\n".join(lines)
 

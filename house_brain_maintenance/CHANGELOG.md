@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.4
+
+App log window (owner decision 2026-10-06, Connection Forensics chat → Maintenance chat). Read-only.
+
+- **New `APP_LOG_WINDOW` job** (no approval). A request names one installed House Brain App, a UTC window (at most
+  6 hours), a boot (0 to -5) and up to 5 plain keywords. The App reads that App's verbose log for that boot
+  (`/addons/<slug>/logs/boots/<n>?verbose&no_colors&lines=20000`, at most 4 MiB, 60 s), keeps the lines inside the
+  window that contain a keyword, drops the host name, scrubs secrets, e-mail addresses, IPs, MACs, URL queries and long
+  ids, and posts at most 200 lines (300 characters each, 40,000 in all) with the result on the tracking issue.
+- **Two new read-only routes**: the App-log route above, only for slugs `local_house_brain_*` / `<8 hex>_house_brain_*`
+  that are installed and are not this App, with exactly that query; and `/host/logs/boots` (boot offsets only, ids
+  dropped), so the result says whether the host journal still holds the asked boot. This is the App's first host route
+  (owner choice). Nothing is written to any App.
+- A request may now name the App whose log is **read**. A request still can never name an App to change.
+
 ## 0.5.3
 
 Two false warnings in the 2026-10-05 morning summary fixed, plus a Broker version check (owner decision

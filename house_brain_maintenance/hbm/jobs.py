@@ -24,9 +24,10 @@ import urllib.parse
 from dataclasses import dataclass, field
 
 from . import approval, net
-from .ha import AppView, HAError, HomeAssistant, fingerprint
+from .ha import AppView, ForbiddenCall, HAError, HomeAssistant, fingerprint
 from .journal import Journal
-from .manifest import CHECK_BROKER, ROTATE_SCOUT_KEY, RUN_SCOUT_ONCE, Manifest
+from . import logwindow
+from .manifest import APP_LOG_WINDOW, CHECK_BROKER, ROTATE_SCOUT_KEY, RUN_SCOUT_ONCE, Manifest
 from .web import ApprovalBoard
 
 DONE = "DONE"
@@ -55,6 +56,7 @@ class Result:
     outcome: str
     reasons: list[str] = field(default_factory=list)
     facts: dict = field(default_factory=dict)
+    text: list[str] = field(default_factory=list)   # 0.5.4: scrubbed, capped log lines (APP_LOG_WINDOW only)
 
 
 @dataclass
@@ -173,6 +175,8 @@ class Engine:
                 return self._run_scout(m)
             if m.job == CHECK_BROKER:
                 return self._check_broker(m)
+            if m.job == APP_LOG_WINDOW:
+                return self._app_log_window(m)
         except (HAError, net.NetError) as err:
             reason = net.redact(str(err))[:200]
             if self.j.load_txn():
@@ -294,6 +298,29 @@ class Engine:
         if not RE_BROKER_VERSION.fullmatch(version):
             return Result(FAILED, ["the Broker's /healthz could not be read"], facts)
         return Result(DONE, [f"the Broker answers with version {version}; nothing was changed"], facts)
+
+    def _app_log_window(self, m: Manifest) -> Result:
+        """Read-only, no approval: one House Brain App's log lines in a UTC window (scrubbed, capped)."""
+        facts = {"app": m.target_slug, "boot": m.boot,
+                 "window_utc": [logwindow._iso(m.since), logwindow._iso(m.until)],
+                 "keywords": list(m.keywords)}
+        boots = self.ha.host_boots()
+        facts["boots_kept"] = len(boots)
+        if m.boot not in boots:
+            return Result(FAILED, [f"the host journal no longer holds boot {m.boot} (oldest kept: "
+                                   f"{min(boots) if boots else 'none'})"], facts)
+        try:
+            log = self.ha.app_log_boot(m.target_slug, m.boot)
+        except ForbiddenCall as err:
+            return Result(REFUSED, [f"not allowed: {str(err)[:120]}"], facts)
+        lines, found = logwindow.window(log, m.since, m.until, list(m.keywords))
+        facts.update(found)
+        reasons = [f"{found['matched']} matching line(s) in the window; nothing was changed"]
+        if not found["reaches_window_start"]:
+            reasons.append(f"this boot's log starts after the window start (first line {found['log_from']})")
+        if found["matched"] > found["shown"]:
+            reasons.append(f"only the first {found['shown']} lines are shown")
+        return Result(DONE, reasons, facts, lines)
 
     def _scout_readback(self, request_id: str, deadline: float, facts: dict) -> Result:
         # The Scout is one-shot: once it is stopped again, /logs/latest holds exactly that run.

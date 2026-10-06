@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.5.3)
+## What it does (0.5.4)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -114,6 +114,7 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 | Run the Scout once | The Inventory Scout lists your Apps and sends the list to the Maintenance Broker. |
 | Rotate the Scout key | A new key is made here (only its fingerprint leaves this Home Assistant). The Scout switches to it only after the Broker already accepts it, so it never stops working. |
 | Check the Broker (0.5.3, no approval) | Reads the Broker's public health page and reports its version. Nothing is sent, started or changed. |
+| App log window (0.5.4, no approval) | Reads one House Brain App's log for one boot (this boot or up to 5 before), keeps only the lines in a UTC time window (at most 6 hours) that contain one of up to 5 words, removes secrets, addresses and long ids, and posts at most 200 lines to the tracking issue. Only Apps named `local_house_brain_…` or `<store>_house_brain_…` that are installed; never this App. Nothing is written to any App. |
 
 ## What it can never do
 
