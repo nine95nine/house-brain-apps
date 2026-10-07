@@ -118,7 +118,8 @@ class Watcher:
 
         def backups() -> list[I.Finding]:
             rows = self.ha.backup_list()
-            return I.from_backups(rows, now) + I.from_backup_size(rows, now)
+            return (I.from_backups(rows, now) + I.from_backup_size(rows, now)
+                    + I.from_backup_protection(getattr(self.ha, "backup_protection", [])))
 
         def disk() -> list[I.Finding]:
             self.disk_now = self.ha.disk()

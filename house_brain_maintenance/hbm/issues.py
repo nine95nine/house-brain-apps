@@ -485,6 +485,32 @@ def from_backups(backups: list[tuple], now: float) -> list[Finding]:
                     link=BACKUPS_LINK, facts={"last_full": age})]
 
 
+# -- 0.6.6 (Credential Autopilot R2): backups must be password-protected ---------------------------
+DRIVE_BACKUP_SETTINGS = ("Settings -> Apps -> Home Assistant Google Drive Backup -> Open web UI -> Settings (gear): "
+                         "turn on the backup password (keep it in your password manager), then Save.",
+                         "Home Assistant's own automatic backups are always encrypted; this is about the copies the "
+                         "Google Drive Backup App makes.")
+
+
+def from_backup_protection(rows: list[tuple]) -> list[Finding]:
+    """``rows``: (date, protected or None, full, made by this App) from ``HomeAssistant.backup_list``.
+
+    The newest full backup not made by this App's own pre-update step decides: unprotected = a warning, because
+    the GitHub App keys (and every other App's data) inside it are readable by anyone who gets the file.
+    """
+    candidates = [(dt, r[1]) for r in rows if len(r) >= 4 and r[2] and not r[3]
+                  for dt in [_parse(str(r[0]))] if dt is not None]
+    if not candidates:
+        return []
+    _, protected = max(candidates, key=lambda c: c[0])
+    if protected is not False:
+        return []
+    return [Finding("backup:unprotected", "backup", WARNING, "Backups are not password-protected",
+                    steps=("Anyone who gets a backup file can read what is inside, including the GitHub App keys.",
+                           *DRIVE_BACKUP_SETTINGS),
+                    link=APPS_LINK)]
+
+
 # -- 0.5.0: backup copy off the Pi --------------------------------------------------------------
 def agent_label(agent_id: str) -> str:
     domain, _, rest = agent_id.partition(".")

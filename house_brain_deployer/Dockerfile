@@ -1,6 +1,6 @@
 FROM ghcr.io/home-assistant/base-python:3.14-alpine3.24-2026.08.0@sha256:fb41585796deece71afd5a965e9a8aa1b5c2ceb4f020389d998fbe578dbbde6a
 
-ARG BUILD_VERSION=0.6.6
+ARG BUILD_VERSION=0.3.7
 ARG BUILD_ARCH=aarch64
 
 LABEL \
@@ -11,14 +11,14 @@ LABEL \
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-WORKDIR /opt/house-brain-maintenance
+WORKDIR /opt/house-brain-deployer
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --require-hashes --only-binary=:all: --requirement /tmp/requirements.txt \
   && rm /tmp/requirements.txt
 
-COPY hbm/ /opt/house-brain-maintenance/hbm/
-RUN chmod -R a-w /opt/house-brain-maintenance
+COPY hbd/ /opt/house-brain-deployer/hbd/
+RUN chmod -R a-w /opt/house-brain-deployer
 
 # Override the base image's s6-overlay /init; Python is PID 1 and handles SIGTERM.
-ENTRYPOINT ["/usr/local/bin/python3", "-m", "hbm.main"]
+ENTRYPOINT ["/usr/local/bin/python3", "-m", "hbd.main"]

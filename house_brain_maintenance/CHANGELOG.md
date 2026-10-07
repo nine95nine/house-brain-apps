@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.6
+
+Credential Autopilot R2 (owner pop-ups 2026-10-07: "take it off my plate"). Contains everything in 0.6.5, 0.6.4
+and 0.6.3 unchanged.
+
+- **Connect to GitHub in 3 taps, also on the iPhone:** Connect → Create GitHub App → Install (this repository is
+  already selected). The 0.6.3 Connect form could not open GitHub from inside Home Assistant's frame; Connect now
+  opens this App's own hand-off address on port 8097. That address exists only while a Connect is pending (30
+  minutes for an untapped link, at most one hour after tapping) and answers only a valid one-time code (owner
+  pop-up "Allow the temporary port"). The key-file upload stays as a fallback.
+- **Old token retires itself:** after 24 hours in which the GitHub App signed every call, this App revokes its
+  old hand-made token on GitHub (GitHub e-mails you) and never uses it again. New option `retire_old_token`
+  (default on).
+- **Backup encryption watch:** a warning when the newest full backup (not this App's own pre-update backups) is
+  not password-protected, with the Google Drive Backup fix.
+- **Deployer to the store:** when the store Deployer is installed next to the local one, this App asks once:
+  "Switch the Deployer to the store?". After Approve it copies the settings, stops the old Deployer (it is kept),
+  starts the store one and checks that it reports in, or puts everything back automatically. Seven days later it
+  asks separately whether to remove the old one.
+
 ## 0.6.5
 
 Owner-approved feature (2026-10-07). Contains everything in 0.6.4 and 0.6.3 unchanged.

@@ -170,12 +170,16 @@ def project_github_auth(raw: Any) -> dict | None:
     using = raw.get("using")
     error = raw.get("app_error")
     expires = raw.get("pat_expires")
+    retired = raw.get("pat_retired")
     return {"using": using if using in ("github_app", "pat", "") else "",
             "pat_set": flag("pat_set"), "app_connected": flag("app_connected"), "app_installed": flag("app_installed"),
             "pat_days_left": days if isinstance(days, int) and not isinstance(days, bool) and -9999 < days < 99999
             else None,
             "pat_expires": expires if isinstance(expires, str) and RE_AUTH_DATE.fullmatch(expires) else None,
-            "app_error": error if isinstance(error, str) and RE_AUTH_CODE.fullmatch(error) else ""}
+            "app_error": error if isinstance(error, str) and RE_AUTH_CODE.fullmatch(error) else "",
+            # 0.6.6 (R2): the date the Deployer retired its old token itself
+            "pat_retired": retired if isinstance(retired, str) and (retired == "yes" or RE_AUTH_DATE.fullmatch(retired))
+            else None}
 
 
 def project_attrs(entity_id: str, attrs: Any) -> dict:
@@ -190,8 +194,15 @@ def project_attrs(entity_id: str, attrs: Any) -> dict:
         return {"request_id": rid if isinstance(rid, str) and RE_DEPLOYER_RID.fullmatch(rid) else None,
                 "dry_run": attrs.get("dry_run") is True,
                 "last_rid": m.group(1) if m else None, "last_outcome": m.group(2) if m else None,
-                "github_auth": project_github_auth(attrs.get("github_auth"))}
+                "github_auth": project_github_auth(attrs.get("github_auth")),
+                # 0.6.6: which Deployer wrote it (its container host name) and its version
+                "instance": inst if isinstance(inst := attrs.get("instance"), str) and RE_INSTANCE.fullmatch(inst)
+                else None,
+                "version": ver if isinstance(ver := attrs.get("version"), str) and RE_APP_VERSION.fullmatch(ver)
+                else None}
     return {}
+
+RE_INSTANCE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/addons/self/info"),
@@ -294,6 +305,32 @@ def system_call_ok(kind: str, version: str, method: str, path: str, body: Any, b
     if kind == "core" and backup and method == "POST" and path == f"/backups/{backup}/restore/partial":
         return body == {"homeassistant": True} and body["homeassistant"] is True
     return False
+
+
+# -- 0.6.6 (Credential Autopilot R2): move the Deployer from the local folder to the store -----------------
+MIGRATE_OLD = "local_house_brain_deployer"
+RE_MIGRATE_NEW = re.compile(r"[0-9a-f]{8}_house_brain_deployer")
+# The Deployer 0.3.7 option names; nothing else is ever copied (the store App has the same schema).
+DEPLOYER_OPTION_KEYS = ("github_repo", "github_token", "github_auth", "retire_old_token", "requests_branch",
+                        "source_ref_allowlist", "notify_service", "owner_username", "dry_run", "poll_seconds",
+                        "max_approval_requests_per_day", "approval_timeout_minutes",
+                        "restart_approval_timeout_minutes", "require_phone_unlock", "clear_freeze_for")
+
+
+def migrate_call_ok(old: str, new: str, remove: bool, method: str, path: str, body: Any) -> bool:
+    """True only for the exact calls of one open ``migrate_target`` (bodies compared whole)."""
+    if method != "POST":
+        return False
+    empty = body in (None, {})
+    if remove:
+        return path == f"/addons/{old}/uninstall" and empty
+    if path == f"/addons/{new}/options":
+        opts = body.get("options") if isinstance(body, dict) and set(body) == {"options"} else None
+        return isinstance(opts, dict) and bool(opts) and set(opts) <= set(DEPLOYER_OPTION_KEYS)
+    if path == f"/addons/{old}/options":
+        return body in ({"boot": "manual"}, {"boot": "auto"})
+    return empty and path in {f"/addons/{old}/stop", f"/addons/{old}/start", f"/addons/{new}/start",
+                              f"/addons/{new}/stop"}
 
 
 def app_backup_body_ok(slug: str, path: str, body: Any) -> bool:
@@ -399,6 +436,7 @@ class HomeAssistant:
         self._target: str | None = None
         self._fix: tuple[str, str] | None = None
         self._system: dict | None = None          # 0.6.0: {"kind", "version", "backup"} while open
+        self._migrate: dict | None = None         # 0.6.6: {"old", "new", "remove"} while open
         self._self_slug: str | None = None
         # 0.6.1 shared Core socket (see shared_ws)
         self._shared_lock = threading.Lock()
@@ -444,6 +482,9 @@ class HomeAssistant:
         if system is not None and system_call_ok(system["kind"], system["version"], method, path, body,
                                                  system["backup"]):
             return
+        mig = self._migrate
+        if mig is not None and migrate_call_ok(mig["old"], mig["new"], mig["remove"], method, path, body):
+            return
         raise ForbiddenCall(f"{method} {path}")
 
     @contextmanager
@@ -463,7 +504,7 @@ class HomeAssistant:
             raise ForbiddenCall("fix entry id")
         elif kind == "power_cycle" and (not self.power_cycle_entity or ref != self.power_cycle_entity):
             raise ForbiddenCall("power-cycle target is not the configured switch")
-        if self._fix is not None or self._target is not None or self._system is not None:
+        if self._fix is not None or self._target is not None or self._system is not None or self._migrate is not None:
             raise ForbiddenCall("nested target")
         self._fix = (kind, ref)
         try:
@@ -476,7 +517,7 @@ class HomeAssistant:
         """Open the mutating update routes for exactly one App for the duration of a job."""
         if not RE_SLUG.fullmatch(slug) or slug == "self" or slug == self.self_slug():
             raise ForbiddenCall(f"update target {slug}")
-        if self._target is not None or self._fix is not None or self._system is not None:
+        if self._target is not None or self._fix is not None or self._system is not None or self._migrate is not None:
             raise ForbiddenCall("nested update target")
         self._target = slug
         try:
@@ -494,13 +535,63 @@ class HomeAssistant:
             raise ForbiddenCall(f"system target {str(kind)[:8]}")
         if backup is not None and not RE_BACKUP_SLUG.fullmatch(backup):
             raise ForbiddenCall("system backup slug")
-        if self._target is not None or self._fix is not None or self._system is not None:
+        if self._target is not None or self._fix is not None or self._system is not None or self._migrate is not None:
             raise ForbiddenCall("nested system target")
         self._system = {"kind": kind, "version": version, "backup": backup}
         try:
             yield
         finally:
             self._system = None
+
+    def store_deployer_slug(self) -> str | None:
+        """0.6.6: the store slug the Deployer gets from the same store as this App (``<hash>_house_brain_deployer``),
+        or None when this App is not a store App itself."""
+        own = self.self_slug()
+        prefix = own.split("_", 1)[0]
+        slug = f"{prefix}_house_brain_deployer"
+        return slug if RE_MIGRATE_NEW.fullmatch(slug) else None
+
+    @contextmanager
+    def migrate_target(self, old: str, new: str, remove: bool = False):
+        """0.6.6: open the Deployer switch-over calls (or, with ``remove``, only the old App's uninstall)."""
+        if old != MIGRATE_OLD or not isinstance(new, str) or not RE_MIGRATE_NEW.fullmatch(new) \
+                or new != self.store_deployer_slug():
+            raise ForbiddenCall("migrate target")
+        if self._target is not None or self._fix is not None or self._system is not None or self._migrate is not None:
+            raise ForbiddenCall("nested migrate target")
+        self._migrate = {"old": old, "new": new, "remove": bool(remove)}
+        try:
+            yield
+        finally:
+            self._migrate = None
+
+    def deployer_options(self) -> dict:
+        """0.6.6, only inside ``migrate_target``: the old Deployer's options, limited to the known names. The token
+        is registered as a secret at once (never logged), held in memory only for the copy."""
+        mig = self._migrate
+        if mig is None or mig["remove"]:
+            raise ForbiddenCall("deployer options outside the switch-over")
+        data = self._supervisor("GET", f"/addons/{mig['old']}/info")
+        raw = data.get("options") if isinstance(data, dict) else None
+        if not isinstance(raw, dict):
+            raise HAError("DEPLOYER_OPTIONS")
+        token = raw.get("github_token")
+        if isinstance(token, str):
+            net.register_secret(token)
+        return {k: raw[k] for k in DEPLOYER_OPTION_KEYS if k in raw}
+
+    def set_deployer_options(self, options: dict) -> None:
+        mig = self._migrate or {}
+        self._supervisor("POST", f"/addons/{mig.get('new')}/options", body={"options": options}, timeout=60)
+
+    def set_boot(self, slug: str, boot: str) -> None:
+        self._supervisor("POST", f"/addons/{slug}/options", body={"boot": boot}, timeout=60)
+
+    def stop_app(self, slug: str) -> None:
+        self._supervisor("POST", f"/addons/{slug}/stop", body={}, timeout=300)
+
+    def uninstall_app(self, slug: str) -> None:
+        self._supervisor("POST", f"/addons/{slug}/uninstall", body={}, timeout=600)
 
     @staticmethod
     def _ws_guard(msg: dict) -> None:
@@ -672,15 +763,22 @@ class HomeAssistant:
         """
         data = self._supervisor("GET", "/backups")
         out = []
+        protection = []
         for row in ((data.get("backups") or []) if isinstance(data, dict) else [])[:500]:
             if isinstance(row, dict) and isinstance(row.get("date"), str):
                 content = row.get("content") if isinstance(row.get("content"), dict) else {}
                 kind = "full" if row.get("type") == "full" or content.get("homeassistant") is True else "partial"
+                # 0.6.6 (R2): password protection, from the same answer. Only a flag and "made by this App"
+                # are kept; the name itself is dropped.
+                name = row.get("name") if isinstance(row.get("name"), str) else ""
+                protected = row.get("protected") if isinstance(row.get("protected"), bool) else None
+                protection.append((row["date"][:40], protected, kind == "full", name.startswith("hbm-pre-")))
                 size_b, size_mb = row.get("size_bytes"), row.get("size")
                 gb = (size_b / 1024 ** 3 if isinstance(size_b, int) and not isinstance(size_b, bool) and size_b > 0
                       else size_mb / 1024 if isinstance(size_mb, (int, float)) and not isinstance(size_mb, bool)
                       and size_mb > 0 else None)
                 out.append((kind, row["date"][:40], round(gb, 3) if gb else None, backup_content_kind(row)))
+        self.backup_protection = protection
         return out
 
     def host_boots(self) -> list[int]:

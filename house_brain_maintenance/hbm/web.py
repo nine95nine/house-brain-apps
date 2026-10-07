@@ -206,17 +206,16 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
         def log_message(self, *args):  # noqa: D401 - no request logging (no secrets, no noise)
             return
 
-        def _send(self, status: int, text: str, github_form: bool = False) -> None:
+        def _send(self, status: int, text: str) -> None:
             data = text.encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Frame-Options", "SAMEORIGIN")
-            # Only the GitHub connection page may post a form to github.com (the Connect button).
-            form_action = "form-action 'self' https://github.com" if github_form else "form-action 'self'"
+            # R2: no page here posts to github.com any more (Connect opens the hand-off address in a new window).
             self.send_header("Content-Security-Policy",
-                             f"default-src 'none'; style-src 'unsafe-inline'; {form_action}")
+                             "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
             self.end_headers()
             self.wfile.write(data)
 
@@ -248,17 +247,12 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
             body = connector.render(self.headers.get("X-Remote-User-Id", ""), self.headers.get("X-Ingress-Path", ""),
                                     self.headers.get("X-Forwarded-Host", ""),
                                     self.headers.get("X-Forwarded-Proto", ""), note)
-            self._send(status, PAGE.format(body=body), github_form=True)
+            self._send(status, PAGE.format(body=body))
 
         def _github_get(self, route: str) -> bool:
-            """GET /github and the GitHub return address /github/callback (Credential Autopilot)."""
-            if connector is None or route not in ("/github", "/github/callback"):
+            """GET /github (Credential Autopilot). R2: GitHub returns to the hand-off address, not here."""
+            if connector is None or route != "/github":
                 return False
-            if route == "/github/callback":
-                status, note = connector.callback(urllib.parse.urlsplit(self.path).query,
-                                                  self.headers.get("X-Remote-User-Id", ""))
-                self._github_page(status, note)
-                return True
             self._github_page(200)
             return True
 

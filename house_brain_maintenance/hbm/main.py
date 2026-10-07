@@ -18,6 +18,7 @@ from .ha import RE_SLUG, HAError, HomeAssistant, RE_SWITCH
 from .jobs import DONE, FAILED, FAILED_MANUAL, REFUSED, Engine, Result, Settings
 from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Updater
 from .system import JOBS as SYSTEM_JOBS, ROLLED_BACK, SystemPolicy, SystemUpdater
+from .migrate import JOB as MIGRATE_JOB, MigratePolicy, Migrator
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
@@ -86,6 +87,7 @@ class Options:
     liveness_interval_minutes: int = 2
     extender_plug_entity: str = ""
     github_auth: str = "auto"         # Credential Autopilot (0.6.3): auto | github_app | pat
+    retire_old_token: bool = True     # R2: retire the old hand-made token after 24 h of GitHub App sign-ins
     relay_credential_url: str = ""    # 0.6.3: the relay's public dispatch-key self-test view ("" = off)
     update_reask_hours: int = 6       # 0.6.5: an update ask with no answer is asked again after this (was 24 h)
 
@@ -116,6 +118,9 @@ def load_options(path: str) -> Options:
     github_auth = raw.get("github_auth", ghauth.AUTO)
     if github_auth not in ghauth.MODES:
         raise OptionsError("github_auth")
+    retire_old_token = raw.get("retire_old_token", True)
+    if not isinstance(retire_old_token, bool):
+        raise OptionsError("retire_old_token")
     for key in ("dry_run", "require_phone_unlock"):
         if not isinstance(raw.get(key), bool):
             raise OptionsError(key)
@@ -128,6 +133,7 @@ def load_options(path: str) -> Options:
         github_repo=s("github_repo", RE_REPO),
         github_token=token,
         github_auth=github_auth,
+        retire_old_token=retire_old_token,
         relay_credential_url=_relay_url(raw.get("relay_credential_url", ""), raw.get("liveness_url") or ""),
         requests_branch=s("requests_branch", RE_BRANCH),
         notify_service=s("notify_service", RE_NOTIFY),
@@ -252,6 +258,7 @@ class Service:
         self.engine: Engine | None = None
         self.updater: Updater | None = None
         self.system: SystemUpdater | None = None
+        self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
         self.watcher: Watcher | None = None
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
         self.health_scale = health_scale
@@ -311,6 +318,8 @@ class Service:
             self.system = SystemUpdater(self.ha, self.j, settings, SystemPolicy(
                 lead_seconds=3600.0 * scale, reask_hours=float(self.o.update_reask_hours), boot_seconds=900.0 * scale,
                 settle_seconds=60.0 * scale, reboot_seconds=3600.0 * scale, poll=self.poll), self.report_text)
+            self.migrator = Migrator(self.ha, self.j, settings, MigratePolicy(
+                watch_seconds=1200.0 * scale, poll=self.poll, reask_hours=24.0))
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
                                 max_fix_asks_per_day=self.o.max_approval_requests_per_day,
                                 verify_seconds=60.0 * self.health_scale, poll=self.poll,
@@ -364,6 +373,11 @@ class Service:
                 result = Result(out.result_outcome, out.reasons, out.facts)
                 self.finish(out.request_id, UPDATE_JOB, f"update:{txn.get('slug')}@{txn.get('to')}",
                             self.o.report_issue or None, result)
+                return
+            if txn.get("kind") == "migrate":
+                out = self.migrator.recover(txn)
+                self.finish(out.request_id, MIGRATE_JOB, f"migrate:{txn.get('new')}", self.o.report_issue or None,
+                            Result(out.result_outcome, out.reasons, out.facts))
                 return
             if txn.get("kind") == "system":
                 out = self.system.recover(txn)
@@ -420,6 +434,12 @@ class Service:
         self.ensure_engine()
         out = self.updater.cycle()
         if out is None:
+            # 0.6.6: the Deployer switch-over, only when no App update ran in this cycle.
+            mig = self.migrator.cycle() if self.migrator is not None else None
+            if mig is not None:
+                self.finish(mig.request_id, MIGRATE_JOB, f"migrate:{mig.facts.get('new') or mig.facts.get('old')}",
+                            self.o.report_issue or None, Result(mig.result_outcome, mig.reasons, mig.facts))
+                return
             # 0.6.0: Core/OS only when no App update ran in this cycle (never in the same run).
             sys_out = self.system.cycle()
             if sys_out is not None:
@@ -512,6 +532,15 @@ class Service:
                     Result(out.result_outcome, out.reasons, {**out.facts, "update_request": out.request_id}))
 
 
+HANDOFF_PORT = 8097                 # R2 (owner 2026-10-07): the GitHub hand-off address; config.yaml "ports"
+
+
+def handoff_port() -> int:
+    if os.environ.get("HBM_TEST_MODE") == "1":
+        return int(os.environ.get("HBM_HANDOFF_PORT", "0"))
+    return HANDOFF_PORT
+
+
 def build_service(options_path: str, data_dir: str) -> Service:
     opts = load_options(options_path)
     token = os.environ.get("SUPERVISOR_TOKEN", "")
@@ -524,7 +553,8 @@ def build_service(options_path: str, data_dir: str) -> Service:
                        power_cycle_entity=opts.extender_plug_entity)
     store = ghauth.KeyStore(data_dir)
     provider = ghauth.TokenProvider(store, opts.github_repo, GITHUB_PERMISSIONS, api, f"house-brain-maintenance/{VERSION}")
-    auth = ghauth.Auth(opts.github_auth, opts.github_token, provider)
+    auth = ghauth.Auth(opts.github_auth, opts.github_token, provider, retire=opts.retire_old_token, api=api,
+                       user_agent=f"house-brain-maintenance/{VERSION}")
     gh = GitHub(opts.github_repo, opts.github_token, api, auth=auth)
     approval_timeout = opts.approval_timeout_minutes * 60.0
     run_timeout, poll, health_scale = 600.0, 5.0, 1.0
@@ -542,6 +572,7 @@ def build_service(options_path: str, data_dir: str) -> Service:
                         "comments results. Created by the App's Connect button.",
         repo=opts.github_repo, permissions=GITHUB_PERMISSIONS, api=api,
         user_agent=f"house-brain-maintenance/{VERSION}", store=store, auth=auth,
+        handoff_port=handoff_port(),
         owner_id=OwnerId(lambda: approval.resolve_owner(ha, opts.owner_username)))
     return service
 
@@ -569,6 +600,13 @@ def start_ingress(service: Service) -> IngressServer | None:
                            connector=getattr(service, "connector", None))
     server.start()
     return server
+
+
+def poll_cycle(service: Service) -> None:
+    """One loop step: R2 old-token retire (no token in the log, ever), then the poll."""
+    if service.gh.auth.maybe_retire() == "RETIRED":
+        LOG.info("the old hand-made GitHub token was retired on GitHub (the GitHub App signs in now)")
+    service.poll_once()
 
 
 def main() -> int:
@@ -601,7 +639,7 @@ def main() -> int:
     once = os.environ.get("HBM_ONCE") == "1"
     while not service.stop:
         try:
-            service.poll_once()
+            poll_cycle(service)
         except Exception as err:  # noqa: BLE001 - the loop must survive transient faults
             message = net.redact(f"{type(err).__name__}: {err}")[:300]
             LOG.warning("poll failed: %s", message)

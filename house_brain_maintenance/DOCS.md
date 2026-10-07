@@ -180,6 +180,7 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 |---|---|
 | `github_token` | Optional from 0.6.3: only needed until the GitHub App is connected (see **GitHub connection**). Its own fine-grained token: this repository only, Contents read-only, Issues read and write. |
 | `github_auth` | Leave `auto` (GitHub App when connected, else the token). `github_app` = never use the token; `pat` = never use the GitHub App. |
+| `retire_old_token` | Default `true`: after 24 hours of GitHub App sign-ins, revoke the old `github_token` on GitHub automatically (from 0.6.6). |
 | `notify_service` | Your phone, for example `mobile_app_my_iphone`. |
 | `owner_username` | Your Home Assistant user name. Only this user can approve. |
 | `dry_run` | Starts as `true`: updates are reviewed and reported, nothing is asked or changed. |
@@ -207,18 +208,26 @@ the timeout counts as No.
 
 ## GitHub connection (no token to renew) — from 0.6.3
 
-Open the Maintenance page and tap **GitHub connection** at the bottom.
+Open the Maintenance page and tap **GitHub connection** at the bottom. From 0.6.6 it takes three taps, also on
+the iPhone:
 
-1. Tap **Connect to GitHub**. GitHub opens with a ready-made private App "House Brain Maintenance Bot" (this repository only;
-   Contents: Read, Issues: Read and write). Tap the green **Create GitHub App** button.
-2. GitHub sends you back to this page, which now says **Connected** and shows the key fingerprint
-   (`SHA256:...`, the same text GitHub shows next to the key). The key stays inside this App; you never see it.
-3. Tap **Open the install page on GitHub**, choose **Only select repositories**, pick
-   **home-assistant-whole-home**, tap **Install**. Within one check the page says "signed in with the GitHub App".
-4. Then delete the old token on GitHub (the page links it). Nothing else: `github_token` may stay; it is ignored
-   while the GitHub App works.
+1. **Connect to GitHub**: a new window opens and goes to GitHub with a ready-made private App "House Brain Maintenance Bot" (this
+   repository only; Contents: Read, Issues: Read and write).
+2. **Create GitHub App** (the green button). GitHub sends you back to this App's hand-off address, which keeps the
+   key inside this App (you never see it) and opens the install page.
+3. **Install**: only **home-assistant-whole-home** is selected already. A page says "Done"; go back to Home
+   Assistant. Within one check the GitHub connection page says "signed in with the GitHub App".
 
-If GitHub cannot send you back (some phones open GitHub outside the Home Assistant app): on GitHub open
+The hand-off address is this App's port 8097 at the same address you use for Home Assistant (at home or over
+Tailscale). It exists only while a Connect is pending (30 minutes after the page offers it, at most one hour after
+you tap it) and answers nothing but GitHub's one-time return. Keep port 8097 in the App's **Network** section.
+
+**The old token retires itself:** once the GitHub App has signed every call for 24 hours, this App revokes its old
+hand-made token on GitHub (GitHub e-mails you that it was revoked) and never uses it again. Nothing to delete by
+hand; clearing `github_token` in Configuration is optional. To keep the old token, set `retire_old_token` to
+false before then.
+
+If Connect does not work (for example port 8097 is not reachable): on GitHub open
 **Settings › Developer settings › GitHub Apps › House Brain Maintenance Bot › Generate a private key**; the `.pem` file downloads. On this
 page use **Upload key file** and pick it (type the App ID shown at the top of the GitHub page if asked).
 Never paste the key anywhere else, and never screenshot the Configuration tab.
@@ -237,3 +246,24 @@ are warned too. Once the GitHub App works, nothing is said about the old token a
 It also reads the relay Worker's weekly self-test of its GitHub dispatch key (option `relay_credential_url`: leave it
 empty and it is derived from `liveness_url`; `off` turns it off) and uses the same ladder; a failing key or a stopped self-test is a warning
 with the exact fix path.
+
+## Backup password watch — from 0.6.6
+
+Backups hold every App's data, including the GitHub App keys. When the newest full backup (not this App's own
+pre-update backups) is **not password-protected**, this App warns once with the fix: Google Drive Backup → Open web UI
+→ Settings → backup password. It reads only Home Assistant's "protected" flag, never a backup's contents or name.
+
+## Deployer switch to the store — from 0.6.6
+
+When the store **House Brain Deployer** is installed next to the old local one, this App asks once: "Switch the
+Deployer to the store?". After **Approve** it:
+
+1. copies the old Deployer's settings into the store Deployer (on the Pi; the old token too, which the new one
+   retires by itself after its GitHub App works);
+2. sets the old Deployer to start manually and stops it (it is kept);
+3. starts the store Deployer and waits until it reports in (up to 20 minutes; an old Deployer counts as active for 15
+   minutes after its last report).
+
+Any problem puts the old Deployer back automatically. It never runs while the Deployer reports `DEPLOYING`. Seven
+days later it asks separately whether to remove the stopped old Deployer. Then connect the store Deployer to GitHub
+on its page (3 taps).

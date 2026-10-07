@@ -1,0 +1,91 @@
+name: "House Brain Deployer"
+version: "0.3.7"
+slug: "house_brain_deployer"
+description: >-
+  Pull-based, owner-approved deployment of Home Assistant package files from the
+  House Brain repository. Only /config/packages/<slug>.yaml targets; SHA-256
+  verified; partial backup first; strict config check; separate iPhone approvals
+  for deploy and restart (tap the push to open the approval page); automatic
+  rollback. Ingress only, except a GitHub Connect hand-off port open only during a
+  Connect; no physical control.
+arch:
+  - aarch64
+homeassistant: "2026.8.3"
+startup: application
+boot: auto
+stage: experimental
+backup: hot
+init: false
+apparmor: true
+hassio_api: true
+hassio_role: homeassistant
+homeassistant_api: true
+docker_api: false
+auth_api: false
+full_access: false
+host_network: false
+host_ipc: false
+host_dbus: false
+host_pid: false
+host_uts: false
+stdin: false
+usb: false
+uart: false
+udev: false
+gpio: false
+devicetree: false
+kernel_modules: false
+audio: false
+video: false
+tmpfs: true
+timeout: 30
+ingress: true
+ingress_port: 8099
+panel_icon: "mdi:package-down"
+panel_title: "Deployer"
+panel_admin: true
+map:
+  - type: homeassistant_config
+    read_only: false
+# R2 (owner pop-up 2026-10-07 "Allow the temporary port"): the GitHub Connect hand-off address. The App listens on
+# it only while a Connect is pending (at most about one hour) and answers only with a valid one-time state.
+ports:
+  "8096/tcp": 8096
+ports_description:
+  "8096/tcp": "GitHub Connect hand-off (open only during a Connect)"
+options:
+  github_repo: "nine95nine/home-assistant-whole-home"
+  github_token: null
+  github_auth: "auto"
+  retire_old_token: true
+  requests_branch: "deploy/requests"
+  source_ref_allowlist:
+    - "main"
+    - "deploy/requests"
+    - "cooling/*"
+  notify_service: null
+  owner_username: null
+  dry_run: true
+  poll_seconds: 300
+  max_approval_requests_per_day: 4
+  approval_timeout_minutes: 360
+  restart_approval_timeout_minutes: 10
+  require_phone_unlock: true
+  clear_freeze_for: ""
+schema:
+  github_repo: "match(^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$)"
+  github_token: password?
+  github_auth: "list(auto|github_app|pat)"
+  retire_old_token: "bool?"
+  requests_branch: "match(^[A-Za-z0-9._/-]{1,100}$)"
+  source_ref_allowlist:
+    - "match(^[A-Za-z0-9._/*-]{1,100}$)"
+  notify_service: "match(^mobile_app_[a-z0-9_]{1,80}$)"
+  owner_username: "match(^[A-Za-z0-9_.@-]{1,64}$)"
+  dry_run: bool
+  poll_seconds: "int(60,3600)"
+  max_approval_requests_per_day: "int(1,12)"
+  approval_timeout_minutes: "int(2,720)"
+  restart_approval_timeout_minutes: "int(2,30)"
+  require_phone_unlock: bool
+  clear_freeze_for: "match(^([a-z0-9][a-z0-9-]{2,63})?$)?"
