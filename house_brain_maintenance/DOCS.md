@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.6.1)
+## What it does (0.6.2)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -112,6 +112,8 @@ New in 0.5.3 (fixes for two false warnings seen on 2026-10-05), all read-only:
   the real cause and the right steps: the router stopped announcing UPnP (turn UPnP on / restart the router), the
   router came back with a new identity (add the discovered one, delete the old), Home Assistant hears nothing at
   all (its network adapter), or the router is heard again (then a reload is offered). Only counts are reported.
+  For this house a router that drops out and comes back by itself is known (0.6.2): the alert says so and only
+  asks for a router restart if it lasts more than 30 minutes.
 
 **Recovery Report** (`recovery_report`, on by default; 0.3.0). When Home Assistant comes back from
 being down, or a network or power outage ends, the **Maintenance** page (sidebar) shows:

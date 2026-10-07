@@ -72,6 +72,15 @@ ROUTER_UPNP_STEPS = (
     " the Orbi satellite). Plug the Pi's switch into the Orbi router, or check Settings -> System -> Network"
     " uses the Pi's wired adapter.",
 )
+# Known for this house (live 2026-10-03..05, owner 2026-10-06): the dropouts recur and clear by themselves,
+# so UPnP is on; the router's announcements are lost on the way to the Pi. The owner set the Orbi
+# advertisement period to 2 minutes and declined any cabling change, so "turn UPnP on" is not advice here.
+HOUSE_UPNP_DROPOUT_STEPS = (
+    "Known for this house: UPnP is on in the Orbi, but its announcements sometimes don't reach the Pi;"
+    " Home Assistant reconnects by itself (the router re-announces every 2 minutes since 2026-10-06).",
+    "Only if it lasts more than 30 minutes: restart the Orbi router (orbilogin.com -> ADVANCED -> Reboot;"
+    " internet off for about 3 minutes).",
+)
 UPNP_DIAGNOSES = {
     # code: (title, steps, keep the reload offer)
     "UPNP_HEARD_NOW": ("UPnP router is announcing again", (
@@ -82,7 +91,7 @@ UPNP_DIAGNOSES = {
         "Then open the old UPnP/IGD entry -> three dots -> Delete. Only the router's own traffic sensors"
         " change; nothing else in the house uses them.",
         "Usually after a router firmware update or factory reset."), False),
-    "UPNP_ROUTER_SILENT": ("Router stopped announcing UPnP", ROUTER_UPNP_STEPS, False),
+    "UPNP_ROUTER_SILENT": ("UPnP router dropped out (it comes back by itself)", HOUSE_UPNP_DROPOUT_STEPS, False),
     "UPNP_NOTHING_HEARD": ("Home Assistant hears no network announcements at all", (
         "This is on the Home Assistant side, not the router: Settings -> System -> Network -> Network adapter:"
         " turn on 'Auto configure' (or select the Pi's wired adapter) and Save.",

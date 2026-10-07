@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.2
+
+- **UPnP dropouts: house-specific advice** (live 2026-10-03..05, owner 2026-10-06). The Orbi RBR840 UPnP
+  integration dropped out once or twice a day and came back by itself, so UPnP is on; the router's
+  announcements are lost on the way to the Pi. The alert is now "UPnP router dropped out (it comes back by
+  itself)" and no longer says to turn UPnP on: nothing to do, and only if it lasts more than 30 minutes,
+  restart the Orbi router. The owner set the Orbi advertisement period to 2 minutes (shorter dropouts) and
+  declined any cabling change. Detection, severity and the network check are unchanged. (Built as 0.6.1 in parallel with the
+  shared-socket 0.6.1; renumbered.)
+
 ## 0.6.1
 
 Fix at the source (owner decision 2026-10-06, Connection Forensics chat → Maintenance chat): `sensor.connected_clients`
