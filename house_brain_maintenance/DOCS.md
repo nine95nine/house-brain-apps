@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.6.4)
+## What it does (0.6.5)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -26,8 +26,9 @@ bug-fix updates at night.
 6. **Automatic restore.** If the watch fails, that App's backup is restored and the version is
    never offered again. If even the restore fails, the App pauses all work and tells you.
 
-If you tap Reject, that version is not offered again. If you do not answer, it asks again the
-next day.
+If you tap Reject, that version is not offered again. If you do not answer, it asks again after
+`update_reask_hours` (default 6 hours; until 0.6.4 it was the next day), or right away when you ask for it
+(**Ask me now**, below).
 
 **Home Assistant Core and OS updates** (new in 0.6.0, owner decision 2026-10-06). On the same hourly check it
 reads whether Core or the OS has an update. It never installs one by itself, also not with `auto_low_risk`:
@@ -36,7 +37,8 @@ reads whether Core or the OS has an update. It never installs one by itself, als
    version, how old the latest backup with Home Assistant is, the free disk, and "Release-note check: by the AI
    in chat; approve only after it". The House Brain AI adds its release-note check there.
 2. **Ask.** About an hour later your phone asks, with the same facts. Approve needs Face ID. Reject means that
-   version is not offered again; no answer asks again the next day. Only one Core or OS update is asked at a
+   version is not offered again; no answer asks again after `update_reask_hours` (default 6 hours), or right
+   away with **Ask me now** (below). Only one Core or OS update is asked at a
    time (Core first), and never in the same run as an App update or the other one.
 3. **Full backup.** After Approve it makes a full backup (`hbm-pre-core-<version>` or `hbm-pre-os-<version>`)
    and checks it exists. If there is not enough free disk, or the backup fails, it stops: nothing is updated.
@@ -93,6 +95,26 @@ New in 0.5.3 (fixes for two false warnings seen on 2026-10-05), all read-only:
   backup of everything (GB). Each kind is compared with earlier backups of the same kind.
 - **Broker check**: the House Brain AI can ask which Maintenance Broker version is live (`CHECK_BROKER`). It reads
   the Broker's public health page only, needs no approval and changes nothing. A Scout run reports it too.
+
+**Ask me now** (new in 0.6.5, owner decision 2026-10-07). When an update ask timed out (you did not tap in time),
+any House Brain chat (Claude, ChatGPT) or you can file an `ASK_UPDATE_NOW` request and your phone asks again on
+the next poll instead of after the re-ask wait. It works for a Core, OS or App update and only for the exact
+update this App already asked you about that is still waiting right now (Core/OS: its review is already on the
+tracking issue and the hour for the release-note check has passed). Anything else is refused and nothing is
+asked: another version, an update you rejected (Reject is final, also here), a version that failed before, this
+App itself, the OS while a Core update waits, or an unhealthy Home Assistant. After Approve exactly the same steps
+run as always (backup, update, health watch, automatic restore). It counts against
+`max_approval_requests_per_day` like every ask. The request (on the `requests_branch`, default `maint/requests`, file
+`maint/requests/<id>/manifest.json`):
+
+```json
+{"schema": "house_brain_maintenance_request.v1", "request_id": "ask-core-2026-10-07a",
+ "job": "ASK_UPDATE_NOW", "requested_by": "claude", "tracking_issue": 454,
+ "params": {"kind": "core", "version": "2026.9.4"}}
+```
+
+`kind` is `core`, `os` or `app`; for `app` add `"slug"` (for example `"core_mosquitto"`) and use the version it
+updates **to**. The result is posted on the tracking issue.
 
 - Serious problems: one notification right away, with what to do.
 - Safe fixes (only for Apps set to start at boot; an App set to start by hand, such as the
@@ -166,6 +188,7 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 | `auto_wait_days` | Waiting period for automatic installs (default 3 days, 0 to 30): a low-risk update installs by itself only after this App first saw it offered this long ago, so other people find a bad release first. While it waits, it is not asked. Updates you approve install when you approve them. |
 | `update_check_minutes` | How often it looks for App, Core and OS updates (default 60). |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
+| `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). Reject is never asked again. |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |
 | `scout_slug`, `observer_slug` | The Scout and Observer Apps. Leave the defaults. |
 | `clear_freeze_for` | After a `FAILED_MANUAL` result the App pauses until you enter that request id here. |

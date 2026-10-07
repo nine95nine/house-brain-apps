@@ -46,7 +46,8 @@ DOC = "system_updates"
 @dataclass
 class SystemPolicy:
     lead_seconds: float = 3600.0        # the review is on the tracking issue this long before the phone asks
-    reask_hours: float = 24.0
+    reask_hours: float = 6.0            # 0.6.5: no answer asks again after this (owner option update_reask_hours)
+    practice_hours: float = 24.0        # dry run: each version is reported once per this period (unchanged)
     boot_seconds: float = 900.0         # Core must be back and healthy within this time
     settle_seconds: float = 60.0        # ... and still healthy this much later
     reboot_seconds: float = 3600.0      # OS: the host must have rebooted within this time
@@ -154,7 +155,7 @@ class SystemUpdater:
             now = time.time()
             if self.s.dry_run:
                 practiced = mem["practiced"].get(key)
-                if practiced and now - float(practiced) < self.p.reask_hours * 3600:
+                if practiced and now - float(practiced) < self.p.practice_hours * 3600:
                     return None
                 mem["practiced"][key] = now
                 self._save(mem)
@@ -183,20 +184,64 @@ class SystemUpdater:
             asked = mem["asked"].get(key)
             if asked and now - float(asked) < self.p.reask_hours * 3600:
                 return None
-            mem["asked"][key] = now
-            self._save(mem)
-            decision = self._ask(rid, info, facts)
-            if decision != approval.APPROVE:
-                if decision == approval.REJECT:
-                    mem = self._mem()
-                    mem["declined"][key] = True
-                    self._save(mem)
-                return Outcome(rid, REJECTED, [f"owner decision: {decision}"], facts)
-            result = self.apply(rid, info, facts)
-            if result is not None:
-                result.facts = {**facts, **result.facts}
-            return result
+            return self._ask_then_apply(rid, key, info, facts)
         return None
+
+    def _ask_then_apply(self, rid: str, key: str, info: SystemInfo, facts: dict) -> Outcome | None:
+        """The one path to a Core/OS update: ask -> full backup -> update -> health check -> restore/fallback."""
+        mem = self._mem()
+        mem["asked"][key] = time.time()
+        self._save(mem)
+        decision = self._ask(rid, info, facts)
+        if decision != approval.APPROVE:
+            if decision == approval.REJECT:
+                mem = self._mem()
+                mem["declined"][key] = True
+                self._save(mem)
+            return Outcome(rid, REJECTED, [f"owner decision: {decision}"], facts)
+        result = self.apply(rid, info, facts)
+        if result is not None:
+            result.facts = {**facts, **result.facts}
+        return result
+
+    def ask_now(self, kind: str, version: str) -> Outcome | None:
+        """0.6.5 ``ASK_UPDATE_NOW``: ask again right away for a Core/OS update whose review is already on the
+        tracking issue and that is still waiting, instead of after the re-ask wait. Everything ``cycle`` checks
+        still holds (review posted and its lead time passed, Core before OS, health, Reject final, failed
+        versions never again) and the same full-backup path follows. None: an OS update started (reboot)."""
+        rid = request_id_for(kind, version)
+        key = f"{kind}@{version}"
+        facts = {"kind": kind.upper(), "to": version, "automatic": False}
+        pending = {i.kind: i for i in self.pending()}
+        info = pending.get(kind)
+        if info is None or str(info.version_latest) != version:
+            return Outcome(rid, REFUSED, [f"{LABEL.get(kind, kind)} {version} is not an update waiting right now; "
+                                          "nothing asked"], facts)
+        mem = self._mem()
+        if mem["declined"].get(key):
+            return Outcome(rid, REFUSED, ["you rejected this update; a Reject is final and is never asked again"],
+                           facts)
+        if mem["quarantine"].get(key):
+            return Outcome(rid, REFUSED, ["this version failed before and is not offered again"], facts)
+        core = pending.get("core")
+        if kind == "os" and core is not None and not (mem["declined"].get(f"core@{core.version_latest}")
+                                                       or mem["quarantine"].get(f"core@{core.version_latest}")):
+            return Outcome(rid, REFUSED, ["a Core update is waiting; Core is handled before the OS"], facts)
+        reviewed = mem["reviewed"].get(key)
+        if not reviewed:
+            return Outcome(rid, REFUSED, ["the review of this update is not on the tracking issue yet; the App "
+                                          "posts it first"], facts)
+        if time.time() - float(reviewed) < self.p.lead_seconds:
+            return Outcome(rid, REFUSED, [f"the review was posted less than {max(1, int(self.p.lead_seconds // 60))} "
+                                          "minutes ago; the phone asks after the release-note check time"], facts)
+        facts = self._facts(info)
+        if self.s.dry_run:
+            return Outcome(rid, DRY_RUN_OK, ["dry run: reviewed, nothing asked or changed"], facts)
+        unhealthy, _ = self.ha.health_flags()
+        if unhealthy:
+            return Outcome(rid, REFUSED, ["update held: Home Assistant reports it is unhealthy: "
+                                          + ", ".join(sorted(unhealthy))[:120]], facts)
+        return self._ask_then_apply(rid, key, info, facts)
 
     def _ask(self, rid: str, info: SystemInfo, facts: dict) -> str:
         self.j.audit(rid, "APPROVAL_REQUESTED", job=JOBS[info.kind])

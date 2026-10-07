@@ -14,14 +14,14 @@ from dataclasses import dataclass
 
 from . import VERSION, approval, ghauth, ghpage, net
 from .github import REQUESTS_DIR, RE_REPO, GitHub
-from .ha import RE_SLUG, HomeAssistant, RE_SWITCH
-from .jobs import DONE, FAILED_MANUAL, REFUSED, Engine, Result, Settings
+from .ha import RE_SLUG, HAError, HomeAssistant, RE_SWITCH
+from .jobs import DONE, FAILED, FAILED_MANUAL, REFUSED, Engine, Result, Settings
 from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Updater
 from .system import JOBS as SYSTEM_JOBS, ROLLED_BACK, SystemPolicy, SystemUpdater
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
-from .manifest import NO_APPROVAL_JOBS, RE_REQUEST_ID, ManifestError, parse
+from .manifest import ASK_UPDATE_NOW, NO_APPROVAL_JOBS, RE_REQUEST_ID, Manifest, ManifestError, parse
 from .web import INGRESS_PEER, ApprovalBoard, IngressServer
 
 LOG = logging.getLogger("hbm")
@@ -87,6 +87,7 @@ class Options:
     extender_plug_entity: str = ""
     github_auth: str = "auto"         # Credential Autopilot (0.6.3): auto | github_app | pat
     relay_credential_url: str = ""    # 0.6.3: the relay's public dispatch-key self-test view ("" = off)
+    update_reask_hours: int = 6       # 0.6.5: an update ask with no answer is asked again after this (was 24 h)
 
 
 def load_options(path: str) -> Options:
@@ -156,6 +157,7 @@ def load_options(path: str) -> Options:
         **_liveness(raw),
         liveness_interval_minutes=i("liveness_interval_minutes", 2, 30) if "liveness_interval_minutes" in raw else 2,
         extender_plug_entity=_plug(raw.get("extender_plug_entity", "")),
+        update_reask_hours=i("update_reask_hours", 1, 48) if "update_reask_hours" in raw else 6,
     )
 
 
@@ -301,13 +303,14 @@ class Service:
             policy = Policy(mode=self.o.update_mode,
                             window=(self.o.auto_window_start_hour, self.o.auto_window_end_hour),
                             health_seconds=health, grace_seconds=min(45.0, health / 4), poll=self.poll,
-                            exclude=frozenset(), wait_days=float(self.o.auto_wait_days))
+                            exclude=frozenset(), wait_days=float(self.o.auto_wait_days),
+                            reask_hours=float(self.o.update_reask_hours))
             self.updater = Updater(self.ha, self.j, settings, policy)
             # 0.6.0 Core/OS update gate: never automatic (update_mode does not apply), times scale in test mode.
             scale = self.health_scale
             self.system = SystemUpdater(self.ha, self.j, settings, SystemPolicy(
-                lead_seconds=3600.0 * scale, boot_seconds=900.0 * scale, settle_seconds=60.0 * scale,
-                reboot_seconds=3600.0 * scale, poll=self.poll), self.report_text)
+                lead_seconds=3600.0 * scale, reask_hours=float(self.o.update_reask_hours), boot_seconds=900.0 * scale,
+                settle_seconds=60.0 * scale, reboot_seconds=3600.0 * scale, poll=self.poll), self.report_text)
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
                                 max_fix_asks_per_day=self.o.max_approval_requests_per_day,
                                 verify_seconds=60.0 * self.health_scale, poll=self.poll,
@@ -474,10 +477,39 @@ class Service:
                     and self.j.approvals_requested_since(86400) >= self.o.max_approval_requests_per_day):
                 self.j.audit(request_id, "RATE_LIMITED")
                 return True
+            if manifest.job == ASK_UPDATE_NOW:
+                self.ask_update_now(manifest)
+                return True
             result = self.ensure_engine().run(manifest)
             self.finish(request_id, manifest.job, manifest.digest, manifest.tracking_issue, result)
             return True  # at most one request per poll
         return False
+
+    def ask_update_now(self, m: Manifest) -> None:
+        """0.6.5 ASK_UPDATE_NOW: the same ask -> backup -> update -> health -> restore path as the update check,
+        without the re-ask wait. The request is marked ASKING first, so a restart mid-update never asks twice
+        (the update's own result then follows under its update request id, as for any update)."""
+        self.ensure_engine()
+        issue = m.tracking_issue or self.o.report_issue or None
+        self.j.record(self.key(m.request_id), m.digest, "ASKING")
+        try:
+            if m.update_kind == "app":
+                out = self.updater.ask_now(str(m.update_slug), str(m.update_version))
+            else:
+                out = self.system.ask_now(str(m.update_kind), str(m.update_version))
+        except (HAError, net.NetError) as err:
+            reason = net.redact(str(err))[:200]
+            result = (Result(FAILED_MANUAL, [f"read-back failed ({reason}); it is re-checked on the next poll"])
+                      if self.j.load_txn() else Result(FAILED, [f"preflight: {reason}; nothing asked or changed"]))
+            self.finish(m.request_id, m.job, m.digest, issue, result)
+            return
+        if out is None:                              # OS update started: the Pi reboots, the result follows
+            self.finish(m.request_id, m.job, m.digest, issue, Result(DONE, [
+                "approved; the OS update started (the Pi reboots); its result is posted when the Pi is back"],
+                {"kind": "OS", "to": m.update_version, "automatic": False}))
+            return
+        self.finish(m.request_id, m.job, m.digest, issue,
+                    Result(out.result_outcome, out.reasons, {**out.facts, "update_request": out.request_id}))
 
 
 def build_service(options_path: str, data_dir: str) -> Service:

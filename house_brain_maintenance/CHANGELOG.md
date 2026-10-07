@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.5
+
+Owner-approved feature (2026-10-07). Contains everything in 0.6.4 and 0.6.3 unchanged.
+
+- **Ask me now.** New request job `ASK_UPDATE_NOW`: a chat (or you) can have your phone ask again right away for an
+  update that timed out, instead of waiting for the re-ask. Works for Core, OS and App updates, but only for the
+  exact update this App already asked about and Supervisor still offers; anything else is refused. Reject stays
+  final. After Approve the usual backup, update, health watch and automatic restore run. It counts against
+  `max_approval_requests_per_day` (read-only requests stay exempt, as in 0.6.4).
+- **No answer asks again after 6 hours instead of 24.** New option `update_reask_hours` (1–48, default 6) for App,
+  Core and OS update asks. Dry-run reports stay once a day.
+
 ## 0.6.4
 
 Fix (owner pop-up 2026-10-07 "Fix it in 0.6.4"). Contains everything in 0.6.3 unchanged.

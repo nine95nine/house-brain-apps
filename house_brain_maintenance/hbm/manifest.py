@@ -5,7 +5,9 @@ session) can write one. Validation is allow-list only. A manifest can pick a job
 closed catalog and supply bounded expectations; it can never choose a target App to change, a
 route, a URL or a secret. Those come from the App options and from Supervisor. The one exception
 (0.5.4, owner decision 2026-10-06) is ``APP_LOG_WINDOW``: it names one installed House Brain App
-whose log is **read**; nothing is ever written to that App.
+whose log is **read**; nothing is ever written to that App. ``ASK_UPDATE_NOW`` (0.6.5, owner decision
+2026-10-07) names an update only to *match* the one this App already reviewed and asked about and Supervisor
+still reports as waiting; it can never pick a new target, a version or a route, and anything else is REFUSED.
 """
 from __future__ import annotations
 
@@ -33,6 +35,12 @@ APP_LOG_WINDOW = "APP_LOG_WINDOW"   # 0.5.4: read-only, no approval: one House B
 # 0.6.4: jobs that never ask the owner anything. The daily approval-ask limit does not hold them back (live
 # 2026-10-07: an APP_LOG_WINDOW request waited 3 hours behind four unrelated approval asks).
 NO_APPROVAL_JOBS = frozenset({CHECK_BROKER, APP_LOG_WINDOW})
+# 0.6.5: ask the phone again now for a waiting Core/OS/App update this App already reviewed (no re-ask wait).
+# It asks the owner, so it is NOT in NO_APPROVAL_JOBS: it counts against max_approval_requests_per_day.
+ASK_UPDATE_NOW = "ASK_UPDATE_NOW"
+UPDATE_KINDS = ("core", "os", "app")
+RE_UPDATE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,39}$")
+RE_APP_SLUG = re.compile(r"^[a-z0-9][a-z0-9_]{0,99}$")
 RE_HB_APP_SLUG = re.compile(r"^(?:local|[0-9a-f]{8})_house_brain_[a-z0-9_]{1,60}$")
 RE_UTC = re.compile(r"^(20[0-9]{2})-([01][0-9])-([0-3][0-9])T([0-2][0-9]):([0-5][0-9]):([0-5][0-9])Z$")
 LOG_WINDOW_MAX_SECONDS = 6 * 3600
@@ -43,6 +51,7 @@ JOBS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     RUN_SCOUT_ONCE: (frozenset({"expect_scout_version"}), frozenset({"expect_key_fingerprint"})),
     CHECK_BROKER: (frozenset({"expect_scout_version"}), frozenset()),
     APP_LOG_WINDOW: (frozenset({"target_slug", "since", "until"}), frozenset({"boot", "keywords"})),
+    ASK_UPDATE_NOW: (frozenset({"kind", "version"}), frozenset({"slug"})),
 }
 _TOP = frozenset({"schema", "request_id", "job", "requested_by", "tracking_issue", "note", "params"})
 _REQUIRED_TOP = frozenset({"schema", "request_id", "job", "requested_by", "params"})
@@ -72,6 +81,10 @@ class Manifest:
     until: float | None = None
     boot: int = 0
     keywords: tuple[str, ...] = ()
+    # 0.6.5 ASK_UPDATE_NOW (must match the update Supervisor reports as waiting right now)
+    update_kind: str | None = None
+    update_version: str | None = None
+    update_slug: str | None = None
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict:
@@ -125,6 +138,7 @@ def parse(raw: bytes) -> Manifest:
     if "expect_scout_version" in required and (not isinstance(version, str) or not RE_VERSION.fullmatch(version)):
         raise ManifestError("EXPECT_SCOUT_VERSION")
     log = _log_window(params) if job == APP_LOG_WINDOW else {}
+    log.update(_ask_update(params) if job == ASK_UPDATE_NOW else {})
     fp = params.get("expect_key_fingerprint")
     if fp is not None and (not isinstance(fp, str) or not RE_SHA256.fullmatch(fp)):
         raise ManifestError("EXPECT_KEY_FINGERPRINT")
@@ -177,3 +191,17 @@ def _log_window(params: dict) -> dict:
     except ValueError:
         raise ManifestError("KEYWORDS") from None
     return {"target_slug": slug, "since": since, "until": until, "boot": boot, "keywords": keywords}
+
+
+def _ask_update(params: dict) -> dict:
+    kind = params["kind"]
+    if kind not in UPDATE_KINDS:
+        raise ManifestError("UPDATE_KIND")
+    version = params["version"]
+    if not isinstance(version, str) or not RE_UPDATE_VERSION.fullmatch(version):
+        raise ManifestError("UPDATE_VERSION")
+    slug = params.get("slug")
+    if (kind == "app") != (slug is not None) or (slug is not None and (
+            not isinstance(slug, str) or not RE_APP_SLUG.fullmatch(slug))):
+        raise ManifestError("UPDATE_SLUG")
+    return {"update_kind": kind, "update_version": version, "update_slug": slug}

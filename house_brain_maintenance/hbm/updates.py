@@ -46,7 +46,8 @@ class Policy:
     window: tuple[int, int] = (2, 5)      # local hours [start, end) for automatic installs
     health_seconds: float = 180.0
     grace_seconds: float = 45.0
-    reask_hours: float = 24.0
+    reask_hours: float = 6.0              # 0.6.5: no answer asks again after this (owner option update_reask_hours)
+    practice_hours: float = 24.0          # dry run: each version is reported once per this period (unchanged)
     poll: float = 5.0
     exclude: frozenset[str] = frozenset()
     wait_days: float = 3.0                # automatic installs wait this long after a version is first seen
@@ -99,9 +100,9 @@ class Updater:
         if mem["declined"].get(key):
             return False
         if self.s.dry_run:
-            # Practice mode reports each version once per re-ask period, not every hourly check.
+            # Practice mode reports each version once per practice period (a day), not every hourly check.
             practiced = mem["practiced"].get(key)
-            if practiced and time.time() - float(practiced) < self.p.reask_hours * 3600:
+            if practiced and time.time() - float(practiced) < self.p.practice_hours * 3600:
                 return False
         asked = mem["asked"].get(key)
         return not (asked and time.time() - float(asked) < self.p.reask_hours * 3600)
@@ -178,8 +179,7 @@ class Updater:
                 continue
             rev = self.review_app(app, mem)
             rid = request_id_for(app.slug, rev.to_version)
-            facts = {"slug": rev.slug, "from": rev.from_version, "to": rev.to_version, "bump": rev.bump,
-                     "verdict": rev.verdict, "reasons": list(rev.reasons), "dependents": list(rev.dependents)}
+            facts = self._facts(rev)
             if rev.verdict == BLOCKED:
                 key = f"{app.slug}@{rev.to_version}"
                 if mem["blocked_noted"].get(key) == "|".join(rev.reasons):
@@ -196,20 +196,58 @@ class Updater:
                 return Outcome(rid, DRY_RUN_OK, ["dry run: reviewed, nothing asked or changed"], facts)
             if not auto and self.waits_for_auto(rev, mem):
                 continue                          # installs by itself later (waiting period / night window)
-            if not auto:
-                mem["asked"][f"{app.slug}@{rev.to_version}"] = time.time()
-                self._save(mem)
-                decision = self._ask(rid, rev)
-                if decision != approval.APPROVE:
-                    if decision == approval.REJECT:
-                        mem = self._mem()
-                        mem["declined"][f"{app.slug}@{rev.to_version}"] = True
-                        self._save(mem)
-                    return Outcome(rid, REJECTED, [f"owner decision: {decision}"], facts)
-            result = self.apply(rid, rev, prior_state=app.state, automatic=auto)
-            result.facts = {**facts, **result.facts}
-            return result
+            return self._ask_then_apply(app, rev, rid, facts, automatic=auto)
         return None
+
+    @staticmethod
+    def _facts(rev: Review) -> dict:
+        return {"slug": rev.slug, "from": rev.from_version, "to": rev.to_version, "bump": rev.bump,
+                "verdict": rev.verdict, "reasons": list(rev.reasons), "dependents": list(rev.dependents)}
+
+    def _ask_then_apply(self, app: InstalledApp, rev: Review, rid: str, facts: dict, *, automatic: bool) -> Outcome:
+        """The one path to an update: ask (unless automatic) -> backup -> update -> health watch -> restore."""
+        key = f"{app.slug}@{rev.to_version}"
+        if not automatic:
+            mem = self._mem()
+            mem["asked"][key] = time.time()
+            self._save(mem)
+            decision = self._ask(rid, rev)
+            if decision != approval.APPROVE:
+                if decision == approval.REJECT:
+                    mem = self._mem()
+                    mem["declined"][key] = True
+                    self._save(mem)
+                return Outcome(rid, REJECTED, [f"owner decision: {decision}"], facts)
+        result = self.apply(rid, rev, prior_state=app.state, automatic=automatic)
+        result.facts = {**facts, **result.facts}
+        return result
+
+    def ask_now(self, slug: str, version: str) -> Outcome:
+        """0.6.5 ``ASK_UPDATE_NOW``: ask again right away for an App update this App already asked about and that
+        is still waiting, instead of after the re-ask wait. Same candidates, same review and refusals, same
+        backup -> update -> health watch -> restore path as ``cycle``; only the wait is skipped. Reject is final."""
+        rid = request_id_for(slug, version)
+        facts = {"slug": slug, "to": version, "automatic": False}
+        app = next((a for a in self.candidates() if a.slug == slug), None)
+        if app is None or app.version_latest != version:
+            return Outcome(rid, REFUSED, [f"{slug} {version} is not an App update this App offers right now "
+                                          "(not waiting, another version, this App itself or excluded); "
+                                          "nothing asked"], facts)
+        mem = self._mem()
+        key = f"{slug}@{version}"
+        if mem["declined"].get(key):
+            return Outcome(rid, REFUSED, ["you rejected this update; a Reject is final and is never asked again"],
+                           facts)
+        if not mem["asked"].get(key):
+            return Outcome(rid, REFUSED, ["this App has not asked you about this update yet; it asks on its own "
+                                          "first, then it can be asked again now"], facts)
+        rev = self.review_app(app, mem)
+        facts = {**self._facts(rev), "automatic": False}
+        if rev.verdict == BLOCKED:
+            return Outcome(rid, REFUSED, [f"update held: {r}" for r in rev.reasons], facts)
+        if self.s.dry_run:
+            return Outcome(rid, DRY_RUN_OK, ["dry run: reviewed, nothing asked or changed"], facts)
+        return self._ask_then_apply(app, rev, rid, facts, automatic=False)
 
     def _ask(self, rid: str, rev: Review) -> str:
         label = {LOW: "LOW RISK", "risky": "RISKY - read the reasons"}.get(rev.verdict, rev.verdict)

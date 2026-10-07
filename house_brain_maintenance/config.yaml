@@ -1,5 +1,5 @@
 name: "House Brain Maintenance"
-version: "0.6.4"
+version: "0.6.5"
 slug: "house_brain_maintenance"
 description: >-
   Reviews pending App updates and applies them after your iPhone approval
@@ -79,6 +79,7 @@ options:
   liveness_key: ""
   liveness_interval_minutes: 2
   extender_plug_entity: "switch.iaqualink_wifi_plug_socket_1"
+  update_reask_hours: 6
 schema:
   github_repo: "match(^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$)"
   github_token: password?
@@ -111,3 +112,4 @@ schema:
   liveness_key: password?
   liveness_interval_minutes: "int(2,30)"
   extender_plug_entity: "match(^(switch\\.[a-z0-9_]{1,80})?$)?"
+  update_reask_hours: "int(1,48)"
