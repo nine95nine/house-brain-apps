@@ -154,6 +154,30 @@ def _whole(v: Any) -> int | None:
     return None
 
 
+RE_AUTH_DATE = re.compile(r"20[0-9]{2}-[01][0-9]-[0-3][0-9]")
+RE_AUTH_CODE = re.compile(r"GITHUB_APP_[A-Z_]{2,40}")
+
+
+def project_github_auth(raw: Any) -> dict | None:
+    """0.6.3 Credential Autopilot: the Deployer's sign-in summary, typed field by field (never a value)."""
+    if not isinstance(raw, dict):
+        return None
+
+    def flag(key: str) -> bool:
+        return raw.get(key) is True
+
+    days = raw.get("pat_days_left")
+    using = raw.get("using")
+    error = raw.get("app_error")
+    expires = raw.get("pat_expires")
+    return {"using": using if using in ("github_app", "pat", "") else "",
+            "pat_set": flag("pat_set"), "app_connected": flag("app_connected"), "app_installed": flag("app_installed"),
+            "pat_days_left": days if isinstance(days, int) and not isinstance(days, bool) and -9999 < days < 99999
+            else None,
+            "pat_expires": expires if isinstance(expires, str) and RE_AUTH_DATE.fullmatch(expires) else None,
+            "app_error": error if isinstance(error, str) and RE_AUTH_CODE.fullmatch(error) else ""}
+
+
 def project_attrs(entity_id: str, attrs: Any) -> dict:
     """The few named attributes the Recovery Report may keep (0.5.2); every other attribute is dropped."""
     attrs = attrs if isinstance(attrs, dict) else {}
@@ -165,7 +189,8 @@ def project_attrs(entity_id: str, attrs: Any) -> dict:
         m = RE_DEPLOYER_LAST.fullmatch(last) if isinstance(last, str) else None
         return {"request_id": rid if isinstance(rid, str) and RE_DEPLOYER_RID.fullmatch(rid) else None,
                 "dry_run": attrs.get("dry_run") is True,
-                "last_rid": m.group(1) if m else None, "last_outcome": m.group(2) if m else None}
+                "last_rid": m.group(1) if m else None, "last_outcome": m.group(2) if m else None,
+                "github_auth": project_github_auth(attrs.get("github_auth"))}
     return {}
 
 _STATIC_ALLOW: tuple[tuple[str, str], ...] = (

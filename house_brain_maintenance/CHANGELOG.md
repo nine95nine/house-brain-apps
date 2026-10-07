@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.6.4
+
+Fix (owner pop-up 2026-10-07 "Fix it in 0.6.4"). Contains everything in 0.6.3 unchanged.
+
+- **Read-only requests are no longer held back by the approval limit.** `max_approval_requests_per_day` limits how
+  often this App asks you to approve something. It also blocked requests that never ask you anything (the Broker
+  check and the App log window): live on 2026-10-07 a log request waited 3 hours behind four unrelated approval asks.
+  Those two read-only jobs now run on the next poll; jobs that ask for your approval (Scout run, key rotation) keep
+  the limit exactly as before.
+
+## 0.6.3
+
+Credential Autopilot (owner decisions 2026-10-06, pop-ups: two GitHub Apps; Connect button with key-file upload
+fallback; one update that carries 0.6.0, 0.6.1 and 0.6.2 too; credential list and daily check). Contains everything in 0.6.2, 0.6.1 and 0.6.0 unchanged.
+
+- **GitHub sign-in without a hand-made token.** New **GitHub connection** page (link at the bottom of the Maintenance
+  page). **Connect to GitHub** creates a private GitHub App "House Brain Maintenance Bot" with fixed permissions
+  (Contents: Read, Issues: Read and write, Metadata: Read; no webhook, no events) and GitHub hands its key straight to
+  this App. The key is kept only in `/data/github_app/key.pem` (0600), never in the options (finding F2: every
+  manager-role App, including this one, can read every App's options). One-hour passes limited to this repository
+  and those permissions, about 24 a day, at most 30; a failed sign-in is retried after 5 minutes, keeping its real
+  reason. The key never expires. Fallback: upload the `.pem` file.
+  **Disconnect** deletes the key from this App.
+- **New option `github_auth`** (`auto` default / `github_app` / `pat`); `github_token` is now optional. In `auto`, a
+  failing GitHub App falls back to the old token and says why.
+- **Daily credential check (read-only).** Warnings at **30, 14, 7 and 1 days** before the old GitHub token of this App
+  or of the Deployer expires (date read from GitHub's `GitHub-Authentication-Token-Expiration` header; the Deployer's
+  from its status entity, field by field). Each step is pushed once, listed in the morning summary and on the
+  tracking issue; a new step is a new warning, the same step never repeats. A failing GitHub App sign-in and "not
+  connected" are warned too. Nothing is said while the GitHub App works (the old token no longer matters).
+- **Relay dispatch key (new option `relay_credential_url`: empty = derived from `liveness_url`, nothing to set; `off` = disabled).** Once a day reads the
+  relay Worker's public `/v1/dispatch-credential` (one word + date, from the relay's weekly self-test of
+  `GITHUB_DISPATCH_TOKEN`): the same 30/14/7/1 ladder, plus a warning with the exact fix path when the key fails or
+  the self-test stops. An unreadable answer never clears an open warning.
+- New reason codes `GITHUB_APP_*`. Clock guard (no clock battery). New hash-pinned dependency `cryptography` 50.0.2
+  (+ `cffi` 2.1.1, `pycparser` 3.0).
+- Tests: the shared GitHub App cases (53) + the credential ladder (24); 30 new mutants (all killed); aarch64 image smoke.
+
 ## 0.6.2
 
 - **UPnP dropouts: house-specific advice** (live 2026-10-03..05, owner 2026-10-06). The Orbi RBR840 UPnP

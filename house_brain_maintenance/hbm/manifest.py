@@ -30,6 +30,9 @@ ROTATE_SCOUT_KEY = "ROTATE_SCOUT_KEY"
 RUN_SCOUT_ONCE = "RUN_SCOUT_ONCE"
 CHECK_BROKER = "CHECK_BROKER"   # 0.5.3: read-only, no approval: which Broker version is live
 APP_LOG_WINDOW = "APP_LOG_WINDOW"   # 0.5.4: read-only, no approval: one House Brain App's log in a UTC window
+# 0.6.4: jobs that never ask the owner anything. The daily approval-ask limit does not hold them back (live
+# 2026-10-07: an APP_LOG_WINDOW request waited 3 hours behind four unrelated approval asks).
+NO_APPROVAL_JOBS = frozenset({CHECK_BROKER, APP_LOG_WINDOW})
 RE_HB_APP_SLUG = re.compile(r"^(?:local|[0-9a-f]{8})_house_brain_[a-z0-9_]{1,60}$")
 RE_UTC = re.compile(r"^(20[0-9]{2})-([01][0-9])-([0-3][0-9])T([0-2][0-9]):([0-5][0-9]):([0-5][0-9])Z$")
 LOG_WINDOW_MAX_SECONDS = 6 * 3600

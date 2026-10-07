@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from . import VERSION, approval, net
+from . import VERSION, approval, ghauth, ghpage, net
 from .github import REQUESTS_DIR, RE_REPO, GitHub
 from .ha import RE_SLUG, HomeAssistant, RE_SWITCH
 from .jobs import DONE, FAILED_MANUAL, REFUSED, Engine, Result, Settings
@@ -21,7 +21,7 @@ from .system import JOBS as SYSTEM_JOBS, ROLLED_BACK, SystemPolicy, SystemUpdate
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
-from .manifest import RE_REQUEST_ID, ManifestError, parse
+from .manifest import NO_APPROVAL_JOBS, RE_REQUEST_ID, ManifestError, parse
 from .web import INGRESS_PEER, ApprovalBoard, IngressServer
 
 LOG = logging.getLogger("hbm")
@@ -30,11 +30,29 @@ RE_USERNAME = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 RE_BRANCH = re.compile(r"^[A-Za-z0-9._/-]{1,100}$")
 RE_LIVENESS_URL = re.compile(r"^https://[a-z0-9-]{1,63}\.[a-z0-9-]{1,63}\.workers\.dev/v1/ping$")
 RE_LIVENESS_KEY = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+RE_RELAY_CREDENTIAL_URL = re.compile(r"^https://[a-z0-9-]{1,63}\.[a-z0-9-]{1,63}\.workers\.dev/v1/dispatch-credential$")
 MAX_REQUESTS_PER_POLL = 10
 
 
 class OptionsError(ValueError):
     pass
+
+
+# Credential Autopilot: the GitHub App's fixed, minimal permissions (Metadata: read is automatic).
+GITHUB_PERMISSIONS = {"contents": "read", "issues": "write"}
+
+
+class OwnerId:
+    """The owner's Home Assistant user id, looked up once (for the GitHub connection page)."""
+
+    def __init__(self, resolve) -> None:
+        self._resolve = resolve
+        self._value = ""
+
+    def __call__(self) -> str:
+        if not self._value:
+            self._value = self._resolve()
+        return self._value
 
 
 @dataclass
@@ -67,6 +85,8 @@ class Options:
     liveness_key: str = ""
     liveness_interval_minutes: int = 2
     extender_plug_entity: str = ""
+    github_auth: str = "auto"         # Credential Autopilot (0.6.3): auto | github_app | pat
+    relay_credential_url: str = ""    # 0.6.3: the relay's public dispatch-key self-test view ("" = off)
 
 
 def load_options(path: str) -> Options:
@@ -85,10 +105,16 @@ def load_options(path: str) -> Options:
             raise OptionsError(key)
         return value
 
+    # Credential Autopilot: the hand-made token is optional once a GitHub App is connected on the App's page.
     token = raw.get("github_token")
-    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_]{20,255}", token):
+    if token in (None, ""):
+        token = ""
+    elif not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_]{20,255}", token):
         raise OptionsError("github_token")
     net.register_secret(token)
+    github_auth = raw.get("github_auth", ghauth.AUTO)
+    if github_auth not in ghauth.MODES:
+        raise OptionsError("github_auth")
     for key in ("dry_run", "require_phone_unlock"):
         if not isinstance(raw.get(key), bool):
             raise OptionsError(key)
@@ -100,6 +126,8 @@ def load_options(path: str) -> Options:
     return Options(
         github_repo=s("github_repo", RE_REPO),
         github_token=token,
+        github_auth=github_auth,
+        relay_credential_url=_relay_url(raw.get("relay_credential_url", ""), raw.get("liveness_url") or ""),
         requests_branch=s("requests_branch", RE_BRANCH),
         notify_service=s("notify_service", RE_NOTIFY),
         owner_username=s("owner_username", RE_USERNAME),
@@ -129,6 +157,24 @@ def load_options(path: str) -> Options:
         liveness_interval_minutes=i("liveness_interval_minutes", 2, 30) if "liveness_interval_minutes" in raw else 2,
         extender_plug_entity=_plug(raw.get("extender_plug_entity", "")),
     )
+
+
+RELAY_WORKER = "house-brain-live-read-relay"
+
+
+def _relay_url(value, liveness_url: str = "") -> str:
+    """0.6.3: "" = derive from liveness_url (same Cloudflare account subdomain; nothing for the owner to type; the
+    public store may not carry the concrete host); "off" = disabled; else an explicit relay URL."""
+    if value == "off":
+        return ""
+    if value in (None, ""):
+        if isinstance(liveness_url, str) and RE_LIVENESS_URL.fullmatch(liveness_url):
+            account = liveness_url.split("/")[2].split(".")[1]
+            return f"https://{RELAY_WORKER}.{account}.workers.dev/v1/dispatch-credential"
+        return ""
+    if not isinstance(value, str) or not RE_RELAY_CREDENTIAL_URL.fullmatch(value):
+        raise OptionsError("relay_credential_url")
+    return value
 
 
 def _safety(value) -> tuple[str, ...]:
@@ -205,6 +251,7 @@ class Service:
         self.updater: Updater | None = None
         self.system: SystemUpdater | None = None
         self.watcher: Watcher | None = None
+        self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
         self.health_scale = health_scale
         self.last_update_check = 0.0
         self.last_request_error = ""
@@ -267,6 +314,8 @@ class Service:
                                 power_off_seconds=10.0 * self.health_scale,
                                 power_verify_seconds=600.0 * self.health_scale)
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
+            self.watcher.credentials = self.gh.auth.summary if hasattr(self.gh, "auth") else None
+            self.watcher.relay_url = self.o.relay_credential_url
         return self.engine
 
     def key(self, request_id: str) -> str:
@@ -421,7 +470,8 @@ class Service:
                 self.finish(request_id, manifest.job, digest, manifest.tracking_issue,
                             Result(REFUSED, ["request_id does not match its directory"]))
                 continue
-            if self.j.approvals_requested_since(86400) >= self.o.max_approval_requests_per_day:
+            if (manifest.job not in NO_APPROVAL_JOBS
+                    and self.j.approvals_requested_since(86400) >= self.o.max_approval_requests_per_day):
                 self.j.audit(request_id, "RATE_LIMITED")
                 return True
             result = self.ensure_engine().run(manifest)
@@ -440,7 +490,10 @@ def build_service(options_path: str, data_dir: str) -> Service:
     api = os.environ.get("HBM_GITHUB_API", "https://api.github.com")
     ha = HomeAssistant(sup, token, ws, opts.scout_slug, opts.observer_slug,
                        power_cycle_entity=opts.extender_plug_entity)
-    gh = GitHub(opts.github_repo, opts.github_token, api)
+    store = ghauth.KeyStore(data_dir)
+    provider = ghauth.TokenProvider(store, opts.github_repo, GITHUB_PERMISSIONS, api, f"house-brain-maintenance/{VERSION}")
+    auth = ghauth.Auth(opts.github_auth, opts.github_token, provider)
+    gh = GitHub(opts.github_repo, opts.github_token, api, auth=auth)
     approval_timeout = opts.approval_timeout_minutes * 60.0
     run_timeout, poll, health_scale = 600.0, 5.0, 1.0
     if os.environ.get("HBM_TEST_MODE") == "1":
@@ -449,8 +502,16 @@ def build_service(options_path: str, data_dir: str) -> Service:
         run_timeout *= scale
         health_scale = scale
         poll = max(0.05, poll * scale)
-    return Service(opts, ha, gh, Journal(data_dir), approval_timeout, board=ApprovalBoard(),
-                   scout_run_timeout=run_timeout, poll=poll, health_scale=health_scale)
+    service = Service(opts, ha, gh, Journal(data_dir), approval_timeout, board=ApprovalBoard(),
+                      scout_run_timeout=run_timeout, poll=poll, health_scale=health_scale)
+    service.connector = ghpage.Connector(
+        app_title="House Brain Maintenance", bot_name="House Brain Maintenance Bot",
+        bot_description="House Brain Maintenance App on the owner's Home Assistant: reads maint/requests and "
+                        "comments results. Created by the App's Connect button.",
+        repo=opts.github_repo, permissions=GITHUB_PERMISSIONS, api=api,
+        user_agent=f"house-brain-maintenance/{VERSION}", store=store, auth=auth,
+        owner_id=OwnerId(lambda: approval.resolve_owner(ha, opts.owner_username)))
+    return service
 
 
 def start_recovery(service: Service) -> threading.Thread | None:
@@ -472,7 +533,8 @@ def start_ingress(service: Service) -> IngressServer | None:
     if os.environ.get("HBM_TEST_MODE") == "1":
         port = int(os.environ.get("HBM_INGRESS_PORT", "8099"))
         peer = os.environ.get("HBM_INGRESS_PEER", INGRESS_PEER)
-    server = IngressServer(service.board, port=port, allowed_peer=peer, recovery=service.recovery)
+    server = IngressServer(service.board, port=port, allowed_peer=peer, recovery=service.recovery,
+                           connector=getattr(service, "connector", None))
     server.start()
     return server
 

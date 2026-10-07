@@ -713,3 +713,117 @@ def from_stopped_apps(stopped_since: dict[str, float], names: dict[str, str], no
                                link=APPS_LINK, announce_clear=False, facts={"stopped_days": days}))
     return out
 
+
+
+# -- 0.6.3: Credential Autopilot — GitHub sign-in health and the expiry ladder ------------------------
+CREDENTIAL_STEPS = (30, 14, 7, 1)        # one push per step (owner decision 2026-10-06), never more
+CONNECTION_PAGE = {"maintenance": "Maintenance", "deployer": "Deployer"}
+PAT_SETTINGS_LINK = "https://github.com/settings/personal-access-tokens"
+RE_CRED_ERROR = re.compile(r"GITHUB_APP_[A-Z_]{2,40}")
+
+
+def credential_step(days: int) -> int | None:
+    """The ladder step for ``days`` left (30, 14, 7 or 1; 0 = expired), or None when not yet due."""
+    if days < 1:
+        return 0
+    due = [s for s in CREDENTIAL_STEPS if days <= s]
+    return min(due) if due else None
+
+
+def from_credentials(app: str, summary: dict | None) -> list[Finding]:
+    """``summary``: ``ghauth.Auth.summary()`` of one App (own, or projected from the Deployer's status)."""
+    if not isinstance(summary, dict) or app not in CONNECTION_PAGE:
+        return []
+    name = CONNECTION_PAGE[app]
+    page = f"{name} page -> GitHub connection"
+    source = "credential" if app == "maintenance" else "credential_deployer"
+    out: list[Finding] = []
+    app_ok = summary.get("app_connected") and not summary.get("app_error") and summary.get("using") == "github_app"
+    error = summary.get("app_error")
+    if summary.get("app_connected") and isinstance(error, str) and RE_CRED_ERROR.fullmatch(error):
+        fallback = summary.get("using") == "pat"
+        text = REASON_TEXT_FALLBACK.get(error, "The GitHub App cannot sign in.")
+        transient = error in ("GITHUB_APP_MINT_FAILED", "GITHUB_APP_CLOCK_NOT_SET")   # internet or NTP: no alarm
+        out.append(Finding(f"cred:{app}:app:{error}", source, WARNING if fallback or transient else CRITICAL,
+                           f"{name}: GitHub App sign-in failing ({error})"
+                           + (" - the old token is standing in" if fallback else ""),
+                           steps=(text, f"Open the {page} for the exact fix."), facts={"code": error}))
+    if not summary.get("app_connected") and not summary.get("pat_set"):
+        out.append(Finding(f"cred:{app}:none", source, CRITICAL, f"{name}: not connected to GitHub",
+                           steps=(f"Open the {page} and tap Connect to GitHub.",)))
+    days = summary.get("pat_days_left")
+    if summary.get("pat_set") and not app_ok and isinstance(days, int) and not isinstance(days, bool):
+        step = credential_step(days)
+        if step is not None:
+            when = summary.get("pat_expires") or "soon"
+            title = (f"{name}: GitHub token EXPIRED ({when})" if step == 0 else
+                     f"{name}: GitHub token expires in {days} day{'s' if days != 1 else ''} ({when})")
+            out.append(Finding(f"cred:{app}:pat:{step}", source, CRITICAL if step <= 7 else WARNING, title,
+                               steps=(f"Best (never renew again): open the {page} and tap Connect to GitHub.",
+                                      f"Or make a new token at {PAT_SETTINGS_LINK} (this repository only; Contents: "
+                                      "Read-only; Issues: Read and write) and paste it into the App's Configuration "
+                                      "-> github_token. Never screenshot that page."),
+                               link=PAT_SETTINGS_LINK, announce_clear=False,
+                               facts={"days_left": days, "expires": when}))
+    return out
+
+
+REASON_TEXT_FALLBACK = {
+    "GITHUB_APP_NOT_INSTALLED": "The GitHub App is not installed on the repository yet.",
+    "GITHUB_APP_CLOCK_NOT_SET": "The clock is not set yet; this clears by itself after network time.",
+    "GITHUB_APP_CLOCK_SKEW": "GitHub says this device's clock is wrong.",
+    "GITHUB_APP_KEY_REJECTED": "GitHub refused the App key (deleted on GitHub, or the App was).",
+    "GITHUB_APP_NO_ACCESS": "The GitHub App may not use the repository any more.",
+    "GITHUB_APP_PERMISSIONS_MISMATCH": "The GitHub App lacks a permission this App needs.",
+    "GITHUB_APP_MINT_BUDGET": "Too many GitHub sign-ins today; stopped to stay safe until midnight UTC.",
+    "GITHUB_APP_MINT_FAILED": "GitHub could not issue a sign-in pass (GitHub or the internet may be down).",
+    "GITHUB_APP_BAD_KEY": "The stored GitHub App key cannot be read.",
+}
+
+
+# -- 0.6.3: the relay's GitHub dispatch key (weekly self-test on the relay Worker, read once a day) ---------------
+RELAY_SECRETS_STEPS = ("Cloudflare dashboard -> Workers & Pages -> house-brain-live-read-relay -> Settings -> Variables "
+                       "and Secrets -> GITHUB_DISPATCH_TOKEN: replace it with a new fine-grained token (this repository "
+                       "only; Actions: Read and write), then Deploy. Never paste it anywhere else.",
+                       "Make the token at " + "https://github.com/settings/personal-access-tokens" + " (choose No expiration "
+                       "or a long one; this App warns 30/14/7/1 days ahead).")
+RE_RELAY_DATE = re.compile(r"20[0-9]{2}-[01][0-9]-[0-3][0-9]")
+
+
+def project_relay_credential(raw) -> dict | None:
+    """The relay's public view, typed field by field: {state, days_left?, checked_on?}. None = unusable."""
+    if not isinstance(raw, dict) or raw.get("state") not in ("ok", "expiring", "failing", "unknown", "stale"):
+        return None
+    out: dict = {"state": raw["state"]}
+    days = raw.get("days_left")
+    if isinstance(days, int) and not isinstance(days, bool) and -9999 < days < 99999:
+        out["days_left"] = days
+    checked = raw.get("checked_on")
+    if isinstance(checked, str) and RE_RELAY_DATE.fullmatch(checked):
+        out["checked_on"] = checked
+    return out
+
+
+def from_relay_credential(view: dict | None) -> list[Finding]:
+    if not view:
+        return []
+    state = view["state"]
+    if state == "failing":
+        return [Finding("cred:relay:failing", "credential_relay", WARNING,
+                        "Relay: its GitHub dispatch key is failing (a Jandy outage alert could not reach GitHub)",
+                        steps=RELAY_SECRETS_STEPS, facts={"checked_on": view.get("checked_on")})]
+    if state == "stale":
+        return [Finding("cred:relay:stale", "credential_relay", WARNING,
+                        "Relay: its weekly GitHub dispatch key self-test has not run for over a week",
+                        steps=("Check the relay Worker is deployed and its cron runs (Cloudflare dashboard -> Workers "
+                               "& Pages -> house-brain-live-read-relay -> Logs).",),
+                        facts={"checked_on": view.get("checked_on")})]
+    days = view.get("days_left")
+    if state == "expiring" and isinstance(days, int):
+        step = credential_step(days)
+        if step is not None:
+            title = ("Relay: its GitHub dispatch key EXPIRED" if step == 0 else
+                     f"Relay: its GitHub dispatch key expires in {days} day{'s' if days != 1 else ''}")
+            return [Finding(f"cred:relay:pat:{step}", "credential_relay", CRITICAL if step <= 7 else WARNING, title,
+                            steps=RELAY_SECRETS_STEPS, announce_clear=False, facts={"days_left": days})]
+    return []

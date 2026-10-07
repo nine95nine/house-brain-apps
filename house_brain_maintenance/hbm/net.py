@@ -50,7 +50,7 @@ class NetError(Exception):
 
 def request(method: str, url: str, headers: dict[str, str] | None = None,
             body: Any = None, timeout: float = 30.0, raw: bool = False,
-            raw_body: bytes | None = None) -> tuple[int, Any]:
+            raw_body: bytes | None = None, headers_out: dict | None = None) -> tuple[int, Any]:
     data = raw_body
     hdrs = dict(headers or {})
     # 0.5.1 (live 2026-10-05): Cloudflare answered 403 to Python's default "Python-urllib" user agent
@@ -64,8 +64,12 @@ def request(method: str, url: str, headers: dict[str, str] | None = None,
         with _OPENER.open(req, timeout=timeout) as resp:
             payload = resp.read(MAX_RESPONSE_BYTES + 1)
             status = resp.status
+            if headers_out is not None:   # Credential Autopilot: e.g. the PAT expiry header
+                headers_out.update({k.lower(): v for k, v in resp.headers.items()})
     except urllib.error.HTTPError as err:
         text = ""
+        if headers_out is not None and err.headers is not None:
+            headers_out.update({k.lower(): v for k, v in err.headers.items()})
         try:
             text = err.read(2048).decode("utf-8", "replace")
         except Exception:  # noqa: BLE001, S110 - diagnostic only

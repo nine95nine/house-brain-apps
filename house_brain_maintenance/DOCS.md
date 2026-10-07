@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.6.2)
+## What it does (0.6.4)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -156,7 +156,8 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 
 | Option | Meaning |
 |---|---|
-| `github_token` | Its own fine-grained token: this repository only, Contents read-only, Issues read and write. |
+| `github_token` | Optional from 0.6.3: only needed until the GitHub App is connected (see **GitHub connection**). Its own fine-grained token: this repository only, Contents read-only, Issues read and write. |
+| `github_auth` | Leave `auto` (GitHub App when connected, else the token). `github_app` = never use the token; `pat` = never use the GitHub App. |
 | `notify_service` | Your phone, for example `mobile_app_my_iphone`. |
 | `owner_username` | Your Home Assistant user name. Only this user can approve. |
 | `dry_run` | Starts as `true`: updates are reviewed and reported, nothing is asked or changed. |
@@ -180,3 +181,36 @@ To pause everything: set `update_mode` to `ask` and simply do not approve, or st
 The push shows Approve and Reject; Approve needs Face ID or your passcode. Tapping the push
 opens the approval page; opening it never approves. Only your user counts. No answer within
 the timeout counts as No.
+
+## GitHub connection (no token to renew) — from 0.6.3
+
+Open the Maintenance page and tap **GitHub connection** at the bottom.
+
+1. Tap **Connect to GitHub**. GitHub opens with a ready-made private App "House Brain Maintenance Bot" (this repository only;
+   Contents: Read, Issues: Read and write). Tap the green **Create GitHub App** button.
+2. GitHub sends you back to this page, which now says **Connected** and shows the key fingerprint
+   (`SHA256:...`, the same text GitHub shows next to the key). The key stays inside this App; you never see it.
+3. Tap **Open the install page on GitHub**, choose **Only select repositories**, pick
+   **home-assistant-whole-home**, tap **Install**. Within one check the page says "signed in with the GitHub App".
+4. Then delete the old token on GitHub (the page links it). Nothing else: `github_token` may stay; it is ignored
+   while the GitHub App works.
+
+If GitHub cannot send you back (some phones open GitHub outside the Home Assistant app): on GitHub open
+**Settings › Developer settings › GitHub Apps › House Brain Maintenance Bot › Generate a private key**; the `.pem` file downloads. On this
+page use **Upload key file** and pick it (type the App ID shown at the top of the GitHub page if asked).
+Never paste the key anywhere else, and never screenshot the Configuration tab.
+
+**Disconnect** deletes the key from this App only; delete the App on GitHub as well to stop it everywhere.
+Passes last one hour and are limited to this repository; about 24 a day, at most 30 (then it stops until midnight
+UTC; $0, GitHub Free).
+
+## Credential warnings — from 0.6.3
+
+Once a day this App checks GitHub sign-in for itself and for the Deployer (from the Deployer's status, never its
+token). While an old hand-made token is still in use, it warns **30, 14, 7 and 1 days** before it expires: one push
+per step, also in the morning summary and on the tracking issue. A failing GitHub App sign-in and "not connected"
+are warned too. Once the GitHub App works, nothing is said about the old token any more.
+
+It also reads the relay Worker's weekly self-test of its GitHub dispatch key (option `relay_credential_url`: leave it
+empty and it is derived from `liveness_url`; `off` turns it off) and uses the same ladder; a failing key or a stopped self-test is a warning
+with the exact fix path.

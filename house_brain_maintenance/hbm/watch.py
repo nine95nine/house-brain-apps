@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import approval, issues as I, net
-from .ha import ForbiddenCall, HAError, HomeAssistant, RE_SLUG
+from .ha import DEPLOYER_STATUS_ENTITY, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
 
 LOG = logging.getLogger("hbm")
@@ -40,6 +40,9 @@ LIVENESS_DOC = "liveness"           # written by the Recovery Report's ping (0.5
 DEVICE_SWEEP_SECONDS = 6 * 3600
 DISK_SAMPLE_SECONDS = 12 * 3600
 DISK_SAMPLES_KEPT = 40
+CREDENTIAL_SOURCES = ("credential", "credential_deployer", "credential_relay")   # 0.6.3 Credential Autopilot
+RELAY_DOC = "relay_credential"
+RELAY_READ_EVERY = 20 * 3600       # the relay self-tests weekly; one read a day is plenty
 FIXED = "FIXED"
 NOT_FIXED = "NOT_FIXED"
 
@@ -66,6 +69,11 @@ class Watcher:
         self.p = policy
         self.report = report
         self.clock = clock
+        # 0.6.3 Credential Autopilot: this App's own GitHub sign-in summary (set by the Service)
+        self.credentials: Callable[[], dict] | None = None
+        # 0.6.3: the relay's public dispatch-key view (option relay_credential_url; "" = off)
+        self.relay_url = ""
+        self.relay_fetch: Callable[[str], object] = lambda url: net.request("GET", url, timeout=15)[1]
 
     # -- state -------------------------------------------------------------------------
     def _state(self) -> dict:
@@ -177,6 +185,7 @@ class Watcher:
         findings, failed = self.collect(first_seen, now)
         findings += self._device_findings(st, now, failed)
         findings += I.from_liveness(self.j.load_doc(LIVENESS_DOC, {}), now)
+        findings += self._credential_findings(failed)
         if getattr(self, "apps_now", None) is not None:
             stopped = st["stopped_since"]
             stopped_now = {slug for slug, state in self.apps_now if state == "stopped"}
@@ -205,8 +214,12 @@ class Watcher:
                 continue
             if f.action and not self.s.dry_run:
                 rec["alerted"] = True           # announced through the fix offer below
-            elif f.severity == I.CRITICAL:
+            elif f.severity == I.CRITICAL or f.source in CREDENTIAL_SOURCES:
                 push_now.append(f)
+                if f.source in CREDENTIAL_SOURCES:
+                    # 0.6.3: each credential ladder step is pushed once (a new step is a new key) and is
+                    # also in the next morning summary (owner decision 2026-10-06)
+                    st["summary"].append(self._summary_item(f))
             else:
                 if f.source == "log":
                     if now - st["log_reported"].get(f.key, 0) < LOG_REPORT_SECONDS:
@@ -233,6 +246,47 @@ class Watcher:
         self._maybe_summary(now)
         open_count = sum(1 for r in self._state()["open"].values() if r.get("alerted"))
         return {"open_problems": open_count, "unreadable": sorted(failed), "fix": outcome}
+
+    def _credential_findings(self, failed: list[str]) -> list[I.Finding]:
+        """0.6.3 Credential Autopilot: this App's own GitHub sign-in, and the Deployer's from its status entity."""
+        out: list[I.Finding] = []
+        own = self.credentials
+        if own is not None:
+            try:
+                out += I.from_credentials("maintenance", own())
+            except Exception:  # noqa: BLE001 - never a false clear: keep what is open
+                failed.append("credential")
+        try:
+            st = self.ha.entity_state(DEPLOYER_STATUS_ENTITY)
+        except (HAError, net.NetError, ForbiddenCall):
+            st = None
+        auth = ((st or {}).get("attrs") or {}).get("github_auth")
+        if auth is None:
+            failed.append("credential_deployer")   # unreadable or an older Deployer: keep what is open
+        else:
+            out += I.from_credentials("deployer", auth)
+        out += self._relay_findings(failed)
+        return out
+
+    def _relay_findings(self, failed: list[str]) -> list[I.Finding]:
+        if not self.relay_url:
+            return []
+        now = self.clock()
+        doc = self.j.load_doc(RELAY_DOC, {})
+        view = I.project_relay_credential(doc.get("view"))
+        if now - float(doc.get("at") or 0) >= RELAY_READ_EVERY:
+            try:
+                fresh = I.project_relay_credential(self.relay_fetch(self.relay_url))
+            except (net.NetError, ValueError, TypeError):
+                fresh = None
+            if fresh is None:
+                failed.append("credential_relay")   # unreadable: keep what is open, try again next check
+                return I.from_relay_credential(view)
+            view = fresh
+            self.j.save_doc(RELAY_DOC, {"at": now, "view": view})
+        if view is None or view["state"] == "unknown":
+            failed.append("credential_relay")        # nothing known yet: never a false clear
+        return I.from_relay_credential(view)
 
     @staticmethod
     def _source_of(rec: dict) -> str:

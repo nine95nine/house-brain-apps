@@ -26,6 +26,8 @@ import urllib.parse
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import ghpage
+
 INGRESS_PEER = "172.30.32.2"
 MAX_BODY = 2048
 RE_INGRESS_PATH = re.compile(r"/api/hassio_ingress/[A-Za-z0-9_\-]{1,200}")
@@ -196,7 +198,7 @@ def render(pending: Pending | None, last: str, action: str, note: str = "", extr
     return PAGE.format(body=body + extra)
 
 
-def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None):
+def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connector=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "hbm"
         sys_version = ""
@@ -204,15 +206,17 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None):
         def log_message(self, *args):  # noqa: D401 - no request logging (no secrets, no noise)
             return
 
-        def _send(self, status: int, text: str) -> None:
+        def _send(self, status: int, text: str, github_form: bool = False) -> None:
             data = text.encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Frame-Options", "SAMEORIGIN")
+            # Only the GitHub connection page may post a form to github.com (the Connect button).
+            form_action = "form-action 'self' https://github.com" if github_form else "form-action 'self'"
             self.send_header("Content-Security-Policy",
-                             "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
+                             f"default-src 'none'; style-src 'unsafe-inline'; {form_action}")
             self.end_headers()
             self.wfile.write(data)
 
@@ -234,18 +238,71 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None):
             ledger = recovery.ledger_view() if hasattr(recovery, "ledger_view") else None
             return render_recovery(incidents, nonce, f"{self._base()}/recovery/ack", CHECK_LABELS, ledger)
 
+        def _github_line(self, base: str) -> str:
+            if connector is None:
+                return ""
+            return (f'<p class="m"><a href="{html.escape(base)}/github">GitHub connection</a>: '
+                    f"{html.escape(connector.status_line())}</p>")
+
+        def _github_page(self, status: int, note: str = "") -> None:
+            body = connector.render(self.headers.get("X-Remote-User-Id", ""), self.headers.get("X-Ingress-Path", ""),
+                                    self.headers.get("X-Forwarded-Host", ""),
+                                    self.headers.get("X-Forwarded-Proto", ""), note)
+            self._send(status, PAGE.format(body=body), github_form=True)
+
+        def _github_get(self, route: str) -> bool:
+            """GET /github and the GitHub return address /github/callback (Credential Autopilot)."""
+            if connector is None or route not in ("/github", "/github/callback"):
+                return False
+            if route == "/github/callback":
+                status, note = connector.callback(urllib.parse.urlsplit(self.path).query,
+                                                  self.headers.get("X-Remote-User-Id", ""))
+                self._github_page(status, note)
+                return True
+            self._github_page(200)
+            return True
+
+        def _github_post(self, route: str) -> bool:
+            if connector is None or route not in ("/github/upload", "/github/forget"):
+                return False
+            try:
+                length = int(self.headers.get("Content-Length") or "0")
+            except ValueError:
+                length = -1
+            limit = ghpage.MAX_UPLOAD if route == "/github/upload" else MAX_BODY
+            if not 0 < length <= limit:
+                self._send(413, "bad request size")
+                return True
+            raw = self.rfile.read(length)
+            user = self.headers.get("X-Remote-User-Id", "")
+            if route == "/github/upload":
+                status, note = connector.upload(self.headers.get("Content-Type") or "", raw, user,
+                                                lookup_bearer=connector.auth.pat)
+            else:
+                if not (self.headers.get("Content-Type") or "").startswith("application/x-www-form-urlencoded"):
+                    self._send(415, "unsupported")
+                    return True
+                status, note = connector.forget(urllib.parse.parse_qs(raw.decode("utf-8", "replace")), user)
+            self._github_page(status, note)
+            return True
+
         def do_GET(self):  # noqa: N802
             if not self._peer_ok():
                 return self._send(403, "forbidden")
-            if urllib.parse.urlsplit(self.path).path not in ("/", ""):
+            route = urllib.parse.urlsplit(self.path).path
+            if self._github_get(route):
+                return None
+            if route not in ("/", ""):
                 return self._send(404, "not found")
             pending, last = board.snapshot()
-            self._send(200, render(pending, last, self._action(), extra=self._extra()))
+            self._send(200, render(pending, last, self._action(), extra=self._extra() + self._github_line(self._base())))
 
         def do_POST(self):  # noqa: N802
             if not self._peer_ok():
                 return self._send(403, "forbidden")
             route = urllib.parse.urlsplit(self.path).path
+            if self._github_post(route):
+                return None
             if route not in ("/decide", "/recovery/ack") or (route == "/recovery/ack" and recovery is None):
                 return self._send(404, "not found")
             try:
@@ -286,8 +343,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None):
 
 class IngressServer:
     def __init__(self, board: ApprovalBoard, host: str = "0.0.0.0", port: int = 8099,  # noqa: S104 - ingress
-                 allowed_peer: str = INGRESS_PEER, recovery=None) -> None:
-        self.httpd = ThreadingHTTPServer((host, port), make_handler(board, allowed_peer, recovery))
+                 allowed_peer: str = INGRESS_PEER, recovery=None, connector=None) -> None:
+        self.httpd = ThreadingHTTPServer((host, port), make_handler(board, allowed_peer, recovery, connector))
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
