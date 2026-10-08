@@ -200,8 +200,48 @@ def recovering(request_id: str) -> Reason:
 def id_reused(request_id: str) -> Reason:
     return Reason("REQUEST_ID_REUSED", HOLD,
                   "This request id was already processed, and its manifest has since changed. A processed id "
-                  "is never run again.",
+                  "is never run again (from 0.3.8 a request that timed out can be asked again under a NEW id "
+                  "with a re-ask request).",
                   "Ask the AI to file the change under a new request id.", request_id)
+
+
+def reask_refused(code: str, request_id: str, reask_of: str, detail: str = "") -> Reason:
+    """0.3.8 (owner pop-up 2026-10-08): why a re-ask request was refused. Final for that re-ask id."""
+    new_request = "Nothing. If the change is still wanted, the AI files it as a new request (new id)."
+    if code == "REASK_UNKNOWN":
+        return Reason(code="REASK_UNKNOWN", severity=HOLD, request_id=request_id,
+                      text=f"Re-ask refused: {reask_of} was never processed by this Deployer (or only in practice "
+                           "mode), so there is nothing to ask again.",
+                      fix="Ask the AI to check the request id, or to file the change as a normal new request.")
+    if code == "REASK_OF_REASK":
+        return Reason(code="REASK_OF_REASK", severity=HOLD, request_id=request_id,
+                      text=f"Re-ask refused: {reask_of} is itself a re-ask. A re-ask must name the original request.",
+                      fix="Ask the AI to file a re-ask whose reask_of is the original request id.")
+    if code == "REASK_NOT_TIMED_OUT" and detail == "REJECTED":
+        return Reason(code="REASK_NOT_TIMED_OUT", severity=HOLD, request_id=request_id,
+                      text=f"Re-ask refused: {reask_of} was rejected. Reject is final; a rejected request is never "
+                           "asked again.", fix=new_request)
+    if code == "REASK_NOT_TIMED_OUT":
+        return Reason(code="REASK_NOT_TIMED_OUT", severity=HOLD, request_id=request_id,
+                      text="Re-ask refused: only a request whose approval expired unanswered (TIMED_OUT) can be "
+                           f"asked again; {reask_of} (or its latest re-ask) ended {detail or 'differently'}.",
+                      fix=new_request)
+    if code == "REASK_LIMIT":
+        return Reason(code="REASK_LIMIT", severity=HOLD, request_id=request_id,
+                      text=f"Re-ask refused: {reask_of} was already asked again {detail or '2'} times (the limit is "
+                           "2 re-asks per request).",
+                      fix="If the change is still wanted, ask the AI to file it as a new request (new id).")
+    if code == "REASK_ORIGINAL_CHANGED":
+        return Reason(code="REASK_ORIGINAL_CHANGED", severity=HOLD, request_id=request_id,
+                      text=f"Re-ask refused: the manifest of {reask_of} on the requests branch is "
+                           f"{detail or 'changed'}; a re-ask only re-runs the exact bytes that were asked the first "
+                           "time.",
+                      fix="Ask the AI to file the change as a new request (new id) instead of a re-ask.")
+    if code == "REASK_LOOKUP":
+        return Reason(code="REASK_LOOKUP", severity=HOLD, request_id=request_id,
+                      text=f"Re-ask refused: {reask_of} is a read-only lookup; lookups are not re-asked.",
+                      fix="Ask the AI to file the lookup again under a new request id.")
+    return Reason(code, HOLD, f"Re-ask refused ({code}).", "Ask the AI to file a new request.", request_id)
 
 
 def unreadable(request_id: str, err: BaseException) -> Reason:

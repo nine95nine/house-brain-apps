@@ -418,6 +418,8 @@ class Engine:
     def _summary(self, p: Prepared) -> str:
         m = p.manifest
         lines = [f"{m.request_id} from {m.requested_by} @ {m.source_commit[:8]}"]
+        if m.reask_of:
+            lines.append(f"ASKED AGAIN: {m.reask_of} expired unanswered; same files, same checks")
         for op in m.files:
             size = len(p.contents[op.target]) // 1024
             verb = "NEW" if op.mode == "create" else "REPLACE"

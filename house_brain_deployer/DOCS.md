@@ -1,6 +1,6 @@
 # House Brain Deployer
 
-Installs Home Assistant **package files** that an AI (Claude or ChatGPT) has requested in the
+Installs Home Assistant **package files** that an AI (Claude, ChatGPT, Codex, Grok or Gemini) has requested in the
 House Brain GitHub repository — but only after **you** approve on your iPhone, twice:
 
 **How to answer:** tap the notification. The Home Assistant app opens the **Deployer** page with a big
@@ -45,7 +45,7 @@ the GitHub issue. Lookups can never change anything.
 | `dry_run` | `true` = practice mode, nothing changes. Switch to `false` only when asked |
 | `poll_seconds` | How often it checks GitHub (default 300) |
 | `max_approval_requests_per_day` | Safety cap on **installs** asked per 24 h (default 4). Restart approvals do not count; read-only lookups have their own allowance of the same size. When a request is held by it, the Deployer page offers **Allow more today** (owner only, until midnight) |
-| `approval_timeout_minutes` | How long a deploy (or lookup) request waits for your tap: 2–720 min, default 360 (6 h). No answer = Reject. While it waits, other requests queue behind it. A Home Assistant restart while waiting does not end the wait: the approval page still works, and the push buttons come back within about 30 s |
+| `approval_timeout_minutes` | How long a deploy (or lookup) request waits for your tap: 2–720 min, default 360 (6 h). No answer = Reject (from 0.3.8 the AI may ask again up to twice; see **Asked again after no answer**). While it waits, other requests queue behind it. A Home Assistant restart while waiting does not end the wait: the approval page still works, and the push buttons come back within about 30 s |
 | `restart_approval_timeout_minutes` | How long the restart approval waits: 2–30 min, default 10. Kept short on purpose, because the new files are already in place while it waits |
 | `require_phone_unlock` | Keep `true` (Approve needs Face ID / passcode) |
 | `clear_freeze_for` | Leave empty. Only used if the App tells you it is frozen |
@@ -94,6 +94,18 @@ What Undo does and does not do:
 - It puts back exactly the files that install replaced or retired, from the `.bak` copies.
 - It keeps the undone version as `<file>.undone_….bak`.
 - If a file was changed since that install, or a newer install touched it, the button is not shown.
+
+## Asked again after no answer — from 0.3.8
+
+If a deploy request expired because you did not answer (result `TIMED_OUT`), the AI may file a **re-ask** that
+points at it. You then get the same approval again, marked **ASKED AGAIN**, with the same files and the same checks.
+Nothing is approved by the re-ask itself: Approve installs, Reject or no answer changes nothing.
+
+- Only requests that ran out of time can be asked again. **Reject is final**: a rejected request is never asked again.
+- At most **2** re-asks per request. A re-ask counts against the daily install limit like any install.
+- The request must be byte-for-byte what you were asked the first time; if the AI changed it, it is refused and the AI
+  has to file a new request instead.
+- Read-only lookups are not asked again, and the Deployer never asks again by itself.
 
 ## GitHub connection (no token to renew) — from 0.3.6
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.8 — 2026-10-08
+
+Re-ask by reference (owner pop-ups 2026-10-08 "A: Deployer re-ask (0.3.8)" and "C: Allow Grok and Gemini").
+Contains everything in 0.3.7 unchanged.
+
+- **Ask again after no answer:** a request whose deploy approval expired unanswered (`TIMED_OUT`) can be asked again
+  by a new request `house_brain_reask_request.v1` that names it (`reask_of`). The Deployer re-reads the original
+  manifest, requires the exact same bytes (SHA-256 recorded the first time) and runs it through the normal checks
+  and a fresh approval marked **ASKED AGAIN**. A re-ask never approves anything.
+- **Limits:** only `TIMED_OUT` (Reject is final), at most 2 re-asks per request, no re-ask of a re-ask or of a
+  read-only lookup, counted by the daily install limit, never automatic. Each refusal names its reason
+  (`REASK_UNKNOWN`, `REASK_NOT_TIMED_OUT`, `REASK_LIMIT`, `REASK_OF_REASK`, `REASK_ORIGINAL_CHANGED`, `REASK_LOOKUP`).
+- **Requesters:** `grok`, `gemini` and `codex` may file requests, lookups and re-asks (with `claude`, `chatgpt`,
+  `owner`).
+- The result names the original (`Re-ask of`) and the original's ledger entry lists its re-asks.
+- Fallback carrier `hbd-0.3.8.tar` (the store stays the normal way to update).
+
 ## 0.3.7 — 2026-10-07
 
 Credential Autopilot R2 (owner pop-ups 2026-10-07). Contains everything in 0.3.6 and 0.3.5 unchanged.

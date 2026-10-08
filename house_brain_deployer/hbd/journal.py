@@ -92,6 +92,26 @@ class Journal:
                               "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         _atomic_write(self.ledger_path, ledger)
 
+    def link_reask(self, original: str, reask_id: str) -> None:
+        """0.3.8: remember on the ORIGINAL entry that ``reask_id`` asked it again (record() overwrites a whole
+        entry, so the link is merged here). Written before the re-ask runs, so a crash still counts it."""
+        ledger = self.ledger()
+        entry = ledger.get(original)
+        if not isinstance(entry, dict):
+            return
+        linked = [x for x in (entry.get("reasked_by") or []) if isinstance(x, str)]
+        if reask_id not in linked:
+            linked.append(reask_id)
+        entry["reasked_by"] = linked
+        _atomic_write(self.ledger_path, ledger)
+
+    def annotate(self, request_id: str, **fields: Any) -> None:
+        """0.3.8: merge extra fields (e.g. ``reask_of``) into an existing ledger entry."""
+        ledger = self.ledger()
+        if isinstance(ledger.get(request_id), dict):
+            ledger[request_id].update(fields)
+            _atomic_write(self.ledger_path, ledger)
+
     def mark_reuse(self, request_id: str, digest: str) -> None:
         ledger = self.ledger()
         if request_id in ledger:

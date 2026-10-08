@@ -1,6 +1,8 @@
 """Entrypoint: options, poll loop, rate limits, ledger, reporting."""
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -20,7 +22,8 @@ from . import ha as ha_mod
 from .ha import HomeAssistant
 from .journal import INSTALL_STAGES, LOOKUP_STAGES, Journal
 from .lookup import is_lookup, parse_lookup, run_lookup
-from .manifest import ManifestError, RE_REQUEST_ID, parse
+from .manifest import ManifestError, RE_REQUEST_ID, Manifest, parse
+from .reask import check_ledger, is_reask, parse_reask
 from .web import INGRESS_PEER, ApprovalBoard, IngressServer
 
 LOG = logging.getLogger("hbd")
@@ -157,6 +160,8 @@ def report_markdown(request_id: str, result: Result, dry_run: bool) -> str:
         f"- **Outcome:** `{result.outcome}`" + (" (dry-run mode)" if dry_run else ""),
         f"- **Deployer:** `{VERSION}`",
     ]
+    if result.facts.get("reask_of"):   # 0.3.8: a re-ask links its original request
+        lines.append(f"- **Re-ask of:** `{result.facts['reask_of']}` (that request's approval expired unanswered)")
     for reason in result.reasons[:10]:
         lines.append(f"- Reason: {net.redact(str(reason))[:400]}")
     if "lookup_output" in result.facts:
@@ -219,7 +224,18 @@ class Service:
 
     def _manifest_at(self, request_id: str, ref: str):
         raw = self.gh.read_file(f"{REQUESTS_DIR}/{request_id}/manifest.json", ref)
+        if is_reask(raw):   # 0.3.8: recovery of a re-ask resolves to its original (digest checked by the engine)
+            rq = parse_reask(raw)
+            original = parse(self.gh.read_file(f"{REQUESTS_DIR}/{rq.reask_of}/manifest.json", ref))
+            return self._reask_run(original, rq.request_id, rq.tracking_issue, rq.reask_of)
         return parse(raw)
+
+    @staticmethod
+    def _reask_run(original: Manifest, request_id: str, issue: int | None, reask_of: str) -> Manifest:
+        """0.3.8: the ORIGINAL manifest's content under the re-ask's id (journal, approval, install record and
+        result all belong to the re-ask). Files, hashes, checks and digest are the original's, unchanged."""
+        return dataclasses.replace(original, request_id=request_id, tracking_issue=issue or original.tracking_issue,
+                                   reask_of=reask_of)
 
     def key(self, request_id: str) -> str:
         """Dry-run results never consume the request id: the real run can follow."""
@@ -270,9 +286,92 @@ class Service:
         if recovered:
             rid, result = recovered
             m = manifest_for(rid)
-            self.finish(rid, m.digest if m else "unknown", m.tracking_issue if m else None, result)
+            if m is not None and m.reask_of:
+                self._finish_reask(rid, self._raw_digest(rid, head), m.tracking_issue, result, m.reask_of)
+            else:
+                self.finish(rid, m.digest if m else "unknown", m.tracking_issue if m else None, result)
             if result.outcome == FAILED_MANUAL:
                 self.j.freeze(rid)
+
+    def _raw_digest(self, request_id: str, ref: str) -> str:
+        try:
+            return hashlib.sha256(self.gh.read_file(f"{REQUESTS_DIR}/{request_id}/manifest.json", ref)).hexdigest()
+        except Exception:  # noqa: BLE001 - recorded as unknown; the id is final either way
+            return "unknown"
+
+    # ------------------------------------------------------------------ re-ask (0.3.8)
+    def _finish_reask(self, request_id: str, digest: str, issue: int | None, result: Result, reask_of: str) -> None:
+        result.facts = dict(result.facts or {})
+        result.facts["reask_of"] = reask_of
+        self.finish(request_id, digest, issue, result)
+        self.j.annotate(self.key(request_id), reask_of=reask_of)
+
+    def _reask_refused(self, request_id: str, digest: str, reask_of: str, code: str, detail: str,
+                       issue: int | None) -> None:
+        reason = diagnose.reask_refused(code, request_id, reask_of, detail)
+        self.j.audit(request_id, "REASK_REFUSED", code=code, reask_of=reask_of)
+        text = f"{code}: {reason.text}" + (f" What to do: {reason.fix}" if reason.fix else "")
+        self._finish_reask(request_id, digest, issue, Result(REFUSED, [text]), reask_of)
+
+    def _reask(self, request_id: str, raw: bytes, digest: str, head: str) -> bool:
+        """0.3.8 (owner pop-up 2026-10-08): ask a TIMED_OUT request again, by reference. Returns True when the
+        poll must end (an approval was asked or the daily limit holds it). Never approves anything itself."""
+        try:
+            rq = parse_reask(raw)
+        except ManifestError as err:
+            self.finish(request_id, digest, None, Result(REFUSED, [f"reask: {err.code}"]))
+            return False
+        if rq.request_id != request_id:
+            self.finish(request_id, digest, rq.tracking_issue,
+                        Result(REFUSED, ["request_id does not match its directory"]))
+            return False
+        original_raw: bytes | None = None
+        try:   # re-read at the current branch head (it is pinned to the ledger digest below)
+            original_raw = self.gh.read_file(f"{REQUESTS_DIR}/{rq.reask_of}/manifest.json", head)
+        except net.NetError as err:
+            if err.status != 404:
+                self.diag.add(diagnose.unreadable(request_id, err))
+                return False
+        # Results go to the re-ask's tracking issue, else the original's.
+        issue = rq.tracking_issue or (_issue_of(original_raw) if original_raw is not None else None)
+        ledger = self.j.ledger()
+        refused = check_ledger(ledger, rq)
+        if refused:
+            self._reask_refused(request_id, digest, rq.reask_of, refused[0], refused[1], issue)
+            return False
+        if original_raw is None:
+            self._reask_refused(request_id, digest, rq.reask_of, "REASK_ORIGINAL_CHANGED", "no longer there", issue)
+            return False
+        if hashlib.sha256(original_raw).hexdigest() != ledger[rq.reask_of].get("digest"):
+            self._reask_refused(request_id, digest, rq.reask_of, "REASK_ORIGINAL_CHANGED", "changed", issue)
+            return False
+        if is_lookup(original_raw):
+            self._reask_refused(request_id, digest, rq.reask_of, "REASK_LOOKUP", "", issue)
+            return False
+        try:
+            original = parse(original_raw)
+        except ManifestError as err:
+            self._finish_reask(request_id, digest, issue, Result(REFUSED, [f"manifest: {err.code}"]), rq.reask_of)
+            return False
+        if not any(fnmatchcase(original.source_ref, g) for g in self.o.source_ref_allowlist):
+            self._finish_reask(request_id, digest, issue, Result(REFUSED, ["source_ref not in allowlist"]),
+                               rq.reask_of)
+            return False
+        limited = self._limit_reason(request_id)
+        if limited:
+            self.j.audit(request_id, "RATE_LIMITED")
+            self.diag.add(limited)
+            self._announce_hold(limited, issue)
+            self._offer_lift()
+            return True   # try again on a later poll; not recorded in the ledger
+        if not self.o.dry_run:   # practice-mode re-asks change nothing and never use up a re-ask
+            self.j.link_reask(rq.reask_of, request_id)
+        self.j.audit(request_id, "REASK", reask_of=rq.reask_of, requested_by=rq.requested_by)
+        result = self.ensure_engine().run(self._reask_run(original, request_id, issue, rq.reask_of))
+        self._finish_reask(request_id, digest, issue, result, rq.reask_of)
+        if result.outcome == FAILED_MANUAL:
+            self.j.freeze(request_id)
+        return True
 
     def _lookup(self, request_id: str, raw: bytes, digest: str) -> None:
         try:
@@ -486,15 +585,14 @@ class Service:
             except net.NetError as err:
                 self.diag.add(diagnose.unreadable(request_id, err))
                 continue
-            import hashlib
-
             digest = hashlib.sha256(raw).hexdigest()
             lookup = is_lookup(raw)
             key = request_id if lookup else self.key(request_id)  # lookups are read-only in both modes
             seen = ledger.get(key)
             if seen:
                 # Idempotent: a processed id is never run again. A changed manifest under a
-                # used id is refused (logged once); the AI must use a new request_id.
+                # used id is refused (logged once); the AI must use a new request_id. (0.3.8: a
+                # TIMED_OUT request can be asked again only through a re-ask under a NEW id.)
                 if seen.get("digest") != digest and seen.get("reuse_digest") != digest:
                     self.j.mark_reuse(key, digest)
                     self.j.audit(request_id, "ID_REUSE_REFUSED", new_digest=digest)
@@ -507,6 +605,10 @@ class Service:
             if lookup:
                 self._lookup(request_id, raw, digest)
                 return  # at most one request per poll
+            if is_reask(raw):
+                if self._reask(request_id, raw, digest, head):
+                    return  # at most one request per poll
+                continue
             try:
                 manifest = parse(raw)
             except ManifestError as err:

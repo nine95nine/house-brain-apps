@@ -36,7 +36,8 @@ RE_ATTRIBUTE = re.compile(r"^[a-z0-9_]{1,64}$")
 RE_STATE = re.compile(r"^[A-Za-z0-9 _.:\-]{0,64}$")
 RE_LOG_TOKEN = re.compile(r"^[a-z0-9_.]{3,40}$")
 RE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
-REQUESTERS = ("claude", "chatgpt", "owner")
+# 0.3.8 (owner pop-up 2026-10-08 "C: Allow Grok and Gemini"): grok, gemini and codex may file requests too.
+REQUESTERS = ("claude", "chatgpt", "owner", "grok", "gemini", "codex")
 LOG_LEVELS = ("WARNING", "ERROR", "CRITICAL")
 
 
@@ -101,6 +102,7 @@ class Manifest:
     settle_seconds: int
     digest: str = field(default="")
     summary: str = field(default="")   # 0.3.3: one-line "what changes", AI-supplied, shown labelled
+    reask_of: str = field(default="")  # 0.3.8: set only by the Deployer when it re-asks a timed-out request
 
     def touched_paths(self) -> list[str]:
         paths: list[str] = []
