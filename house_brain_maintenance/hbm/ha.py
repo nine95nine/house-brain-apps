@@ -64,6 +64,21 @@ boundary is this module:
   fix. The Supervisor, this App, a host reboot or a shutdown are never routes; the only reboot is the one the
   Supervisor performs as part of the OS update the owner approved.
 
+* 0.7.0 (owner decisions 2026-10-08, "HACS and device-firmware updates"): read-only discovery of Home Assistant
+  ``update.*`` entities that the Supervisor does not own (``get_states`` and the entity registry, already allowed,
+  projected to version facts; ``GET /core/api/states/update.<x>`` projected the same way), the HACS repository
+  list (``hacs/repositories/list``, projected to id, category, domain, name, minimum Home Assistant version and
+  versions) and one entity's release notes (``update/release_notes``). Exactly one *mutating* entity target at a
+  time, opened only for an owner-approved (or, for a display-only HACS card or theme, an owner-enabled automatic)
+  update: ``with ha.entity_target(entity_id, kind, to, frm)``. Inside it the guard allows ``POST
+  /core/api/services/update/install`` with the body exactly ``{"entity_id": <it>, "version": <to>}`` (HACS; the
+  rollback body with ``<frm>`` too) or exactly ``{"entity_id": <it>}`` (device firmware, which cannot pick a
+  version), for HACS the one configuration backup ``POST /backups/new/partial`` with exactly ``{"name":
+  "hbm-pre-<entity>-<to>", "homeassistant": true, "homeassistant_exclude_database": true, "addons": [],
+  "folders": []}`` and ``GET /backups/<slug>/info``, and only for a HACS *integration* ``POST /core/restart``
+  with no body (the restart the owner's Approve covers). Never another entity, never a Supervisor-owned update
+  (Apps, Core, OS, Supervisor), never a restore.
+
 The ``ha`` CLI is never used (#223 R4 ``apps``/``addons`` escape).
 """
 from __future__ import annotations
@@ -102,7 +117,9 @@ _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/li
                        "backup/info", "get_states", "config/entity_registry/list",
                        "config/device_registry/list",
                        # 0.5.1: pending "log in again" flows (read-only list; never starts or answers one).
-                       "config_entries/flow/progress"})
+                       "config_entries/flow/progress",
+                       # 0.7.0: HACS repository list and one update entity's release notes (both read-only).
+                       "hacs/repositories/list", "update/release_notes"})
 RE_ENTITY_ID = re.compile(r"^[a-z0-9_]{1,40}\.[a-z0-9_]{1,200}$")
 RE_DEVICE_ID = re.compile(r"^[A-Za-z0-9]{1,64}$")
 RE_AGENT_ID = re.compile(r"^[a-z0-9_]{1,40}\.[A-Za-z0-9_.-]{1,80}$")
@@ -139,6 +156,17 @@ MESH_PLATFORMS = ("zha", "zwave_js", "matter")
 # 0.6.0 Core/OS update gate (owner decision 2026-10-06)
 SYSTEM_KINDS = ("core", "os")
 CORE_STATES = ("NOT_RUNNING", "STARTING", "RUNNING", "STOPPING", "FINAL_WRITE", "STOPPED")
+# 0.7.0 HACS and device-firmware updates (owner decisions 2026-10-08)
+RE_UPDATE_ENTITY = re.compile(r"^update\.[a-z0-9_]{1,200}$")
+RE_ENTITY_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:~-]{0,63}$")
+RE_DOMAIN = re.compile(r"^[a-z0-9_]{1,64}$")
+RE_HACS_ID = re.compile(r"^[0-9]{1,20}$")
+RE_FULL_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}$")
+SUPERVISOR_PLATFORM = "hassio"            # Apps, Core, OS and Supervisor: handled by the App/Core/OS engines only
+HACS_PLATFORM = "hacs"
+HACS_CATEGORIES = ("integration", "plugin", "theme", "python_script", "appdaemon", "netdaemon", "template")
+ENTITY_KINDS = ("hacs", "hacs_integration", "firmware")
+FEATURE_SPECIFIC_VERSION = 2              # homeassistant.components.update.UpdateEntityFeature.SPECIFIC_VERSION
 
 
 def _whole(v: Any) -> int | None:
@@ -229,6 +257,8 @@ _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/host/logs/boots"),
     ("POST", r"/core/api/services/persistent_notification/create"),
     ("POST", r"/core/api/services/persistent_notification/dismiss"),
+    # 0.7.0: one update entity's state, projected to version facts (read-only)
+    ("GET", r"/core/api/states/update\.[a-z0-9_]{1,200}"),
 )
 
 
@@ -304,6 +334,112 @@ def system_call_ok(kind: str, version: str, method: str, path: str, body: Any, b
         return body == {"version": version}
     if kind == "core" and backup and method == "POST" and path == f"/backups/{backup}/restore/partial":
         return body == {"homeassistant": True} and body["homeassistant"] is True
+    return False
+
+
+@dataclass(frozen=True)
+class UpdateEntity:
+    """0.7.0: one ``update.*`` entity, projected to version facts. Titles and notes are bounded text."""
+
+    entity_id: str
+    platform: str
+    device_id: str | None
+    unique_id: str | None
+    title: str
+    state: str                     # on | off | unavailable | unknown
+    installed: str | None
+    latest: str | None
+    skipped: str | None
+    in_progress: bool
+    specific_version: bool
+    auto_update: bool
+
+
+@dataclass(frozen=True)
+class HacsRepo:
+    """0.7.0: one HACS repository, projected (no descriptions, authors or paths)."""
+
+    id: str
+    category: str
+    domain: str | None
+    full_name: str
+    homeassistant: str | None      # minimum Home Assistant version the repository declares
+    installed_version: str | None
+    available_version: str | None
+
+
+def _ver(v: Any) -> str | None:
+    return v if isinstance(v, str) and RE_ENTITY_VERSION.fullmatch(v) else None
+
+
+def project_update_state(entity_id: str, row: Any, registry: dict | None = None) -> UpdateEntity | None:
+    """One ``update.*`` state (and its registry row) to an ``UpdateEntity``; None when it is not one."""
+    if not isinstance(row, dict) or not RE_UPDATE_ENTITY.fullmatch(entity_id):
+        return None
+    attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+    reg = registry or {}
+    state = row.get("state")
+    features = attrs.get("supported_features")
+    title = attrs.get("title") or attrs.get("friendly_name") or entity_id
+    dev, uid, plat = reg.get("device_id"), reg.get("unique_id"), reg.get("platform")
+    return UpdateEntity(
+        entity_id=entity_id,
+        platform=plat if isinstance(plat, str) and RE_DOMAIN.fullmatch(plat) else "",
+        device_id=dev if isinstance(dev, str) and RE_DEVICE_ID.fullmatch(dev) else None,
+        unique_id=str(uid)[:80] if isinstance(uid, (str, int)) and not isinstance(uid, bool) else None,
+        title=re.sub(r"[^A-Za-z0-9 ()._+&/:-]", "", str(title))[:60],
+        state=state if state in ("on", "off", "unavailable", "unknown") else "unknown",
+        installed=_ver(attrs.get("installed_version")), latest=_ver(attrs.get("latest_version")),
+        skipped=_ver(attrs.get("skipped_version")), in_progress=attrs.get("in_progress") not in (None, False),
+        specific_version=isinstance(features, int) and not isinstance(features, bool)
+        and bool(features & FEATURE_SPECIFIC_VERSION),
+        auto_update=attrs.get("auto_update") is True)
+
+
+def project_hacs_repo(row: Any) -> HacsRepo | None:
+    if not isinstance(row, dict):
+        return None
+    rid, cat, name = row.get("id"), row.get("category"), row.get("full_name")
+    rid = str(rid) if isinstance(rid, (str, int)) and not isinstance(rid, bool) else ""
+    if not RE_HACS_ID.fullmatch(rid) or cat not in HACS_CATEGORIES or not isinstance(name, str) \
+            or not RE_FULL_NAME.fullmatch(name):
+        return None
+    dom = row.get("domain")
+    return HacsRepo(id=rid, category=cat, domain=dom if isinstance(dom, str) and RE_DOMAIN.fullmatch(dom) else None,
+                    full_name=name, homeassistant=_ver(row.get("homeassistant")),
+                    installed_version=_ver(row.get("installed_version")),
+                    available_version=_ver(row.get("available_version")))
+
+
+def entity_backup_name(entity_id: str, version: str) -> str:
+    return f"hbm-pre-{entity_id[len('update.'):]}-{version}"[:100]
+
+
+def entity_backup_body(entity_id: str, version: str) -> dict:
+    """0.7.0: the one backup a HACS update makes: Home Assistant's configuration (custom_components and
+    www included), without its database, without Apps and folders."""
+    return {"name": entity_backup_name(entity_id, version), "homeassistant": True,
+            "homeassistant_exclude_database": True, "addons": [], "folders": []}
+
+
+def entity_call_ok(target: dict, method: str, path: str, body: Any) -> bool:
+    """True only for the exact calls of one open ``entity_target`` (bodies compared whole, types included)."""
+    eid, kind, to, frm = target["entity_id"], target["kind"], target["to"], target["frm"]
+    if method == "POST" and path == "/core/api/services/update/install":
+        if kind == "firmware":
+            return body == {"entity_id": eid} and set(body) == {"entity_id"}
+        return isinstance(body, dict) and set(body) == {"entity_id", "version"} and body["entity_id"] == eid \
+            and isinstance(body["version"], str) and body["version"] in {to, frm} - {None}
+    if kind == "firmware":
+        return False
+    if method == "POST" and path == "/backups/new/partial":
+        want = entity_backup_body(eid, to)
+        return isinstance(body, dict) and body == want and body["homeassistant"] is True \
+            and body["homeassistant_exclude_database"] is True
+    if method == "GET" and re.fullmatch(r"/backups/[a-f0-9]{8,64}/info", path):
+        return body is None
+    if kind == "hacs_integration" and method == "POST" and path == "/core/restart":
+        return body is None
     return False
 
 
@@ -437,6 +573,7 @@ class HomeAssistant:
         self._fix: tuple[str, str] | None = None
         self._system: dict | None = None          # 0.6.0: {"kind", "version", "backup"} while open
         self._migrate: dict | None = None         # 0.6.6: {"old", "new", "remove"} while open
+        self._entity: dict | None = None          # 0.7.0: {"entity_id", "kind", "to", "frm"} while open
         self._self_slug: str | None = None
         # 0.6.1 shared Core socket (see shared_ws)
         self._shared_lock = threading.Lock()
@@ -485,7 +622,13 @@ class HomeAssistant:
         mig = self._migrate
         if mig is not None and migrate_call_ok(mig["old"], mig["new"], mig["remove"], method, path, body):
             return
+        ent = self._entity
+        if ent is not None and entity_call_ok(ent, method, path, body):
+            return
         raise ForbiddenCall(f"{method} {path}")
+
+    def _busy(self) -> bool:
+        return any(t is not None for t in (self._target, self._fix, self._system, self._migrate, self._entity))
 
     @contextmanager
     def fix_target(self, kind: str, ref: str):
@@ -504,7 +647,7 @@ class HomeAssistant:
             raise ForbiddenCall("fix entry id")
         elif kind == "power_cycle" and (not self.power_cycle_entity or ref != self.power_cycle_entity):
             raise ForbiddenCall("power-cycle target is not the configured switch")
-        if self._fix is not None or self._target is not None or self._system is not None or self._migrate is not None:
+        if self._busy():
             raise ForbiddenCall("nested target")
         self._fix = (kind, ref)
         try:
@@ -517,7 +660,7 @@ class HomeAssistant:
         """Open the mutating update routes for exactly one App for the duration of a job."""
         if not RE_SLUG.fullmatch(slug) or slug == "self" or slug == self.self_slug():
             raise ForbiddenCall(f"update target {slug}")
-        if self._target is not None or self._fix is not None or self._system is not None or self._migrate is not None:
+        if self._busy():
             raise ForbiddenCall("nested update target")
         self._target = slug
         try:
@@ -535,13 +678,29 @@ class HomeAssistant:
             raise ForbiddenCall(f"system target {str(kind)[:8]}")
         if backup is not None and not RE_BACKUP_SLUG.fullmatch(backup):
             raise ForbiddenCall("system backup slug")
-        if self._target is not None or self._fix is not None or self._system is not None or self._migrate is not None:
+        if self._busy():
             raise ForbiddenCall("nested system target")
         self._system = {"kind": kind, "version": version, "backup": backup}
         try:
             yield
         finally:
             self._system = None
+
+    @contextmanager
+    def entity_target(self, entity_id: str, kind: str, to: str, frm: str | None = None):
+        """0.7.0: open the install calls for one update entity and one version (``frm``: the HACS rollback)."""
+        if not isinstance(entity_id, str) or not RE_UPDATE_ENTITY.fullmatch(entity_id) or kind not in ENTITY_KINDS:
+            raise ForbiddenCall("entity target")
+        if not isinstance(to, str) or not RE_ENTITY_VERSION.fullmatch(to) \
+                or (frm is not None and (kind == "firmware" or not RE_ENTITY_VERSION.fullmatch(frm) or frm == to)):
+            raise ForbiddenCall("entity target version")
+        if self._busy():
+            raise ForbiddenCall("nested entity target")
+        self._entity = {"entity_id": entity_id, "kind": kind, "to": to, "frm": frm}
+        try:
+            yield
+        finally:
+            self._entity = None
 
     def store_deployer_slug(self) -> str | None:
         """0.6.6: the store slug the Deployer gets from the same store as this App (``<hash>_house_brain_deployer``),
@@ -557,7 +716,7 @@ class HomeAssistant:
         if old != MIGRATE_OLD or not isinstance(new, str) or not RE_MIGRATE_NEW.fullmatch(new) \
                 or new != self.store_deployer_slug():
             raise ForbiddenCall("migrate target")
-        if self._target is not None or self._fix is not None or self._system is not None or self._migrate is not None:
+        if self._busy():
             raise ForbiddenCall("nested migrate target")
         self._migrate = {"old": old, "new": new, "remove": bool(remove)}
         try:
@@ -600,6 +759,11 @@ class HomeAssistant:
             raise ForbiddenCall(f"ws {kind}")
         if kind == "subscribe_events" and msg.get("event_type") != APPROVAL_EVENT:
             raise ForbiddenCall("ws subscribe to non-approval event")
+        if kind == "update/release_notes" and (set(msg) != {"type", "entity_id"} or not isinstance(
+                msg.get("entity_id"), str) or not RE_UPDATE_ENTITY.fullmatch(msg["entity_id"])):
+            raise ForbiddenCall("ws release notes")
+        if kind == "hacs/repositories/list" and set(msg) != {"type"}:
+            raise ForbiddenCall("ws hacs list")
 
     # -- HTTP ---------------------------------------------------------------
     def _call(self, method: str, path: str, body: Any = None, timeout: float = 30.0,
@@ -965,6 +1129,125 @@ class HomeAssistant:
     def restore_app(self, bslug: str, slug: str) -> None:
         self._supervisor("POST", f"/backups/{bslug}/restore/partial",
                          body={"addons": [slug], "folders": [], "homeassistant": False}, timeout=3600)
+
+    # -- 0.7.0 HACS and device-firmware updates -----------------------------------------------------
+    def update_entities(self) -> list[UpdateEntity]:
+        """Every ``update.*`` entity with its registry platform (read-only, projected)."""
+        sock = self.shared_ws()
+        try:
+            states = sock.command({"type": "get_states"}, timeout=60)
+            entities = sock.command({"type": "config/entity_registry/list"}, timeout=60)
+        finally:
+            sock.close()
+        registry = {}
+        for row in (entities if isinstance(entities, list) else [])[:20000]:
+            if isinstance(row, dict) and isinstance(row.get("entity_id"), str) \
+                    and RE_UPDATE_ENTITY.fullmatch(row["entity_id"]) and not row.get("disabled_by"):
+                registry[row["entity_id"]] = row
+        out = []
+        for row in (states if isinstance(states, list) else [])[:20000]:
+            eid = row.get("entity_id") if isinstance(row, dict) else None
+            if isinstance(eid, str) and eid in registry:
+                ent = project_update_state(eid, row, registry[eid])
+                if ent is not None:
+                    out.append(ent)
+        return sorted(out, key=lambda e: e.entity_id)
+
+    def update_entity(self, entity_id: str, platform: str = "", device_id: str | None = None,
+                      unique_id: str | None = None) -> UpdateEntity | None:
+        """One update entity now (REST, projected); None when it does not exist (any more)."""
+        if not RE_UPDATE_ENTITY.fullmatch(entity_id):
+            raise ForbiddenCall("update entity")
+        try:
+            data = self._call("GET", f"/core/api/states/{entity_id}", timeout=15)
+        except net.NetError as err:
+            if err.status == 404:
+                return None
+            raise
+        return project_update_state(entity_id, data, {"platform": platform, "device_id": device_id,
+                                                      "unique_id": unique_id})
+
+    def hacs_repos(self) -> dict[str, HacsRepo]:
+        """HACS repositories by id (projected); empty when HACS is not installed."""
+        sock = self.shared_ws()
+        try:
+            rows = sock.command({"type": "hacs/repositories/list"}, timeout=60)
+        except HAError as err:
+            if err.code == "WS_COMMAND":
+                return {}
+            raise
+        finally:
+            sock.close()
+        out = {}
+        for row in (rows if isinstance(rows, list) else [])[:5000]:
+            repo = project_hacs_repo(row)
+            if repo is not None:
+                out[repo.id] = repo
+        return out
+
+    def release_notes(self, entity_id: str) -> str:
+        """One update entity's release notes (bounded text); "" when there are none."""
+        sock = self.shared_ws()
+        try:
+            notes = sock.command({"type": "update/release_notes", "entity_id": entity_id}, timeout=60)
+        except HAError:
+            return ""
+        finally:
+            sock.close()
+        return notes[:65536] if isinstance(notes, str) else ""
+
+    def entity_health(self, *, domain: str | None = None, device_id: str | None = None) -> dict:
+        """``{"entries": {entry_id: state}, "total": n, "unavailable": n}`` for one integration (its config
+        entries and the entities of that platform) or one device (its entities). Update entities are not
+        counted. Read-only, counts and entry states only."""
+        sock = self.shared_ws()
+        try:
+            states = sock.command({"type": "get_states"}, timeout=60)
+            entities = sock.command({"type": "config/entity_registry/list"}, timeout=60)
+            entries = sock.command({"type": "config_entries/get"}) if domain else []
+        finally:
+            sock.close()
+        live = {r.get("entity_id"): r.get("state") for r in (states if isinstance(states, list) else [])[:20000]
+                if isinstance(r, dict)}
+        total = unavailable = 0
+        for row in (entities if isinstance(entities, list) else [])[:20000]:
+            if not isinstance(row, dict) or row.get("disabled_by") or not isinstance(row.get("entity_id"), str) \
+                    or row["entity_id"].startswith("update."):
+                continue
+            if (domain and row.get("platform") == domain) or (device_id and row.get("device_id") == device_id):
+                total += 1
+                if live.get(row["entity_id"]) in (None, "unavailable"):
+                    unavailable += 1
+        out_entries = {}
+        for row in (entries if isinstance(entries, list) else [])[:2000]:
+            if isinstance(row, dict) and row.get("domain") == domain and not row.get("disabled_by") \
+                    and isinstance(row.get("entry_id"), str) and RE_ENTRY_ID.fullmatch(row["entry_id"]):
+                st = row.get("state")
+                out_entries[row["entry_id"]] = st if isinstance(st, str) and re.fullmatch(r"[a-z_]{1,30}", st) \
+                    else "unknown"
+        return {"entries": out_entries, "total": total, "unavailable": unavailable}
+
+    def backup_ha_config(self, entity_id: str, version: str) -> str:
+        """Inside ``entity_target`` (HACS): the configuration backup; returns its slug."""
+        data = self._supervisor("POST", "/backups/new/partial", body=entity_backup_body(entity_id, version),
+                                timeout=3600)
+        bslug = data.get("slug") if isinstance(data, dict) else None
+        if not isinstance(bslug, str) or not RE_BACKUP_SLUG.fullmatch(bslug):
+            raise HAError("BACKUP_SLUG")
+        return bslug
+
+    def backup_has_ha(self, bslug: str) -> bool:
+        data = self._supervisor("GET", f"/backups/{bslug}/info")
+        return isinstance(data, dict) and isinstance(data.get("homeassistant"), str)
+
+    def install_update(self, entity_id: str, version: str | None, timeout: float = 600.0) -> None:
+        """Inside ``entity_target``: Home Assistant's ``update.install`` for exactly this entity (and version)."""
+        body = {"entity_id": entity_id} if version is None else {"entity_id": entity_id, "version": version}
+        self._call("POST", "/core/api/services/update/install", body=body, timeout=timeout)
+
+    def restart_core(self) -> None:
+        """Inside a HACS-integration ``entity_target`` only: restart Home Assistant Core (Supervisor)."""
+        self._supervisor("POST", "/core/restart", timeout=900)
 
     # -- 0.6.0 Core/OS update (only inside system_target, after the owner's Approve) ------------
     def backup_full(self, name: str) -> str:

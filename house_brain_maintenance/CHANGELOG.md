@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0
+
+HACS and device-firmware updates (owner pop-ups 2026-10-08: "Yes, design it", "Approve design", "Yes, but always
+ask"). Contains everything in 0.6.6 unchanged.
+
+- **HACS updates:** cards and themes (display only) follow the App rules, so with `auto_low_risk` a low-risk
+  bug-fix update installs by itself at night after the waiting period. HACS integrations always ask; one Approve
+  covers the restart. A configuration backup (no database) comes first; a failed check reinstalls the previous
+  version automatically and never offers the failed one again.
+- **Device firmware:** always asks, never automatic, and only after a version has been offered for 30 days
+  (`firmware_wait_days`). Firmware cannot be rolled back, so a device that does not come back is reported and the
+  App pauses.
+- New options `entity_updates` (default on), `firmware_wait_days` (default 30) and `update_hold` (default empty).
+- Allowlist: read-only update-entity, HACS-list and release-note reads; one install call, one configuration
+  backup and (integrations only) one Core restart per approved item, bodies compared whole.
+
 ## 0.6.6
 
 Credential Autopilot R2 (owner pop-ups 2026-10-07: "take it off my plate"). Contains everything in 0.6.5, 0.6.4

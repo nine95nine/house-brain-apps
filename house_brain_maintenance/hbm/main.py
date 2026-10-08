@@ -14,10 +14,11 @@ from dataclasses import dataclass
 
 from . import VERSION, approval, ghauth, ghpage, net
 from .github import REQUESTS_DIR, RE_REPO, GitHub
-from .ha import RE_SLUG, HAError, HomeAssistant, RE_SWITCH
+from .ha import RE_SLUG, RE_UPDATE_ENTITY, HAError, HomeAssistant, RE_SWITCH
 from .jobs import DONE, FAILED, FAILED_MANUAL, REFUSED, Engine, Result, Settings
 from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Updater
 from .system import JOBS as SYSTEM_JOBS, ROLLED_BACK, SystemPolicy, SystemUpdater
+from .entities import JOBS as ENTITY_JOBS, EntityPolicy, EntityUpdater
 from .migrate import JOB as MIGRATE_JOB, MigratePolicy, Migrator
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
@@ -90,6 +91,9 @@ class Options:
     retire_old_token: bool = True     # R2: retire the old hand-made token after 24 h of GitHub App sign-ins
     relay_credential_url: str = ""    # 0.6.3: the relay's public dispatch-key self-test view ("" = off)
     update_reask_hours: int = 6       # 0.6.5: an update ask with no answer is asked again after this (was 24 h)
+    entity_updates: bool = True       # 0.7.0: HACS and device-firmware updates (owner 2026-10-08)
+    firmware_wait_days: int = 30      # 0.7.0: firmware is asked only after it was offered this long
+    update_hold: tuple[str, ...] = () # 0.7.0: update entities the owner holds (never asked, never installed)
 
 
 def load_options(path: str) -> Options:
@@ -164,6 +168,10 @@ def load_options(path: str) -> Options:
         liveness_interval_minutes=i("liveness_interval_minutes", 2, 30) if "liveness_interval_minutes" in raw else 2,
         extender_plug_entity=_plug(raw.get("extender_plug_entity", "")),
         update_reask_hours=i("update_reask_hours", 1, 48) if "update_reask_hours" in raw else 6,
+        entity_updates=raw.get("entity_updates", True) if isinstance(raw.get("entity_updates", True), bool)
+        else _bad("entity_updates"),
+        firmware_wait_days=i("firmware_wait_days", 0, 90) if "firmware_wait_days" in raw else 30,
+        update_hold=_hold(raw.get("update_hold", [])),
     )
 
 
@@ -206,6 +214,15 @@ def _liveness(raw: dict) -> dict:
         raise OptionsError("liveness_key")
     net.register_secret(key)
     return {"liveness_url": url, "liveness_key": key}
+
+
+def _hold(value) -> tuple[str, ...]:
+    if value in (None, ""):
+        return ()
+    if not isinstance(value, list) or len(value) > 50 or not all(
+            isinstance(v, str) and RE_UPDATE_ENTITY.fullmatch(v) for v in value):
+        raise OptionsError("update_hold")
+    return tuple(sorted(set(value)))
 
 
 def _plug(value) -> str:
@@ -258,6 +275,7 @@ class Service:
         self.engine: Engine | None = None
         self.updater: Updater | None = None
         self.system: SystemUpdater | None = None
+        self.entities: EntityUpdater | None = None         # 0.7.0: HACS and device firmware
         self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
         self.watcher: Watcher | None = None
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
@@ -318,6 +336,15 @@ class Service:
             self.system = SystemUpdater(self.ha, self.j, settings, SystemPolicy(
                 lead_seconds=3600.0 * scale, reask_hours=float(self.o.update_reask_hours), boot_seconds=900.0 * scale,
                 settle_seconds=60.0 * scale, reboot_seconds=3600.0 * scale, poll=self.poll), self.report_text)
+            # 0.7.0 HACS and device firmware: cards/themes may install by themselves (update_mode), integrations
+            # and firmware always ask; firmware only after firmware_wait_days. Times scale in test mode.
+            self.entities = EntityUpdater(self.ha, self.j, settings, EntityPolicy(
+                mode=self.o.update_mode, window=(self.o.auto_window_start_hour, self.o.auto_window_end_hour),
+                wait_days=float(self.o.auto_wait_days), firmware_wait_days=float(self.o.firmware_wait_days),
+                reask_hours=float(self.o.update_reask_hours), health_seconds=health, boot_seconds=900.0 * scale,
+                firmware_seconds=3600.0 * scale, poll=self.poll, hold=frozenset(self.o.update_hold),
+                enabled=self.o.entity_updates),
+                app_successes=lambda: int(self.j.load_doc("updates", {}).get("successes", 0)))
             self.migrator = Migrator(self.ha, self.j, settings, MigratePolicy(
                 watch_seconds=1200.0 * scale, poll=self.poll, reask_hours=24.0))
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
@@ -378,6 +405,12 @@ class Service:
                 out = self.migrator.recover(txn)
                 self.finish(out.request_id, MIGRATE_JOB, f"migrate:{txn.get('new')}", self.o.report_issue or None,
                             Result(out.result_outcome, out.reasons, out.facts))
+                return
+            if txn.get("kind") == "entity":
+                out = self.entities.recover(txn)
+                out.facts = {"entity_id": txn.get("entity_id"), "kind": txn.get("entity_kind"), "from": txn.get("from"),
+                             "to": txn.get("to"), **out.facts}
+                self.finish_entity(out, str(txn.get("entity_kind")))
                 return
             if txn.get("kind") == "system":
                 out = self.system.recover(txn)
@@ -447,12 +480,22 @@ class Service:
                 return
             if (self.j.load_txn() or {}).get("kind") == "system":
                 return                                  # OS update started; the result follows after the reboot
+            # 0.7.0: HACS and device firmware, only when nothing else ran in this cycle.
+            ent_out = self.entities.cycle() if self.entities is not None else None
+            if ent_out is not None:
+                self.finish_entity(ent_out, str(ent_out.facts.get("kind", "")))
+                return
             self.status("IDLE", {"version": VERSION, "dry_run": self.o.dry_run, "pending_updates": 0,
                                  **self._ledger_attrs()})
             return
         result = Result(out.result_outcome, out.reasons, out.facts)
         self.finish(out.request_id, UPDATE_JOB, f"update:{out.facts.get('slug')}@{out.facts.get('to')}",
                     self.o.report_issue or None, result)
+
+    def finish_entity(self, out, kind: str) -> None:
+        self.finish(out.request_id, ENTITY_JOBS.get(kind, "UPDATE_HACS"),
+                    f"entity:{out.facts.get('entity_id')}@{out.facts.get('to')}", self.o.report_issue or None,
+                    Result(out.result_outcome, out.reasons, out.facts))
 
     def finish_system(self, kind: str, to: str, out) -> None:
         self.finish(out.request_id, SYSTEM_JOBS.get(kind, "UPDATE_SYSTEM"), f"system:{kind}@{to}",

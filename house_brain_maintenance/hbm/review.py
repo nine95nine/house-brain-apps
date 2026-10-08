@@ -47,20 +47,24 @@ class Review:
         return self.verdict == LOW and self.bump == "patch"
 
 
-def _parts(version: str) -> list[str]:
+def _parts(version: str, tags: bool = False) -> list[str]:
+    if tags and len(version) > 1 and version[0] in "vV" and version[1].isdigit():
+        version = version[1:]          # 0.7.0 (HACS/firmware only): release tags "v5.2.3", firmware "V7.2.8.5"
     core = re.split(r"[-+]", version, maxsplit=1)[0]
     return core.split(".")
 
 
-def version_tuple(version: str) -> tuple[int, ...] | None:
-    parts = _parts(version)
+def version_tuple(version: str, tags: bool = False) -> tuple[int, ...] | None:
+    parts = _parts(version, tags)
     if not parts or not all(_NUM.fullmatch(p) for p in parts):
         return None
     return tuple(int(p) for p in parts)
 
 
-def bump_kind(old: str, new: str) -> str:
-    a, b = version_tuple(old), version_tuple(new)
+def bump_kind(old: str, new: str, tags: bool = False) -> str:
+    """``tags`` (0.7.0, HACS and firmware only): a leading v/V is part of the tag, not the version. App versions
+    keep 0.6.x behaviour (a v-prefixed App version is not comparable)."""
+    a, b = version_tuple(old, tags), version_tuple(new, tags)
     if a is None or b is None or len(a) < 2 or len(b) < 2:
         return "unknown"
     if b <= a:
@@ -145,3 +149,69 @@ def review(*, name: str, installed: AppDetail, store: AppDetail, changelog: str,
     reasons = tuple(blocked or risky or [f"{bump} update, clean release notes, no permission change"])
     return Review(slug=installed.slug, name=name, from_version=from_v, to_version=to_v, bump=bump,
                   verdict=verdict, reasons=reasons, dependents=dependents)
+
+
+# -- 0.7.0 HACS and device-firmware updates (owner decisions 2026-10-08) ------------------------------------
+HACS_DISPLAY = ("plugin", "theme")       # dashboard cards and themes: display only, no restart
+
+
+@dataclass(frozen=True)
+class EntityReview:
+    entity_id: str
+    name: str
+    kind: str                      # hacs | hacs_integration | firmware
+    category: str                  # HACS category, or "firmware"
+    from_version: str
+    to_version: str
+    bump: str
+    verdict: str
+    reasons: tuple[str, ...]
+
+    @property
+    def slug(self) -> str:         # the key the shared automatic-install rules use
+        return self.entity_id
+
+    @property
+    def auto_eligible(self) -> bool:
+        """Only a display-only HACS card or theme may ever install without a tap (owner design 2026-10-08)."""
+        return self.kind == "hacs" and self.category in HACS_DISPLAY and self.verdict == LOW and self.bump == "patch"
+
+
+def entity_kind(platform: str, category: str | None) -> str | None:
+    """Which engine path an update entity takes; None: not this engine's (Supervisor-owned or unknown)."""
+    if platform in ("", "hassio"):
+        return None
+    if platform == "hacs":
+        if category is None:
+            return None
+        return "hacs_integration" if category == "integration" else "hacs"
+    return "firmware"
+
+
+def review_entity(*, entity_id: str, name: str, kind: str, category: str, from_version: str, to_version: str,
+                  notes: str, ha_min: str | None, core_version: str, unhealthy: frozenset[str],
+                  quarantined: bool, in_progress: bool) -> EntityReview:
+    bump = bump_kind(from_version, to_version, tags=True)
+    blocked: list[str] = []
+    risky: list[str] = []
+    if quarantined:
+        blocked.append(f"{to_version} failed here before and was rolled back")
+    if ha_min and _newer(ha_min, core_version):
+        blocked.append(f"needs Home Assistant {ha_min}; you run {core_version}")
+    if unhealthy:
+        blocked.append("Home Assistant reports it is unhealthy: " + ", ".join(sorted(unhealthy))[:120])
+    if in_progress:
+        blocked.append("an install is already in progress")
+    if bump == "major":
+        risky.append("major version jump")
+    if bump == "unknown":
+        risky.append("version numbers are not comparable")
+    words = risk_words(changelog_window(notes, from_version))
+    if words:
+        risky.append("release notes mention: " + ", ".join(words[:5]))
+    if not notes.strip():
+        risky.append("no release notes available")
+    verdict = BLOCKED if blocked else RISKY if risky else LOW
+    reasons = tuple(blocked or risky or [f"{bump} update, clean release notes"])
+    return EntityReview(entity_id=entity_id, name=name, kind=kind, category=category, from_version=from_version,
+                        to_version=to_version, bump=bump, verdict=verdict, reasons=reasons)
