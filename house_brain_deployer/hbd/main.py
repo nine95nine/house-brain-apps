@@ -22,6 +22,7 @@ from . import ha as ha_mod
 from .ha import HomeAssistant
 from .journal import INSTALL_STAGES, LOOKUP_STAGES, Journal
 from .lookup import is_lookup, parse_lookup, run_lookup
+from . import http_cleanup
 from .manifest import ManifestError, RE_REQUEST_ID, Manifest, parse
 from .reask import check_ledger, is_reask, parse_reask
 from .web import INGRESS_PEER, ApprovalBoard, IngressServer
@@ -393,6 +394,35 @@ class Service:
         result = run_lookup(self.ensure_engine(), lr)
         self.finish(request_id, lr.digest, lr.tracking_issue, result, key=request_id)
 
+    def _http_inspect(self, request_id: str, raw: bytes, digest: str) -> None:
+        try:
+            m = parse(raw)
+            if m.request_id != request_id or m.http_operation != "inspect":
+                raise ManifestError("HTTP_REQUEST_ID")
+        except ManifestError as err:
+            self.finish(request_id, digest, None, Result(REFUSED, [err.code]), key=request_id)
+            return
+        limited = self._limit_reason(request_id, lookup=True)
+        if limited:
+            self.diag.add(limited)
+            self._announce_hold(limited, m.tracking_issue)
+            return
+        engine = self.ensure_engine()
+        decision = engine._ask(m, "LOOKUP", "House Brain: inspect HTTP migration?",
+                               "Read only configuration.yaml and confirmed HTTP UI settings locally. "
+                               "Return hashes and readiness only; no file contents, changes or restart.",
+                               self.timing.approval_timeout)
+        if decision != approval.APPROVE:
+            result = Result("REJECTED" if decision == approval.REJECT else "TIMED_OUT", [decision])
+        else:
+            try:
+                _, facts = http_cleanup.inspect(self.ha, self.pk)
+                result = Result("HTTP_INSPECTION_OK", [], facts)
+            except Exception as err:  # noqa: BLE001 - no config/error text may leave the house
+                code = str(err) if isinstance(err, http_cleanup.CleanupError) else type(err).__name__
+                result = Result(REFUSED, [f"HTTP_INSPECTION:{code}"])
+        self.finish(request_id, digest, m.tracking_issue, result, key=request_id)
+
     def frozen(self) -> str | None:
         rid = self.j.frozen_by()
         if rid and self.o.clear_freeze_for == rid and not self.j.load_txn():
@@ -586,7 +616,8 @@ class Service:
                 self.diag.add(diagnose.unreadable(request_id, err))
                 continue
             digest = hashlib.sha256(raw).hexdigest()
-            lookup = is_lookup(raw)
+            http_inspection = http_cleanup.is_inspect(raw)
+            lookup = is_lookup(raw) or http_inspection
             key = request_id if lookup else self.key(request_id)  # lookups are read-only in both modes
             seen = ledger.get(key)
             if seen:
@@ -603,7 +634,10 @@ class Service:
                 continue
             self.diag.checked_requests += 1
             if lookup:
-                self._lookup(request_id, raw, digest)
+                if http_inspection:
+                    self._http_inspect(request_id, raw, digest)
+                else:
+                    self._lookup(request_id, raw, digest)
                 return  # at most one request per poll
             if is_reask(raw):
                 if self._reask(request_id, raw, digest, head):
@@ -789,3 +823,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
