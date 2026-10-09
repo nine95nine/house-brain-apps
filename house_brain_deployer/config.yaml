@@ -1,9 +1,9 @@
 name: "House Brain Deployer"
-version: "0.3.8"
+version: "0.3.9"
 slug: "house_brain_deployer"
 description: >-
   Pull-based, owner-approved deployment of Home Assistant package files from the
-  House Brain repository. Only /config/packages/<slug>.yaml targets; SHA-256
+  House Brain repository. Package targets plus a fixed HTTP migration cleanup; SHA-256
   verified; partial backup first; strict config check; separate iPhone approvals
   for deploy and restart (tap the push to open the approval page); automatic
   rollback. Ingress only, except a GitHub Connect hand-off port open only during a
@@ -89,3 +89,4 @@ schema:
   restart_approval_timeout_minutes: "int(2,30)"
   require_phone_unlock: bool
   clear_freeze_for: "match(^([a-z0-9][a-z0-9-]{2,63})?$)?"
+

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.9 — 2026-10-08 candidate (#981; NOT INSTALLED)
+
+- Shared ChatGPT/Claude `house_brain_http_cleanup_request.v1`: approved hash-only inspection and fixed, locally generated removal of the obsolete literal Tailscale HTTP YAML block.
+- Confirm stable Network proxy equivalence, original/candidate/UI hashes and migration warning before changes; separate deploy/restart approvals. No generic root YAML, HTTP configure/promote or repair-ignore authority.
+- Preserve non-HTTP bytes and file mode; independent exclusive copy backup, conflict-safe atomic replacement and journal rollback. External edits are retained and freeze the Deployer for review.
+- Use the running Core's config check for this repair, avoiding a second Core on the Pi. Detailed root check errors stay in Home Assistant. Require unchanged UI fingerprint, exact candidate and repair disappearance after restart.
+- Target ARM64 image/AppArmor qualification and installation are pending. Existing package operations, credentials, provider list and re-ask behavior are retained. Deterministic candidate carrier `hbd-0.3.9.tar`; store release remains a separate gate.
+
 ## 0.3.8 — 2026-10-08
 
 Re-ask by reference (owner pop-ups 2026-10-08 "A: Deployer re-ask (0.3.8)" and "C: Allow Grok and Gemini").
