@@ -36,7 +36,8 @@ _HTTP_ALLOW: tuple[tuple[str, re.Pattern], ...] = (
     ("POST", re.compile(r"^/core/api/services/hassio/backup_partial$")),
     ("POST", re.compile(r"^/core/api/states/" + re.escape(STATUS_ENTITY) + r"$")),
 )
-_WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "system_log/list", "config/auth/list"})
+_WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "system_log/list", "config/auth/list",
+                       "http/config", "repairs/list_issues"})
 APPROVAL_EVENT = "mobile_app_notification_action"
 
 
@@ -67,6 +68,8 @@ def _ws_guard(msg: dict) -> None:
         raise ForbiddenCall(f"ws {kind}")
     if kind == "subscribe_events" and msg.get("event_type") != APPROVAL_EVENT:
         raise ForbiddenCall("ws subscribe to non-approval event")
+    if kind in ("http/config", "repairs/list_issues") and set(msg) != {"type"}:
+        raise ForbiddenCall("ws read takes no parameters")
 
 
 class HomeAssistant:
@@ -203,6 +206,26 @@ class HomeAssistant:
     def ws(self) -> CoreSocket:
         return CoreSocket(self.ws_url, self._token)
 
+    def http_configuration(self) -> dict:
+        sock = self.ws()
+        try:
+            return sock.command({"type": "http/config"})
+        finally:
+            sock.close()
+
+    def http_repair_ids(self) -> set[str]:
+        sock = self.ws()
+        try:
+            result = sock.command({"type": "repairs/list_issues"})
+        finally:
+            sock.close()
+        if not isinstance(result, dict) or not isinstance(result.get("issues"), list):
+            raise HAError("HTTP_REPAIR_SHAPE")
+        # Only closed HTTP repair ids leave this adapter; other Repairs may contain private data.
+        allowed = {"yaml_still_present_after_migration", "deprecated_yaml", "deprecated_yaml_import_error"}
+        return {i["issue_id"] for i in result["issues"] if isinstance(i, dict)
+                and i.get("domain") == "http" and i.get("issue_id") in allowed}
+
 
 class CoreSocket:
     """Synchronous Core WebSocket session restricted to the allowlist."""
@@ -260,3 +283,4 @@ class CoreSocket:
             self._conn.close()
         except Exception:  # noqa: BLE001, S110 - closing a dead socket is best-effort
             pass
+

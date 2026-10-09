@@ -23,8 +23,9 @@ the GitHub issue. Lookups can never change anything.
 
 ## What it can and cannot do
 
-- Can write only `/config/packages/<name>.yaml` files and keep the old copy as `<name>.yaml[.tag].bak`.
-- Cannot touch `secrets.yaml`, `.storage`, dashboards, other Apps, or anything outside `packages/`.
+- Generic deployments write only `/config/packages/<name>.yaml` files and keep the old copy as `<name>.yaml[.tag].bak`.
+- 0.3.9 adds one fixed repair: remove an obsolete HTTP block from `configuration.yaml` after confirming the migrated Network settings already match. The AI receives hashes, never the configuration contents. You approve inspection, then separately deployment and restart. Unsupported files or mismatched settings are refused.
+- Cannot touch `secrets.yaml`, `.storage`, dashboards or other Apps. No arbitrary root configuration editor or HTTP settings mutation is provided.
 - Never turns anything on or off. It only sends you notifications, makes a partial backup, runs the
   configuration check and (after your second tap) restarts Home Assistant.
 - Opens no port on your network. Its approval page is reachable only inside the Home Assistant app

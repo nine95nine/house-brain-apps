@@ -103,6 +103,8 @@ class Manifest:
     digest: str = field(default="")
     summary: str = field(default="")   # 0.3.3: one-line "what changes", AI-supplied, shown labelled
     reask_of: str = field(default="")  # 0.3.8: set only by the Deployer when it re-asks a timed-out request
+    http_operation: str = field(default="")
+    stable_http_sha256: str = field(default="")
 
     def touched_paths(self) -> list[str]:
         paths: list[str] = []
@@ -240,6 +242,10 @@ def parse(raw_bytes: bytes) -> Manifest:
     except (ValueError, RecursionError) as err:
         raise ManifestError("JSON") from err
 
+    if isinstance(data, dict) and data.get("schema") == "house_brain_http_cleanup_request.v1":
+        from .http_cleanup import request
+        return request(data, hashlib.sha256(raw_bytes).hexdigest())
+
     top = _obj(
         data,
         "manifest",
@@ -364,3 +370,4 @@ def _cross_checks(m: Manifest) -> None:
     for rop in m.retire:
         if rop.path in targets:
             raise ManifestError("PATH_COLLISION", "retire path is also a target")
+

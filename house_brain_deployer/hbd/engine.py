@@ -18,12 +18,14 @@ into new changes.
 from __future__ import annotations
 
 import secrets
+import os
+import stat
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import approval, diagnose, recipe, undo
+from . import approval, diagnose, recipe, undo, http_cleanup
 from .fsops import FsError, Packages, file_sha
 from .github import GitHub
 from .ha import HomeAssistant
@@ -147,6 +149,20 @@ class Engine:
 
     # ------------------------------------------------------------------ prepare
     def prepare(self, m: Manifest) -> Prepared:
+        if m.http_operation == "remove":
+            try:
+                data, facts = http_cleanup.inspect(self.ha, self.pk)
+            except http_cleanup.CleanupError as err:
+                raise Refused(str(err)) from None
+            except Exception as err:  # noqa: BLE001 - never return raw configuration or transport content
+                raise Refused("HTTP_INSPECTION_UNAVAILABLE:" + type(err).__name__) from None
+            op = m.files[0]
+            if (facts["expect_current_sha256"] != op.expect_current_sha256
+                    or facts["candidate_sha256"] != op.sha256
+                    or facts["stable_http_sha256"] != m.stable_http_sha256):
+                raise Refused("HTTP_INSPECTION_CHANGED")
+            return Prepared(m, {op.target: data}, ["Only obsolete HTTP YAML removed; confirmed UI settings unchanged"],
+                            self.pk.snapshot(m.touched_paths()))
         if not self.gh.is_ancestor(m.source_commit, m.source_ref):
             raise Refused("SOURCE_NOT_ON_REF")
         contents: dict[str, bytes] = {}
@@ -246,7 +262,16 @@ class Engine:
             self.pk.unlink_if(L(step["path"]), step["sha"])
         elif kind == "stage":
             self.pk.write_stage(step["stage"], contents[step["target"]], step["sha"])
+            if step["target"] == http_cleanup.TARGET:
+                fd = os.open(step["stage"], os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    os.fchmod(fd, stat.S_IMODE(os.stat(L(step["target"]), follow_symlinks=False).st_mode))
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
         elif kind == "swap":
+            if step["target"] == http_cleanup.TARGET and file_sha(L(step["target"])) != step["old"]:
+                raise FsError("HTTP_TARGET_CHANGED_BEFORE_SWAP")
             if file_sha(L(step["backup"])) != step["old"]:
                 raise FsError("BACKUP_NOT_VERIFIED", basename(step["backup"]))
             if file_sha(step["stage"]) != step["sha"]:
@@ -282,6 +307,8 @@ class Engine:
             current = file_sha(target)
             if current == step["old"]:
                 return
+            if step["target"] == http_cleanup.TARGET and current != step["sha"]:
+                raise FsError("HTTP_EXTERNAL_EDIT_PRESERVED")
             if file_sha(backup) != step["old"]:
                 raise FsError("CANNOT_RESTORE", basename(step["target"]))
             tmp = step["stage"] + ".restore"
@@ -319,17 +346,20 @@ class Engine:
         return [basename(p) for p, sha in txn["pre"].items() if now.get(p) != sha]
 
     # ----------------------------------------------------------------- checks
-    def strict_config_check(self) -> list[str]:
+    def strict_config_check(self, http_only: bool = False) -> list[str]:
         problems: list[str] = []
-        ok, detail = self.ha.supervisor_check()
-        if not ok:
-            problems.append(f"Supervisor check failed: {detail[:300]}")
+        if not http_only:
+            ok, detail = self.ha.supervisor_check()
+            if not ok:
+                problems.append(f"Supervisor check failed: {detail[:300]}")
         try:
             result, errors, warnings = self.ha.core_check()
             if result != "valid" or errors:
-                problems.append(f"Core check errors: {str(errors)[:300]}")
+                problems.append("Core check errors (details retained in Home Assistant)" if http_only
+                                else f"Core check errors: {str(errors)[:300]}")
             if warnings:
-                problems.append(f"Core check warnings: {str(warnings)[:300]}")
+                problems.append("Core check warnings (details retained in Home Assistant)" if http_only
+                                else f"Core check warnings: {str(warnings)[:300]}")
         except Exception as err:  # noqa: BLE001 - unknown check result is a failure
             problems.append(f"Core check unavailable: {type(err).__name__}")
         return problems
@@ -370,6 +400,17 @@ class Engine:
         self._check_stop("HEALTH")
         if not running:
             return ["Home Assistant did not reach RUNNING"]
+        if m.http_operation:
+            try:
+                if file_sha(self.pk.local(http_cleanup.TARGET)) != m.files[0].sha256:
+                    return ["HTTP_CANDIDATE_CHANGED_AFTER_RESTART"]
+                if http_cleanup.fingerprint(http_cleanup.stable_configuration(self.ha)) != m.stable_http_sha256:
+                    return ["HTTP_UI_SETTINGS_CHANGED_AFTER_RESTART"]
+                if self.ha.http_repair_ids():
+                    return ["HTTP_REPAIR_STILL_PRESENT_AFTER_RESTART"]
+            except Exception as err:  # noqa: BLE001 - unreadable never passes
+                return [f"HTTP_HEALTH_UNAVAILABLE:{type(err).__name__}"]
+            return []
         deadline = time.monotonic() + m.settle_seconds * t.settle_scale
         while True:
             self._check_stop("HEALTH")
@@ -484,6 +525,9 @@ class Engine:
             "live_sha256": {basename(k): v for k, v in p.pre.items()},
             "flags": p.flags,
         }
+        if m.http_operation:
+            facts["http_cleanup"] = True
+            facts["stable_http_sha256"] = m.stable_http_sha256
         spaced = self.pk.space_named_files()
         if spaced:
             facts["space_named_files_in_packages"] = spaced[:10]
@@ -525,7 +569,7 @@ class Engine:
                             self._summary(p), self.s.timing.approval_timeout)
         if outcome != approval.APPROVE:
             return Result(REJECTED if outcome == approval.REJECT else TIMED_OUT, [outcome], facts)
-        reasons = self.strict_config_check()
+        reasons = self.strict_config_check(bool(m.http_operation))
         unmet = self.unmet(m.preconditions)
         if unmet:
             reasons.append("preconditions not met now: " + "; ".join(unmet))
@@ -557,11 +601,18 @@ class Engine:
         unmet = self.wait_preconditions(m)
         if unmet:
             return Result(ABORTED, ["preconditions not met: " + "; ".join(unmet)], facts)
-        baseline = self.strict_config_check()
+        baseline = self.strict_config_check(bool(m.http_operation))
         if baseline:
             return Result(ABORTED, ["baseline config not clean (no changes made)"] + baseline, facts)
         if self.ha.core_state() != "RUNNING":
             return Result(ABORTED, ["Home Assistant not RUNNING"], facts)
+        if m.http_operation:
+            try:
+                _, current = http_cleanup.inspect(self.ha, self.pk)
+                if current["stable_http_sha256"] != m.stable_http_sha256:
+                    return Result(ABORTED, ["HTTP_UI_CHANGED_DURING_APPROVAL"], facts)
+            except Exception as err:  # noqa: BLE001
+                return Result(ABORTED, [f"HTTP_PREFLIGHT:{type(err).__name__}"], facts)
         unchanged = self.capture_unchanged(m)
         unreadable = [e for e, v in unchanged.items() if v in (None, "unknown", "unavailable")]
         if unreadable:
@@ -604,7 +655,7 @@ class Engine:
 
         txn["phase"] = "CHECKING"
         self.j.save_txn(txn)
-        problems = self.strict_config_check()
+        problems = self.strict_config_check(bool(m.http_operation))
         if problems:
             return self._rollback_files(txn, ["config check failed"] + problems)
 
@@ -621,6 +672,12 @@ class Engine:
         unmet = self.wait_preconditions(m)
         if unmet:
             return self._rollback_files(txn, ["preconditions not met before restart: " + "; ".join(unmet)])
+        if m.http_operation:
+            try:
+                if http_cleanup.fingerprint(http_cleanup.stable_configuration(self.ha)) != m.stable_http_sha256:
+                    return self._rollback_files(txn, ["HTTP_UI_CHANGED_BEFORE_RESTART"])
+            except Exception as err:  # noqa: BLE001
+                return self._rollback_files(txn, [f"HTTP_UI_UNAVAILABLE:{type(err).__name__}"])
         return self._restart_and_verify(txn, m)
 
     def _restart_and_verify(self, txn: dict, m: Manifest) -> Result:
@@ -644,6 +701,10 @@ class Engine:
 
     def _record_install(self, m: Manifest, txn: dict) -> None:
         """0.3.3: remember what a successful install did, so the owner can undo it from the page."""
+        if m.http_operation:
+            # Generic package Undo must never reinsert ignored HTTP YAML. Crash/health rollback still works.
+            self.j.audit(m.request_id, "HTTP_CLEANUP_ACCEPTED", candidate_sha256=m.files[0].sha256)
+            return
         try:
             undo.record_success(self.j, m, txn["pre"], self.pk.snapshot(list(txn["pre"])))
         except Exception as err:  # noqa: BLE001 - never turn a success into a failure; undo just won't be offered
@@ -685,7 +746,7 @@ class Engine:
             return Result(FAILED_MANUAL, reasons + [f"rollback restart not approved ({outcome}); "
                                                     "Home Assistant may be running the new files until restarted"],
                           txn["facts"])
-        ok, detail = self.ha.supervisor_check()
+        ok, detail = self._rollback_check(txn)
         if not ok:
             return Result(FAILED_MANUAL, reasons + ["restored files fail the config check; not restarting",
                                                     detail[:200]], txn["facts"])
@@ -712,7 +773,7 @@ class Engine:
             return Result(FAILED_MANUAL, reasons + [f"rollback error: {err}"], txn["facts"])
         if diff:
             return Result(FAILED_MANUAL, reasons + ["not restored: " + ", ".join(diff)], txn["facts"])
-        ok, detail = self.ha.supervisor_check()
+        ok, detail = self._rollback_check(txn)
         if not ok:
             return Result(FAILED_MANUAL, reasons + ["restored files fail the config check; not restarting",
                                                     detail[:200]], txn["facts"])
@@ -727,6 +788,12 @@ class Engine:
                           txn["facts"])
         self.j.clear_txn()
         return Result(ROLLED_BACK_RESTARTED, reasons, txn["facts"])
+
+    def _rollback_check(self, txn: dict) -> tuple[bool, str]:
+        if txn.get("facts", {}).get("http_cleanup"):
+            problems = self.strict_config_check(http_only=True)
+            return not problems, "; ".join(problems)
+        return self.ha.supervisor_check()
 
     # ---------------------------------------------------------------- recovery
     def recover(self, manifest_for: Callable[[str], Manifest | None]) -> tuple[str, Result] | None:
@@ -785,3 +852,4 @@ class Engine:
             if self.s.started_at else None,
         }
         return cause, details
+
