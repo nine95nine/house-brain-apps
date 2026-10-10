@@ -103,6 +103,8 @@ points at it. You then get the same approval again, marked **ASKED AGAIN**, with
 Nothing is approved by the re-ask itself: Approve installs, Reject or no answer changes nothing.
 
 - Only requests that ran out of time can be asked again. **Reject is final**: a rejected request is never asked again.
+- From 0.3.11 this also covers an unanswered **restart** approval (result `ROLLED_BACK`, the old files were put back):
+  the re-ask asks for the install again from the start, then for the restart. A Reject of the restart is final too.
 - At most **2** re-asks per request. A re-ask counts against the daily install limit like any install.
 - The request must be byte-for-byte what you were asked the first time; if the AI changed it, it is refused and the AI
   has to file a new request instead.

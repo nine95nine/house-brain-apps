@@ -87,6 +87,8 @@ class Result:
     outcome: str
     reasons: list[str] = field(default_factory=list)
     facts: dict[str, Any] = field(default_factory=dict)
+    # 0.3.11: the restart approval expired unanswered (not Reject) and the old files are back without a restart
+    restart_timed_out: bool = False
 
 
 class Refused(Exception):
@@ -666,7 +668,9 @@ class Engine:
                             "Approve restarts Home Assistant now. Reject/no answer restores the old files.",
                             t.restart_approval_timeout)
         if outcome != approval.APPROVE:
-            return self._rollback_files(txn, [f"restart not approved ({outcome})"])
+            result = self._rollback_files(txn, [f"restart not approved ({outcome})"])
+            result.restart_timed_out = outcome == approval.TIMEOUT and result.outcome == ROLLED_BACK
+            return result
         if self.pk.snapshot(list(p.pre)) != txn["post"]:
             return self._rollback_files(txn, ["files changed while waiting for restart approval"])
         unmet = self.wait_preconditions(m)

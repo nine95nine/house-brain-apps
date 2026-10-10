@@ -260,6 +260,8 @@ class Service:
             self.engine.notes = []
         self.last_result = f"{request_id}: {result.outcome}"
         self.j.record(key or self.key(request_id), digest, result.outcome)
+        if result.restart_timed_out:   # 0.3.11: lets a chat re-ask it (reask.reaskable)
+            self.j.annotate(key or self.key(request_id), restart_timed_out=True)
         self.j.audit(request_id, "OUTCOME", outcome=result.outcome, reasons=result.reasons[:5])
         self.status(result.outcome, {"request_id": request_id, "version": VERSION,
                                      "dry_run": self.o.dry_run})

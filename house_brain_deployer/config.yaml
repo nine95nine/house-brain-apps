@@ -1,5 +1,5 @@
 name: "House Brain Deployer"
-version: "0.3.9"
+version: "0.3.11"
 slug: "house_brain_deployer"
 description: >-
   Pull-based, owner-approved deployment of Home Assistant package files from the

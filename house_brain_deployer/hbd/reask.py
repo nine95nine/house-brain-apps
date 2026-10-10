@@ -1,7 +1,8 @@
 """Re-ask a request whose approval timed out (``house_brain_reask_request.v1``, 0.3.8).
 
 Owner decision (pop-up 2026-10-08, "A: Deployer re-ask (0.3.8)"): a request whose deploy approval
-expired unanswered (ledger outcome exactly ``TIMED_OUT``) may be asked ONE more time, by reference
+expired unanswered (ledger outcome exactly ``TIMED_OUT``; from 0.3.11 also a restart approval that expired
+unanswered, see ``reaskable``) may be asked again, by reference
 only. An AI commits ``deploy/requests/<new id>/manifest.json`` naming the original id; the Deployer
 re-reads the ORIGINAL manifest at the current branch head, requires its bytes to be the ones it
 processed before (SHA-256 pinned in the ledger) and runs it through the unchanged engine path:
@@ -22,7 +23,8 @@ from .manifest import RE_REQUEST_ID, REQUESTERS, ManifestError, sanitize_text
 REASK_SCHEMA = "house_brain_reask_request.v1"
 MAX_REASK_BYTES = 4 * 1024
 MAX_REASKS = 2                       # per original request id
-REASKABLE_OUTCOME = "TIMED_OUT"      # the only ledger outcome that may be asked again
+REASKABLE_OUTCOME = "TIMED_OUT"      # the deploy approval expired unanswered
+RESTART_TIMEOUT_OUTCOME = "ROLLED_BACK"  # 0.3.11: only with ``restart_timed_out`` on the ledger entry
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,18 @@ def parse_reask(raw_bytes: bytes) -> ReaskRequest:
                         hashlib.sha256(raw_bytes).hexdigest())
 
 
+def reaskable(entry: object) -> bool:
+    """May this ledger entry be asked again? ``TIMED_OUT`` (the deploy approval expired unanswered), or, from
+    0.3.11 (owner pop-up 2026-10-10), ``ROLLED_BACK`` marked ``restart_timed_out``: the files were installed, the
+    restart approval expired unanswered and the old files were put back without a restart. A Reject (deploy or
+    restart), a failed config or health check and every other outcome stay final."""
+    if not isinstance(entry, dict):
+        return False
+    outcome = entry.get("outcome")
+    return outcome == REASKABLE_OUTCOME or (outcome == RESTART_TIMEOUT_OUTCOME
+                                            and entry.get("restart_timed_out") is True)
+
+
 def check_ledger(ledger: dict, rq: ReaskRequest) -> tuple[str, str] | None:
     """Ledger-side guards. Returns (code, ended_as) when refused, None when the re-ask may proceed.
 
@@ -109,14 +123,12 @@ def check_ledger(ledger: dict, rq: ReaskRequest) -> tuple[str, str] | None:
         return "REASK_UNKNOWN", ""
     if entry.get("reask_of"):
         return "REASK_OF_REASK", ""
-    outcome = str(entry.get("outcome") or "")
-    if outcome != REASKABLE_OUTCOME:
-        return "REASK_NOT_TIMED_OUT", outcome
+    if not reaskable(entry):
+        return "REASK_NOT_TIMED_OUT", str(entry.get("outcome") or "")
     prior = [x for x in (entry.get("reasked_by") or []) if x != rq.request_id]
     if len(prior) >= MAX_REASKS:
         return "REASK_LIMIT", str(len(prior))
     for other in prior:
-        ended = str((ledger.get(other) or {}).get("outcome") or "UNFINISHED")
-        if ended != REASKABLE_OUTCOME:
-            return "REASK_NOT_TIMED_OUT", ended
+        if not reaskable(ledger.get(other)):
+            return "REASK_NOT_TIMED_OUT", str((ledger.get(other) or {}).get("outcome") or "UNFINISHED")
     return None

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.11 — 2026-10-10
+
+Re-ask after a restart approval timed out (owner pop-ups 2026-10-10 "Build 0.3.10" and "0.3.11 on main"; 0.3.10 is
+draft PR #985). Contains everything in 0.3.9 unchanged.
+
+- **Why:** a request whose files were installed but whose **restart** approval expired unanswered ends `ROLLED_BACK`
+  (the old files are put back). 0.3.8 only re-asked `TIMED_OUT`, so this case needed a whole new request.
+  Live example: `2026-10-10-evap-v23-5-r4-morning-report-r1` (17:05Z).
+- **Change:** when the restart approval gets no answer (no tap, or a tap from anyone but the owner) and the files
+  are back without a restart, the ledger entry is marked `restart_timed_out`. A re-ask
+  (`house_brain_reask_request.v1`) accepts `TIMED_OUT` or that marked `ROLLED_BACK`. It runs the original again
+  from the start: a fresh deploy approval, a new backup, then a fresh restart approval.
+- **Still final:** a Reject of the deploy or of the restart, a failed config check, an install rolled back after
+  Home Assistant restarted anyway (`ROLLED_BACK_RESTARTED`), a failed health check, `FAILED_MANUAL`. All limits are
+  unchanged: at most 2 re-asks, no re-ask of a re-ask, counted against the daily install limit, never automatic.
+
 ## 0.3.9 — 2026-10-08 candidate (#981; NOT INSTALLED)
 
 - Shared ChatGPT/Claude `house_brain_http_cleanup_request.v1`: approved hash-only inspection and fixed, locally generated removal of the obsolete literal Tailscale HTTP YAML block.

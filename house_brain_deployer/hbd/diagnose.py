@@ -223,8 +223,9 @@ def reask_refused(code: str, request_id: str, reask_of: str, detail: str = "") -
                            "asked again.", fix=new_request)
     if code == "REASK_NOT_TIMED_OUT":
         return Reason(code="REASK_NOT_TIMED_OUT", severity=HOLD, request_id=request_id,
-                      text="Re-ask refused: only a request whose approval expired unanswered (TIMED_OUT) can be "
-                           f"asked again; {reask_of} (or its latest re-ask) ended {detail or 'differently'}.",
+                      text="Re-ask refused: only a request whose approval expired unanswered (TIMED_OUT, or "
+                           "ROLLED_BACK because the restart approval expired) can be asked again; "
+                           f"{reask_of} (or its latest re-ask) ended {detail or 'differently'}.",
                       fix=new_request)
     if code == "REASK_LIMIT":
         return Reason(code="REASK_LIMIT", severity=HOLD, request_id=request_id,
