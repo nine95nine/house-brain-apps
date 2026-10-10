@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.2
+
+Owner-approved (pop-ups 2026-10-08, and 2026-10-10 "Port to 0.7.2 now"; built as 0.6.7, moved onto 0.7.0). Contains
+everything in 0.7.0 and earlier unchanged. 0.7.1 is a separate draft (PR #975); whichever merges second carries the
+other.
+
+- **See what is waiting.** The status sensor now shows the real number of updates waiting for you
+  (`pending_updates`, was always 0) and a short list (`waiting_updates`, up to 10: kind, App slug, version, when it
+  was asked, when it asks again, state). No extra Supervisor calls: it is worked out from what the update check
+  already read.
+- **"Missed" push.** When you did not answer an App, Core or OS update ask in time, one push without buttons says
+  when it asks again and that you can tap **Ask me again** on the Maintenance page. Never after Reject, never in
+  dry run.
+- **Ask me again** on the Maintenance page, next to each waiting update. It approves nothing: your phone asks again
+  on the next poll, through exactly the same path and rules as an `ASK_UPDATE_NOW` request (Reject stays final).
+  Owner only, through Home Assistant only, one at a time, lapses after one hour, counts against
+  `max_approval_requests_per_day`.
+- **Fix asks follow `update_reask_hours`.** A fix ask (and the Deployer switch-over ask) you did not answer is asked
+  again after `update_reask_hours` (default 6) instead of a fixed 24 hours. Reject stays final.
+- **More requesters.** Requests may now name `grok`, `gemini` or `codex` as `requested_by` (same rules as `claude`
+  and `chatgpt`).
+
 ## 0.7.0
 
 HACS and device-firmware updates (owner pop-ups 2026-10-08: "Yes, design it", "Approve design", "Yes, but always

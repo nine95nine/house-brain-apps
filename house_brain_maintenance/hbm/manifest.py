@@ -26,7 +26,8 @@ RE_REQUEST_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 RE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 RE_VERSION = re.compile(r"^[0-9]{1,4}(\.[0-9]{1,4}){1,3}$")
 RE_NOTE = re.compile(r"^[\x20-\x7e\n]{0,300}$")
-REQUESTERS = ("claude", "chatgpt", "owner")
+# 0.7.2 (owner-approved 2026-10-08): Grok, Gemini and Codex chats may file requests too (same rules as any requester).
+REQUESTERS = ("claude", "chatgpt", "grok", "gemini", "codex", "owner")
 
 ROTATE_SCOUT_KEY = "ROTATE_SCOUT_KEY"
 RUN_SCOUT_ONCE = "RUN_SCOUT_ONCE"

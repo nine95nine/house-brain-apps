@@ -14,6 +14,10 @@ waits ``wait_days`` after this App first saw the version offered (other people f
 first). While a low-risk update qualifies for automatic install it waits quietly for its time and the
 night window instead of asking (INTENTIONALLY MODIFIED: 0.4.x asked when such an update was found
 outside the window). Everything else still asks; ``ask`` mode is unchanged.
+
+0.7.2 (owner-approved 2026-10-08): ``waiting`` lists the updates that were asked and timed out (status attributes
+and the page's "Ask me again"), computed from this App's own memory and the offered versions the last check read
+(no extra Supervisor call); an ask that ends TIMEOUT sends one informational "Missed" push (never for Reject).
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ from dataclasses import dataclass, field
 from . import approval, net
 from .ha import ForbiddenCall, HAError, HomeAssistant, InstalledApp
 from .journal import Journal
+from .manifest import RE_APP_SLUG, RE_UPDATE_VERSION
 from .review import BLOCKED, LOW, Review, dependents_of, review
 
 DONE = "DONE"
@@ -61,6 +66,19 @@ class Outcome:
     facts: dict = field(default_factory=dict)
 
 
+def utc_iso(ts: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def missed_note(ha: HomeAssistant, notify_service: str, what: str, next_at: float) -> None:
+    """0.7.2: one informational push after an update ask timed out (no actions; its own tag, so the result push
+    that follows does not replace it)."""
+    lt = time.localtime(next_at)
+    approval.inform(ha, notify_service, "Maintenance: missed update ask",
+                    f"Missed: update {what}. I'll ask again at {lt.tm_hour:02d}:{lt.tm_min:02d} (local), or tap "
+                    "Ask me again on the Maintenance page.", tag="hbm-missed")
+
+
 def request_id_for(slug: str, version: str) -> str:
     rid = re.sub(r"[^a-z0-9-]+", "-", f"upd-{slug[:36]}-{version[:20]}".lower()).strip("-")
     return rid[:64]
@@ -72,6 +90,8 @@ class Updater:
         self.j = journal
         self.s = settings        # jobs.Settings: notify service, owner, dry_run, approval board ...
         self.p = policy
+        self.offered: dict[str, str] = {}    # 0.7.2: slug -> offered version, as the last check read them
+        self.asking = ""                     # 0.7.2: the update whose ask is on the phone right now
 
     # -- memory ------------------------------------------------------------------
     def _mem(self) -> dict:
@@ -93,7 +113,27 @@ class Updater:
                 continue
             if app.update_available and app.version and app.version_latest and app.version != app.version_latest:
                 out.append(app)
+        self.offered = {a.slug: str(a.version_latest) for a in out}
         return sorted(out, key=lambda a: a.slug)
+
+    def waiting(self) -> list[dict]:
+        """0.7.2: App updates asked and not answered (timed out) that are still offered: not declined, not
+        quarantined, not on the phone right now. Pure memory read; no Supervisor call. Empty in dry run."""
+        if self.s.dry_run:
+            return []
+        mem = self._mem()
+        out = []
+        for slug, version in sorted(self.offered.items()):
+            key = f"{slug}@{version}"
+            asked = mem["asked"].get(key)
+            if not asked or key == self.asking or mem["declined"].get(key) or mem["quarantine"].get(slug) == version:
+                continue
+            if not RE_APP_SLUG.fullmatch(slug) or not RE_UPDATE_VERSION.fullmatch(version):
+                continue                                  # never anything but a plain slug and version
+            out.append({"kind": "app", "slug": slug, "version": version, "asked_at": utc_iso(float(asked)),
+                        "next_reask_at": utc_iso(float(asked) + self.p.reask_hours * 3600),
+                        "state": "waiting_reask"})
+        return out
 
     def _due(self, app: InstalledApp, mem: dict) -> bool:
         key = f"{app.slug}@{app.version_latest}"
@@ -209,10 +249,17 @@ class Updater:
         key = f"{app.slug}@{rev.to_version}"
         if not automatic:
             mem = self._mem()
-            mem["asked"][key] = time.time()
+            asked = mem["asked"][key] = time.time()
             self._save(mem)
-            decision = self._ask(rid, rev)
+            self.asking = key
+            try:
+                decision = self._ask(rid, rev)
+            finally:
+                self.asking = ""
             if decision != approval.APPROVE:
+                if decision == approval.TIMEOUT:
+                    missed_note(self.ha, self.s.notify_service, f"{rev.name} {rev.to_version}",
+                                asked + self.p.reask_hours * 3600)
                 if decision == approval.REJECT:
                     mem = self._mem()
                     mem["declined"][key] = True

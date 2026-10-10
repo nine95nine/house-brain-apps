@@ -7,7 +7,8 @@ said (Apps restarting, integrations reconnecting and update jobs settle on their
 * critical, no fix  -> push now + tracking-issue report;
 * has a safe fix    -> Approve/Reject push (one per check, ``max_fix_asks_per_day``); Reject
                        means never ask again while the problem stays open; no answer means ask
-                       again after ``REASK_SECONDS``;
+                       again after ``WatchPolicy.reask_hours`` (0.7.2: the owner option
+                       ``update_reask_hours``, default 6; it was a fixed 24 h);
 * warning           -> queued for the summary at ``digest_hour`` (local time), with clears.
 
 In practice mode (``dry_run``) nothing is offered or run; fixable problems are reported as such.
@@ -30,7 +31,6 @@ from .journal import Journal
 
 LOG = logging.getLogger("hbm")
 DOC = "issues"
-REASK_SECONDS = 24 * 3600
 LOG_REPORT_SECONDS = 7 * 86400   # the system log empties on every Core restart; report a log error once a week
 CONFIRM_POLLS = 2
 REDIAGNOSE_SECONDS = 6 * 3600
@@ -51,6 +51,7 @@ NOT_FIXED = "NOT_FIXED"
 class WatchPolicy:
     digest_hour: int = 8
     max_fix_asks_per_day: int = 4
+    reask_hours: float = 6.0       # 0.7.2: a fix ask with no answer is asked again after this (update_reask_hours)
     verify_seconds: float = 60.0
     poll: float = 5.0
     # Power cycle of the configured switch (0.4.0, owner-approved design 2026-10-02).
@@ -376,7 +377,7 @@ class Watcher:
         def due(f: I.Finding) -> bool:
             if f.action.kind == "power_cycle":
                 return power_ok and now - st["asked"].get(f.key, 0) >= self.p.power_cycle_gap_seconds
-            return now - st["asked"].get(f.key, 0) >= REASK_SECONDS
+            return now - st["asked"].get(f.key, 0) >= self.p.reask_hours * 3600
         candidates = [f for f in current.values()
                       if f.action and st["open"].get(f.key, {}).get("polls", 0) >= CONFIRM_POLLS
                       and not st["declined"].get(f.key) and due(f)]

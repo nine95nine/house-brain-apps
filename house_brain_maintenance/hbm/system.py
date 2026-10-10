@@ -31,7 +31,8 @@ from dataclasses import dataclass
 from . import approval, net
 from .ha import ForbiddenCall, HAError, HomeAssistant, SystemInfo
 from .journal import Journal
-from .updates import DONE, DRY_RUN_OK, FAILED, FAILED_MANUAL, REFUSED, REJECTED, Outcome
+from .manifest import RE_UPDATE_VERSION
+from .updates import DONE, DRY_RUN_OK, FAILED, FAILED_MANUAL, REFUSED, REJECTED, Outcome, missed_note, utc_iso
 
 ROLLED_BACK = "ROLLED_BACK"
 KINDS = ("core", "os")                  # Core first: one item per cycle
@@ -84,6 +85,8 @@ class SystemUpdater:
         self.s = settings              # jobs.Settings (notify service, owner, dry_run, approval board ...)
         self.p = policy
         self.report = report           # posts one markdown text to the tracking issue (or nowhere)
+        self.offered: dict[str, str] = {}   # 0.7.2: kind -> offered version, as the last check read them
+        self.asking = ""                    # 0.7.2: the update whose ask is on the phone right now
 
     # -- memory ------------------------------------------------------------------------
     def _mem(self) -> dict:
@@ -105,6 +108,33 @@ class SystemUpdater:
                 continue                        # e.g. no /os/info on a non-OS install: nothing to offer
             if info.update_available and info.version and info.version_latest and info.version != info.version_latest:
                 out.append(info)
+        self.offered = {i.kind: str(i.version_latest) for i in out}
+        return out
+
+    def waiting(self) -> list[dict]:
+        """0.7.2: Core/OS updates still offered whose ask timed out (``waiting_reask``) or whose review is posted
+        and the phone has not asked yet (``waiting_review_lead``). Not declined, not quarantined, not on the phone
+        right now. Pure memory read; no Supervisor call. Empty in dry run."""
+        if self.s.dry_run:
+            return []
+        mem = self._mem()
+        out = []
+        for kind in KINDS:
+            version = self.offered.get(kind)
+            if version is None or not RE_UPDATE_VERSION.fullmatch(version):
+                continue
+            key = f"{kind}@{version}"
+            if key == self.asking or mem["declined"].get(key) or mem["quarantine"].get(key):
+                continue
+            asked, reviewed = mem["asked"].get(key), mem["reviewed"].get(key)
+            if asked:
+                out.append({"kind": kind, "version": version, "asked_at": utc_iso(float(asked)),
+                            "next_reask_at": utc_iso(float(asked) + self.p.reask_hours * 3600),
+                            "state": "waiting_reask"})
+            elif reviewed:
+                out.append({"kind": kind, "version": version, "asked_at": None,
+                            "next_reask_at": utc_iso(float(reviewed) + self.p.lead_seconds),
+                            "state": "waiting_review_lead"})
         return out
 
     def _facts(self, info: SystemInfo) -> dict:
@@ -190,10 +220,17 @@ class SystemUpdater:
     def _ask_then_apply(self, rid: str, key: str, info: SystemInfo, facts: dict) -> Outcome | None:
         """The one path to a Core/OS update: ask -> full backup -> update -> health check -> restore/fallback."""
         mem = self._mem()
-        mem["asked"][key] = time.time()
+        asked = mem["asked"][key] = time.time()
         self._save(mem)
-        decision = self._ask(rid, info, facts)
+        self.asking = key
+        try:
+            decision = self._ask(rid, info, facts)
+        finally:
+            self.asking = ""
         if decision != approval.APPROVE:
+            if decision == approval.TIMEOUT:
+                missed_note(self.ha, self.s.notify_service, f"{LABEL[info.kind]} {info.version_latest}",
+                            asked + self.p.reask_hours * 3600)
             if decision == approval.REJECT:
                 mem = self._mem()
                 mem["declined"][key] = True

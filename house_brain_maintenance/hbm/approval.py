@@ -116,9 +116,9 @@ def ask(ha: HomeAssistant, notify_service: str, owner_user_id: str, *, stage: st
         sock.close()
 
 
-def inform(ha: HomeAssistant, notify_service: str, title: str, message: str) -> None:
+def inform(ha: HomeAssistant, notify_service: str, title: str, message: str, tag: str = "hbm-result") -> None:
     try:
         ha.notify(notify_service, {"title": title[:120], "message": message[:900],
-                                   "data": {"tag": "hbm-result"}})
+                                   "data": {"tag": tag}})
     except Exception:  # noqa: BLE001, S110 - information only
         pass

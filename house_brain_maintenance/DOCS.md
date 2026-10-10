@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.7.0)
+## What it does (0.7.2)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -124,7 +124,7 @@ New in 0.5.3 (fixes for two false warnings seen on 2026-10-05), all read-only:
   the Broker's public health page only, needs no approval and changes nothing. A Scout run reports it too.
 
 **Ask me now** (new in 0.6.5, owner decision 2026-10-07). When an update ask timed out (you did not tap in time),
-any House Brain chat (Claude, ChatGPT) or you can file an `ASK_UPDATE_NOW` request and your phone asks again on
+any House Brain chat (Claude, ChatGPT, Grok, Gemini, Codex) or you can file an `ASK_UPDATE_NOW` request and your phone asks again on
 the next poll instead of after the re-ask wait. It works for a Core, OS or App update and only for the exact
 update this App already asked you about that is still waiting right now (Core/OS: its review is already on the
 tracking issue and the hour for the release-note check has passed). Anything else is refused and nothing is
@@ -219,7 +219,7 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 | `firmware_wait_days` | From 0.7.0: a firmware version is asked only after it has been offered this long (0–90, default 30). |
 | `update_hold` | From 0.7.0: update items never to ask about or install, for example `update.backyard_zen_16_multirelay_firmware`. |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
-| `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). Reject is never asked again. |
+| `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). From 0.7.2 the same wait applies to fix asks and the Deployer switch-over ask (were fixed at 24 hours). Reject is never asked again. |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |
 | `scout_slug`, `observer_slug` | The Scout and Observer Apps. Leave the defaults. |
 | `clear_freeze_for` | After a `FAILED_MANUAL` result the App pauses until you enter that request id here. |
@@ -235,6 +235,30 @@ To pause everything: set `update_mode` to `ask` and simply do not approve, or st
 The push shows Approve and Reject; Approve needs Face ID or your passcode. Tapping the push
 opens the approval page; opening it never approves. Only your user counts. No answer within
 the timeout counts as No.
+
+From 0.7.2, when an update ask (App, Core or OS) ends with no answer, one more push without buttons tells you:
+"Missed: update Home Assistant Core 2026.10.1. I'll ask again at 14:05 (local), or tap Ask me again on the
+Maintenance page." It is sent once per missed ask, never after Reject and never in dry run.
+
+## Updates waiting and "Ask me again" — from 0.7.2
+
+The Maintenance page lists the updates that are waiting for you: asked and not answered (`waiting_reask`, with the
+time it asks again), or a Core/OS review that is posted and waits for the release-note check hour
+(`waiting_review_lead`). Rejected updates and versions that failed before are not listed. Each has an
+**Ask me again** button.
+
+**Ask me again approves nothing.** It only puts that update first in line: on the next poll (`poll_seconds`, default
+5 minutes) your phone asks again, through exactly the same path as an `ASK_UPDATE_NOW` request, so every rule still
+applies (Reject is final, the release-note hour for Core/OS, Core before the OS, a healthy Home Assistant, versions
+that failed before, never this App itself) and the usual backup, update, health watch and automatic restore follow
+your Approve. It counts against `max_approval_requests_per_day`; when today's limit is reached nothing is asked and
+the result says so. Only your Home Assistant user can press it, only through Home Assistant (ingress), one at a
+time; an unused one lapses after one hour. The result is posted on `report_issue` like other updates
+(`asked_via: "page"`).
+
+The status sensor `sensor.house_brain_maintenance_status` carries the same list: `pending_updates` (how many) and
+`waiting_updates` (up to 10: kind `app`/`core`/`os`, slug for Apps, version, `asked_at`, `next_reask_at` in UTC,
+state). Until 0.6.6 `pending_updates` was always 0.
 
 ## GitHub connection (no token to renew) — from 0.6.3
 

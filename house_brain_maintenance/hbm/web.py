@@ -15,11 +15,17 @@ It has no other routes and serves no files.
 0.3.0: the page also shows the **Recovery Report** card (latest outages, likely cause, checklist).
 Its only action, "Got it", follows the same rules (ingress peer, owner user id, single-use code,
 POST to ``/recovery/ack``) and only marks the reports read.
+
+0.7.2 (owner-approved 2026-10-08): the page lists the updates waiting for a re-ask, each with **Ask me again**
+(POST ``/reask``). Same rules: ingress peer, the owner's user id, POST only, the current single-use code. Pressing
+it approves nothing: it only queues that update for an immediate re-ask on the next poll, through exactly the same
+path as ``ASK_UPDATE_NOW`` (every refusal applies). One queued request at a time; it lapses after one hour.
 """
 from __future__ import annotations
 
 import html
 import re
+import secrets
 import threading
 import time
 import urllib.parse
@@ -90,6 +96,92 @@ class ApprovalBoard:
             p.decision = choice
             p.decided_by = user_id
             return 200
+
+
+REASK_TTL = 3600.0                   # 0.7.2: a queued "Ask me again" lapses after one hour
+MAX_WAITING = 10
+
+
+class ReaskQueue:
+    """0.7.2 "Ask me again": the waiting updates the page shows and at most one queued owner request.
+
+    ``owner`` returns the owner's Home Assistant user id (None/"" while unknown: nobody may queue)."""
+
+    def __init__(self, owner, clock=time.time) -> None:
+        self._owner = owner
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._waiting: list[dict] = []
+        self._queued: dict | None = None
+        self.nonce = secrets.token_hex(12)
+
+    def set_waiting(self, items: list[dict]) -> None:
+        with self._lock:
+            self._waiting = [dict(i) for i in items[:MAX_WAITING]]
+
+    def snapshot(self) -> tuple[list[dict], dict | None, str]:
+        with self._lock:
+            queued = self._queued if self._queued and self._clock() < self._queued["expires"] else None
+            return [dict(i) for i in self._waiting], (dict(queued) if queued else None), self.nonce
+
+    def request(self, nonce: str, user_id: str, kind: str, slug: str, version: str) -> int:
+        """Called from the page thread. 200 queued; 403 not the owner; 409 stale code; 429 one is already
+        queued; 404 not an update that is waiting."""
+        try:
+            owner = self._owner() or ""
+        except Exception:  # noqa: BLE001 - unknown owner: nobody may queue
+            owner = ""
+        if not owner or not user_id or not secrets.compare_digest(user_id, owner):
+            return 403
+        with self._lock:
+            if not nonce or not secrets.compare_digest(nonce, self.nonce):
+                return 409
+            now = self._clock()
+            if self._queued is not None and now < self._queued["expires"]:
+                return 429
+            match = next((i for i in self._waiting if i["kind"] == kind and i["version"] == version
+                          and (i.get("slug") or "") == slug), None)
+            if match is None:
+                return 404
+            self.nonce = secrets.token_hex(12)          # single use
+            self._queued = {"kind": kind, "slug": slug or None, "version": version, "queued_at": now,
+                            "expires": now + REASK_TTL}
+            return 200
+
+    def take(self) -> tuple[dict | None, bool]:
+        """Called by the poll loop: (the queued request or None, whether one lapsed unused)."""
+        with self._lock:
+            item, self._queued = self._queued, None
+        if item is None:
+            return None, False
+        if self._clock() >= item["expires"]:
+            return None, True
+        return item, False
+
+
+def render_waiting(items: list[dict], queued: dict | None, nonce: str, action: str) -> str:
+    """0.7.2: the updates waiting for a re-ask, each with "Ask me again" (owner only; approves nothing)."""
+    if not items:
+        return ""
+    e = html.escape
+    label = {"core": "Home Assistant Core", "os": "Home Assistant OS"}
+    out = ['<h2>Updates waiting</h2><p class="m">Ask me again sends the approval to your phone on the next check. '
+           "It approves nothing; Reject stays final.</p><ul>"]
+    for i in items:
+        name = label.get(i["kind"], i.get("slug") or "App")
+        when = ("review posted; the phone asks at " if i["state"] == "waiting_review_lead"
+                else "not answered; asks again at ") + i["next_reask_at"]
+        out.append(f"<li>{e(name)} {e(i['version'])} ({e(when)})"
+                   f'<form method="post" action="{e(action)}"><input type="hidden" name="nonce" value="{e(nonce)}">'
+                   f'<input type="hidden" name="kind" value="{e(i["kind"])}">'
+                   f'<input type="hidden" name="slug" value="{e(i.get("slug") or "")}">'
+                   f'<input type="hidden" name="version" value="{e(i["version"])}">'
+                   '<button class="a" name="choice" value="reask">Ask me again</button></form></li>')
+    out.append("</ul>")
+    if queued:
+        out.append(f'<p class="m">Queued: {e(label.get(queued["kind"], queued.get("slug") or "App"))} '
+                   f'{e(queued["version"])} is asked on the next check.</p>')
+    return "".join(out)
 
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
@@ -198,7 +290,7 @@ def render(pending: Pending | None, last: str, action: str, note: str = "", extr
     return PAGE.format(body=body + extra)
 
 
-def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connector=None):
+def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connector=None, reask=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "hbm"
         sys_version = ""
@@ -229,13 +321,20 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
         def _action(self) -> str:
             return f"{self._base()}/decide"
 
-        def _extra(self) -> str:
-            if recovery is None:
+        def _waiting(self) -> str:
+            if reask is None:
                 return ""
+            items, queued, nonce = reask.snapshot()
+            return render_waiting(items, queued, nonce, f"{self._base()}/reask")
+
+        def _extra(self) -> str:
+            waiting = self._waiting()
+            if recovery is None:
+                return waiting
             from .recovery import CHECK_LABELS
             incidents, nonce = recovery.snapshot()
             ledger = recovery.ledger_view() if hasattr(recovery, "ledger_view") else None
-            return render_recovery(incidents, nonce, f"{self._base()}/recovery/ack", CHECK_LABELS, ledger)
+            return waiting + render_recovery(incidents, nonce, f"{self._base()}/recovery/ack", CHECK_LABELS, ledger)
 
         def _github_line(self, base: str) -> str:
             if connector is None:
@@ -286,6 +385,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
             route = urllib.parse.urlsplit(self.path).path
             if self._github_get(route):
                 return None
+            if route == "/reask":
+                return self._send(405, "method not allowed")   # 0.7.2: Ask me again is POST only
             if route not in ("/", ""):
                 return self._send(404, "not found")
             pending, last = board.snapshot()
@@ -297,7 +398,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
             route = urllib.parse.urlsplit(self.path).path
             if self._github_post(route):
                 return None
-            if route not in ("/decide", "/recovery/ack") or (route == "/recovery/ack" and recovery is None):
+            if route not in ("/decide", "/recovery/ack", "/reask") or (route == "/recovery/ack" and recovery is None) \
+                    or (route == "/reask" and reask is None):
                 return self._send(404, "not found")
             try:
                 length = int(self.headers.get("Content-Length") or "0")
@@ -311,6 +413,17 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
             nonce = (form.get("nonce") or [""])[0]
             choice = (form.get("choice") or [""])[0]
             user = self.headers.get("X-Remote-User-Id", "")
+            if route == "/reask":
+                status = (reask.request(nonce, user, (form.get("kind") or [""])[0], (form.get("slug") or [""])[0],
+                                        (form.get("version") or [""])[0]) if choice == "reask" else 400)
+                pending, last = board.snapshot()
+                reask_notes = {200: "Queued: your phone is asked again on the next check (approves nothing).",
+                               403: "Only the owner account can do this.",
+                               409: "This button has expired; reload the page.",
+                               429: "One Ask me again is already queued; wait for it.",
+                               404: "That update is not waiting any more; reload the page.", 400: "Unknown choice."}
+                return self._send(status, render(pending, last, self._action(), reask_notes.get(status, ""),
+                                                 extra=self._extra()))
             if route == "/recovery/ack":
                 status = recovery.request_ack(nonce, user) if choice == "ack" else 400
                 pending, last = board.snapshot()
@@ -337,8 +450,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
 
 class IngressServer:
     def __init__(self, board: ApprovalBoard, host: str = "0.0.0.0", port: int = 8099,  # noqa: S104 - ingress
-                 allowed_peer: str = INGRESS_PEER, recovery=None, connector=None) -> None:
-        self.httpd = ThreadingHTTPServer((host, port), make_handler(board, allowed_peer, recovery, connector))
+                 allowed_peer: str = INGRESS_PEER, recovery=None, connector=None, reask=None) -> None:
+        self.httpd = ThreadingHTTPServer((host, port), make_handler(board, allowed_peer, recovery, connector, reask))
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)

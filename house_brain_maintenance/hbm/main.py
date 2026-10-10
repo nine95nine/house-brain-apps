@@ -24,7 +24,7 @@ from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
 from .manifest import ASK_UPDATE_NOW, NO_APPROVAL_JOBS, RE_REQUEST_ID, Manifest, ManifestError, parse
-from .web import INGRESS_PEER, ApprovalBoard, IngressServer
+from .web import INGRESS_PEER, MAX_WAITING, ApprovalBoard, IngressServer, ReaskQueue
 
 LOG = logging.getLogger("hbm")
 RE_NOTIFY = re.compile(r"^mobile_app_[a-z0-9_]{1,80}$")
@@ -34,6 +34,7 @@ RE_LIVENESS_URL = re.compile(r"^https://[a-z0-9-]{1,63}\.[a-z0-9-]{1,63}\.worker
 RE_LIVENESS_KEY = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 RE_RELAY_CREDENTIAL_URL = re.compile(r"^https://[a-z0-9-]{1,63}\.[a-z0-9-]{1,63}\.workers\.dev/v1/dispatch-credential$")
 MAX_REQUESTS_PER_POLL = 10
+PAGE_JOB = "ASK_UPDATE_NOW"          # 0.7.2: "Ask me again" on the page runs exactly this job's path
 
 
 class OptionsError(ValueError):
@@ -286,6 +287,7 @@ class Service:
         self.stop = False
         self.recovery: Recovery | None = None
         self._owner_cache: str | None = None
+        self.reask = ReaskQueue(self._owner_id)          # 0.7.2: the page's "Ask me again" (owner only)
 
     def _owner_id(self) -> str | None:
         """The owner's Home Assistant user id (for the page's "Got it"); resolved once, None on failure."""
@@ -346,9 +348,10 @@ class Service:
                 enabled=self.o.entity_updates),
                 app_successes=lambda: int(self.j.load_doc("updates", {}).get("successes", 0)))
             self.migrator = Migrator(self.ha, self.j, settings, MigratePolicy(
-                watch_seconds=1200.0 * scale, poll=self.poll, reask_hours=24.0))
+                watch_seconds=1200.0 * scale, poll=self.poll, reask_hours=float(self.o.update_reask_hours)))
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
                                 max_fix_asks_per_day=self.o.max_approval_requests_per_day,
+                                reask_hours=float(self.o.update_reask_hours),
                                 verify_seconds=60.0 * self.health_scale, poll=self.poll,
                                 power_off_seconds=10.0 * self.health_scale,
                                 power_verify_seconds=600.0 * self.health_scale)
@@ -426,6 +429,8 @@ class Service:
             return
         if self.frozen():
             return
+        if self.poll_page_reask():
+            return
         try:
             handled = self.poll_requests()
         except net.NetError as err:
@@ -449,7 +454,19 @@ class Service:
             return
         self.ensure_engine()
         summary = self.watcher.check()
-        self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary, **self._ledger_attrs()})
+        self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary, **self._ledger_attrs(),
+                                 **self._waiting_attrs()})
+
+    def _waiting_attrs(self) -> dict:
+        """0.7.2: updates asked and not answered (or reviewed and waiting for the lead time), from this App's own
+        memory and the versions the last check read: no extra Supervisor call. Also feeds the page's list."""
+        items: list[dict] = []
+        if self.system is not None:
+            items += self.system.waiting()
+        if self.updater is not None:
+            items += self.updater.waiting()
+        self.reask.set_waiting(items)
+        return {"pending_updates": len(items), "waiting_updates": items[:MAX_WAITING]}
 
     def _ledger_attrs(self) -> dict:
         """0.5.2: restart ledger counts and MTBF from the Recovery Report (empty when it is off)."""
@@ -485,7 +502,7 @@ class Service:
             if ent_out is not None:
                 self.finish_entity(ent_out, str(ent_out.facts.get("kind", "")))
                 return
-            self.status("IDLE", {"version": VERSION, "dry_run": self.o.dry_run, "pending_updates": 0,
+            self.status("IDLE", {"version": VERSION, "dry_run": self.o.dry_run, **self._waiting_attrs(),
                                  **self._ledger_attrs()})
             return
         result = Result(out.result_outcome, out.reasons, out.facts)
@@ -552,27 +569,57 @@ class Service:
         """0.6.5 ASK_UPDATE_NOW: the same ask -> backup -> update -> health -> restore path as the update check,
         without the re-ask wait. The request is marked ASKING first, so a restart mid-update never asks twice
         (the update's own result then follows under its update request id, as for any update)."""
+        self._ask_now(m.request_id, m.job, m.digest, m.tracking_issue or self.o.report_issue or None,
+                      str(m.update_kind), m.update_slug, str(m.update_version), {})
+
+    def _ask_now(self, rid: str, job: str, digest: str, issue: int | None, kind: str, slug: str | None,
+                 version: str, extra: dict) -> None:
         self.ensure_engine()
-        issue = m.tracking_issue or self.o.report_issue or None
-        self.j.record(self.key(m.request_id), m.digest, "ASKING")
+        self.j.record(self.key(rid), digest, "ASKING")
         try:
-            if m.update_kind == "app":
-                out = self.updater.ask_now(str(m.update_slug), str(m.update_version))
+            if kind == "app":
+                out = self.updater.ask_now(str(slug), version)
             else:
-                out = self.system.ask_now(str(m.update_kind), str(m.update_version))
+                out = self.system.ask_now(kind, version)
         except (HAError, net.NetError) as err:
             reason = net.redact(str(err))[:200]
             result = (Result(FAILED_MANUAL, [f"read-back failed ({reason}); it is re-checked on the next poll"])
                       if self.j.load_txn() else Result(FAILED, [f"preflight: {reason}; nothing asked or changed"]))
-            self.finish(m.request_id, m.job, m.digest, issue, result)
+            result.facts.update(extra)
+            self.finish(rid, job, digest, issue, result)
             return
         if out is None:                              # OS update started: the Pi reboots, the result follows
-            self.finish(m.request_id, m.job, m.digest, issue, Result(DONE, [
+            self.finish(rid, job, digest, issue, Result(DONE, [
                 "approved; the OS update started (the Pi reboots); its result is posted when the Pi is back"],
-                {"kind": "OS", "to": m.update_version, "automatic": False}))
+                {"kind": "OS", "to": version, "automatic": False, **extra}))
             return
-        self.finish(m.request_id, m.job, m.digest, issue,
-                    Result(out.result_outcome, out.reasons, {**out.facts, "update_request": out.request_id}))
+        self.finish(rid, job, digest, issue,
+                    Result(out.result_outcome, out.reasons, {**out.facts, "update_request": out.request_id, **extra}))
+
+    def poll_page_reask(self) -> bool:
+        """0.7.2 "Ask me again" (the page): at most one queued owner request, run through exactly the
+        ASK_UPDATE_NOW path (every refusal applies) and counted against max_approval_requests_per_day. A queued
+        request older than one hour lapses unused. True when one was handled."""
+        item, lapsed = self.reask.take()
+        if lapsed:
+            self.j.audit("page-reask", "PAGE_REASK_EXPIRED")
+        if item is None:
+            return False
+        kind, slug, version = item["kind"], item.get("slug"), item["version"]
+        stamp = time.strftime("%Y%m%d%H%M%S", time.gmtime(item["queued_at"]))
+        rid = re.sub(r"[^a-z0-9-]+", "-", f"page-{kind}-{(slug or '')[:20]}-{version[:16]}".lower()).strip("-")
+        rid = re.sub(r"-+", "-", f"{rid[:48]}-{stamp}")
+        digest = f"page:{kind}:{slug or ''}@{version}"
+        issue = self.o.report_issue or None
+        facts = {"asked_via": "page", "kind": kind.upper(), "to": version, **({"slug": slug} if slug else {})}
+        if self.j.approvals_requested_since(86400) >= self.o.max_approval_requests_per_day:
+            self.j.audit(rid, "RATE_LIMITED")
+            self.finish(rid, PAGE_JOB, digest, issue, Result(REFUSED, [
+                "today's approval-ask limit (max_approval_requests_per_day) is reached; nothing asked. The App asks "
+                "again by itself at the re-ask time"], facts), notify=False)
+            return True
+        self._ask_now(rid, PAGE_JOB, digest, issue, kind, slug, version, {"asked_via": "page"})
+        return True
 
 
 HANDOFF_PORT = 8097                 # R2 (owner 2026-10-07): the GitHub hand-off address; config.yaml "ports"
@@ -640,7 +687,7 @@ def start_ingress(service: Service) -> IngressServer | None:
         port = int(os.environ.get("HBM_INGRESS_PORT", "8099"))
         peer = os.environ.get("HBM_INGRESS_PEER", INGRESS_PEER)
     server = IngressServer(service.board, port=port, allowed_peer=peer, recovery=service.recovery,
-                           connector=getattr(service, "connector", None))
+                           connector=getattr(service, "connector", None), reask=getattr(service, "reask", None))
     server.start()
     return server
 
