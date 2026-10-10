@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.3-dev
+
+HA kill-switch tile bridge (owner approval 2026-10-10 "Approve design, build it";
+`docs/architecture/AI_KILL_SWITCH_HA_BRIDGE_R1.md`). New option `ha_bridge` (default off, optional in the
+options file, so older option files stay valid). When on, every 30 s the wrapper reads
+`input_select.house_brain_ai_kill_switch`, applies it to the local #56 store through the store's own
+transition rules as `OWNER_LOCAL_UI` (`ha-kill-switch-tile`), and publishes
+`sensor.house_brain_ai_kill_switch_effective`. `FULL_STOP` applies at once; `READ_ONLY` only when the App
+option `kill_switch` is `READ_ONLY` (the ceiling); `ARMED_NORMAL` is refused
+(`HA_BRIDGE_ARMED_NORMAL_REFUSED`) and never loosens. HA errors never loosen. The heartbeat already reads
+the store, so a tile `FULL_STOP` reaches the edge. Permission change: `homeassistant_api: true`, the only
+one. The Supervisor token is used for exactly two (method, path) pairs, checked before any I/O; a static
+test refuses any other `/api/` path in the App source. The heartbeat User-Agent is now
+`house-brain-ai-access/0.1.3-dev`. Runtime files and the native binary are unchanged; the App tree
+changes, so the ARM64 qualification is re-run on the new tree.
+
 ## 0.1.2-dev
 
 Live fix (2026-10-06): the kill-switch heartbeat now sends `User-Agent: house-brain-ai-access/0.1.2-dev`.

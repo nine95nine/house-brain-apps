@@ -57,6 +57,29 @@ HEARTBEAT_INTERVAL = 60.0
 # In this mode the wrapper applies the kill switch and publishes only the heartbeat: no tunnel process, no
 # OpenAI egress, no tunnel or Broker capability accepted. It adds no tool, scope or Home Assistant access.
 HEARTBEAT_TIMEOUT = 10.0
+# `ha_bridge` (0.1.3-dev, owner approval 2026-10-10 "Approve design, build it";
+# docs/architecture/AI_KILL_SWITCH_HA_BRIDGE_R1.md). Off by default. When on, every 30 s the wrapper reads the
+# owner's HA selector, applies it to the local #56 store (Option A: the store stays authoritative; FULL_STOP
+# applies at once, READ_ONLY only up to the App option `kill_switch`, ARMED_NORMAL is refused) and publishes
+# the effective state to one HA sensor. The Supervisor token can reach the whole Core API, so the limit is
+# enforced here: exactly these two (method, path) pairs, checked before any I/O. No service call, no other
+# entity, no device control (CONTROL_AUTHORITY=NONE).
+HA_BRIDGE_ORIGIN = 'http://supervisor'
+HA_SELECTOR_PATH = '/core/api/states/input_select.house_brain_ai_kill_switch'
+HA_EFFECTIVE_PATH = '/core/api/states/sensor.house_brain_ai_kill_switch_effective'
+HA_SELECTOR_ENTITY = 'input_select.house_brain_ai_kill_switch'
+HA_BRIDGE_ALLOWED = frozenset({('GET', HA_SELECTOR_PATH), ('POST', HA_EFFECTIVE_PATH)})
+HA_BRIDGE_INTERVAL = 30.0
+HA_BRIDGE_TIMEOUT = 5.0
+HA_BRIDGE_MAX_BYTES = 65536
+HA_BRIDGE_ACTOR_REF = 'ha-kill-switch-tile'
+HA_BRIDGE_FRIENDLY_NAME = 'House Brain AI Kill Switch Effective'
+HA_REQUEST_STATES = ('FULL_STOP', 'READ_ONLY', 'ARMED_NORMAL')
+# s6-overlay v3 starts services with a reset environment unless a run script uses with-contenv. The bridge
+# needs only this one variable, so it reads it from the container environment folder instead of widening
+# the run script's environment (the run script is unchanged).
+S6_CONTAINER_ENV = Path('/run/s6/container_environment')
+SUPERVISOR_TOKEN_PATTERN = re.compile(r'[\x21-\x7e]{16,4096}', re.ASCII)
 UID = GID = 10001
 MANIFEST_SHA = 'ec20847b87a53dc8459a942f57dd458e7db537dc5b57cd6970ee6f0c25a562f5'
 LOCK_SHA = 'bd5359643ba4e382fe84f72728eb8c1954496fad201eb687babf861c8b2932b5'
@@ -145,10 +168,11 @@ def read_file(root: Path, relative: str, limit: int, *, protect: bool = False) -
 def options(raw: bytes) -> dict[str, Any]:
     value = decode(raw)
     names = {'enabled', 'tunnel_id', 'tunnel_api_key', 'broker_read_key', 'kill_switch', 'kill_switch_repair',
-             'perimeter_heartbeat_url', 'perimeter_heartbeat_key', 'claude_only'}
+             'perimeter_heartbeat_url', 'perimeter_heartbeat_key', 'claude_only', 'ha_bridge'}
     optional = {'perimeter_heartbeat_url': '', 'perimeter_heartbeat_key': '',  # absent = '' (heartbeat off)
-                'claude_only': False}  # absent = False (older option files stay valid)
-    booleans = {'enabled', 'kill_switch_repair', 'claude_only'}
+                'claude_only': False,  # absent = False (older option files stay valid)
+                'ha_bridge': False}  # 0.1.3-dev; absent = False (no HA call at all)
+    booleans = {'enabled', 'kill_switch_repair', 'claude_only', 'ha_bridge'}
     if type(value) is not dict or not names - set(optional) <= set(value) <= names:
         raise AdmissionError('OPTIONS_SCHEMA_INVALID')
     value = {**optional, **value}
@@ -313,7 +337,7 @@ class _NoHeartbeatRedirect(urlrequest.HTTPRedirectHandler):
         return None
 
 
-HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.2-dev'
+HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.3-dev'
 
 
 def post_heartbeat(url: str, key: str, heartbeat: dict[str, Any], *, opener: Any = None) -> int:
@@ -380,6 +404,243 @@ def run_heartbeat_only(url: str, key: str, *, loop=heartbeat_loop) -> int:
     finally:
         for sig, handler in old.items():
             signal.signal(sig, handler)
+
+
+class HaBridgeAllowlistError(RuntimeError):
+    """Programming error: a (method, path) outside the two-pair allowlist. Raised before any I/O."""
+
+
+class HaBridgeUnavailableError(Exception):
+    """Constant reason code only; never a token, body or URL."""
+
+
+_KS_RANK = {'FULL_STOP': 0, 'READ_ONLY': 1, 'ARMED_NORMAL': 2}
+
+
+def ha_bridge_url(method: str, path: str) -> str:
+    """The only way to build a bridge URL: exactly two (method, path) pairs, nothing else."""
+    if (method, path) not in HA_BRIDGE_ALLOWED:
+        raise HaBridgeAllowlistError('HA_BRIDGE_PATH_NOT_ALLOWLISTED')
+    return HA_BRIDGE_ORIGIN + path
+
+
+def supervisor_token(*, environ: Any = None, env_dir: Path | None = None) -> str:
+    """The Supervisor-provided App token (never logged). Missing or malformed = HA_BRIDGE_TOKEN_MISSING."""
+    environ = os.environ if environ is None else environ
+    token = environ.get('SUPERVISOR_TOKEN', '')
+    if not token:
+        try:
+            raw = read_file(S6_CONTAINER_ENV if env_dir is None else env_dir, 'SUPERVISOR_TOKEN', 4096)
+            token = raw.decode('ascii').strip()
+        except (AdmissionError, UnicodeError):
+            token = ''
+    if type(token) is not str or SUPERVISOR_TOKEN_PATTERN.fullmatch(token) is None:
+        raise HaBridgeUnavailableError('HA_BRIDGE_TOKEN_MISSING')
+    return token
+
+
+def ha_bridge_http(method: str, path: str, body: Any = None, *, opener: Any = None,
+                   token: str | None = None) -> tuple[int, bytes]:
+    """One local Supervisor Core API call. No proxy, no redirect, bounded time and size. Returns (status, body)."""
+    url = ha_bridge_url(method, path)  # before the token is read and before any I/O
+    token = supervisor_token() if token is None else token
+    headers = {'Authorization': 'Bearer ' + token, 'User-Agent': HEARTBEAT_USER_AGENT}
+    data = None
+    if method == 'POST':
+        data = json.dumps(body, sort_keys=True, separators=(',', ':')).encode('ascii')
+        headers['Content-Type'] = 'application/json'
+    req = urlrequest.Request(url, data=data, method=method, headers=headers)
+    if opener is None:
+        opener = urlrequest.build_opener(urlrequest.ProxyHandler({}), _NoHeartbeatRedirect())
+    try:
+        with opener.open(req, timeout=HA_BRIDGE_TIMEOUT) as response:
+            return int(response.status), response.read(HA_BRIDGE_MAX_BYTES + 1)
+    except urlerror.HTTPError as exc:
+        return int(exc.code), b''
+    except Exception:
+        raise HaBridgeUnavailableError('HA_BRIDGE_HA_UNREACHABLE') from None
+
+
+def ha_bridge_call(http: Any, method: str, path: str, body: Any = None) -> tuple[int, bytes]:
+    """Allowlist first, then the transport. A transport failure is HA_BRIDGE_HA_UNREACHABLE."""
+    ha_bridge_url(method, path)
+    try:
+        status, raw = http(method, path, body)
+    except (HaBridgeUnavailableError, HaBridgeAllowlistError):
+        raise
+    except Exception:
+        raise HaBridgeUnavailableError('HA_BRIDGE_HA_UNREACHABLE') from None
+    if type(status) is not int or type(raw) is not bytes:
+        raise HaBridgeUnavailableError('HA_BRIDGE_HA_UNREACHABLE')
+    return status, raw
+
+
+def parse_selector(status: int, raw: bytes) -> str:
+    """The owner's requested state from the selector reply, or HaBridgeUnavailableError (no loosening)."""
+    if status in (401, 403):
+        raise HaBridgeUnavailableError('HA_BRIDGE_UNAUTHORIZED')
+    if status == 404:
+        raise HaBridgeUnavailableError('HA_BRIDGE_SELECTOR_MISSING')
+    if status != 200:
+        raise HaBridgeUnavailableError('HA_BRIDGE_HA_HTTP_ERROR')
+    if not 0 < len(raw) <= HA_BRIDGE_MAX_BYTES:
+        raise HaBridgeUnavailableError('HA_BRIDGE_SELECTOR_INVALID')
+    try:
+        value = decode(raw)
+    except AdmissionError:
+        raise HaBridgeUnavailableError('HA_BRIDGE_SELECTOR_INVALID') from None
+    if (type(value) is not dict or value.get('entity_id') != HA_SELECTOR_ENTITY
+            or type(value.get('state')) is not str or value['state'] not in HA_REQUEST_STATES):
+        raise HaBridgeUnavailableError('HA_BRIDGE_SELECTOR_INVALID')
+    return value['state']
+
+
+def ha_bridge_target(requested: str, ceiling: str, current: str) -> tuple[str, str]:
+    """(target store state, reason). Never looser than the App option ceiling.
+
+    FULL_STOP applies at once. READ_ONLY only when the App option `kill_switch` is READ_ONLY. ARMED_NORMAL is
+    refused: it never loosens anything, so the target is the stricter of the current state, READ_ONLY and the
+    ceiling. Anything unexpected keeps the current state or tightens; it never loosens.
+    """
+    if ceiling not in KS_STATES or current not in _KS_RANK:
+        reason = 'HA_BRIDGE_CEILING_INVALID'
+        return 'FULL_STOP', reason
+    strictest = lambda *states: min(states, key=_KS_RANK.__getitem__)  # noqa: E731
+    if requested == 'FULL_STOP':
+        reason = 'HA_BRIDGE_FULL_STOP'
+        return 'FULL_STOP', reason
+    if requested == 'READ_ONLY':
+        if ceiling != 'READ_ONLY':
+            reason = 'HA_BRIDGE_CEILING_FULL_STOP'
+            return 'FULL_STOP', reason
+        reason = 'HA_BRIDGE_READ_ONLY'
+        return 'READ_ONLY', reason
+    if requested == 'ARMED_NORMAL':
+        reason = 'HA_BRIDGE_ARMED_NORMAL_REFUSED'
+        return strictest(current, 'READ_ONLY', ceiling), reason
+    reason = 'HA_BRIDGE_SELECTOR_INVALID'
+    return strictest(current, ceiling), reason
+
+
+def ha_effective_payload(view: Any, reason: str, stamp: str) -> dict[str, Any]:
+    """The exact body POSTed to sensor.house_brain_ai_kill_switch_effective."""
+    ok = type(view) is dict and view.get('fail_closed') is False and view.get('effective_state') in _KS_RANK
+    generation = view.get('generation') if type(view) is dict else None
+    return {'state': view['effective_state'] if ok else 'FULL_STOP',
+            'attributes': {'generation': generation if type(generation) is int else None, 'reason_code': reason,
+                           'updated_at': stamp, 'friendly_name': HA_BRIDGE_FRIENDLY_NAME}}
+
+
+def ha_bridge_cycle(ceiling: str, *, publish_view: bool = True, http: Any = None, store_dir: Path | None = None,
+                    view: Path | None = None, root: Path | None = None, now: float | None = None) -> dict[str, Any]:
+    """One bridge pass: read the selector, apply it to the #56 store, publish the effective state.
+
+    Store writes go only through KillSwitchStore.transition (hash chain, staged recovery, authority checks)
+    as OWNER_LOCAL_UI. HA errors never loosen: the stored state is kept. A fail-closed store is never
+    loosened here (restart or repair fixes it). A publish failure changes nothing on the AI side.
+    Raises only HaBridgeAllowlistError (a programming error); everything else is a reason code.
+    """
+    store_dir = KS_STORE if store_dir is None else store_dir
+    view = KS_VIEW if view is None else view
+    root = ROOT if root is None else root
+    http = ha_bridge_http if http is None else http
+    clock = time.time() if now is None else now
+    stamp = datetime.fromtimestamp(clock, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    result: dict[str, Any] = {'reason': 'HA_BRIDGE_CYCLE_FAILED', 'requested': None, 'effective': 'FULL_STOP',
+                              'generation': None, 'transition': None, 'publish_status': None}
+    try:
+        runtime = str(root / 'runtime')
+        if runtime not in sys.path:
+            sys.path.insert(0, runtime)
+        from tools.ai_kill_switch_store import KillSwitchStore  # manifest-verified runtime copy
+        store = KillSwitchStore(store_dir)
+        try:
+            requested = parse_selector(*ha_bridge_call(http, 'GET', HA_SELECTOR_PATH))
+            result['requested'] = requested
+        except HaBridgeUnavailableError as exc:
+            requested, result['reason'] = None, str(exc)
+        before = store.read_view(stamp)
+        current = 'FULL_STOP' if before.get('fail_closed') is not False else before['effective_state']
+        if requested is not None:
+            target, result['reason'] = ha_bridge_target(requested, ceiling, current)
+            if target != current:
+                if before.get('fail_closed') is not False and _KS_RANK[target] > _KS_RANK[current]:
+                    reason = 'HA_BRIDGE_STORE_FAIL_CLOSED'
+                    result['reason'] = reason
+                else:
+                    try:
+                        _remove_path(view)  # the MCP child reads FULL_STOP until the new view exists
+                        record = store.transition(state=target, actor_class='OWNER_LOCAL_UI',
+                                                  actor_ref=HA_BRIDGE_ACTOR_REF, reason_code='OWNER_ROUTINE', now=stamp)
+                        result['transition'] = target
+                        if publish_view:
+                            publish_kill_switch_view(store, view)
+                        emit('HA_BRIDGE_APPLIED', state=target, generation=record['generation'])
+                    except Exception:
+                        try:
+                            _remove_path(view)
+                        except OSError:
+                            pass
+                        reason = 'HA_BRIDGE_TRANSITION_FAILED'
+                        result['reason'] = reason
+        after = store.read_view(stamp)
+        payload = ha_effective_payload(after, result['reason'], stamp)
+        result['effective'], result['generation'] = payload['state'], payload['attributes']['generation']
+        try:
+            result['publish_status'] = ha_bridge_call(http, 'POST', HA_EFFECTIVE_PATH, payload)[0]
+        except HaBridgeUnavailableError:
+            result['publish_status'] = 0
+    except HaBridgeAllowlistError:
+        raise
+    except Exception:
+        result['reason'] = 'HA_BRIDGE_CYCLE_FAILED'
+    return result
+
+
+def _bridge_log_key(result: dict[str, Any]) -> tuple[Any, ...]:
+    status = result.get('publish_status')
+    return (result.get('reason'), result.get('effective'), status in (200, 201))
+
+
+def _emit_bridge(result: dict[str, Any]) -> None:
+    status = result.get('publish_status')
+    emit(str(result.get('reason')), effective=str(result.get('effective')),
+         published='YES' if status in (200, 201) else f'NO_{status if type(status) is int else 0}')
+
+
+def ha_bridge_loop(stop: threading.Event, ceiling: str, *, publish_view: bool = True, cycle: Any = None,
+                   interval: float = HA_BRIDGE_INTERVAL, initial_wait: bool = False,
+                   last: tuple[Any, ...] | None = None) -> None:
+    """Run the bridge every interval until stop is set. Logs changes only. Never raises."""
+    cycle = ha_bridge_cycle if cycle is None else cycle
+    if initial_wait:
+        stop.wait(interval)
+    while not stop.is_set():
+        try:
+            result = cycle(ceiling, publish_view=publish_view)
+        except Exception:
+            result = {'reason': 'HA_BRIDGE_CYCLE_FAILED', 'effective': None, 'publish_status': None}
+        key = _bridge_log_key(result)
+        if key != last:
+            _emit_bridge(result)
+            last = key
+        stop.wait(interval)
+
+
+def start_ha_bridge(stop: threading.Event, ceiling: str, *, publish_view: bool = True, cycle: Any = None,
+                    thread: Any = threading.Thread) -> dict[str, Any]:
+    """First pass now (before the heartbeat or the MCP child start), then the 30 s loop in a daemon thread."""
+    cycle = ha_bridge_cycle if cycle is None else cycle
+    emit('HA_BRIDGE_STARTING')
+    try:
+        first = cycle(ceiling, publish_view=publish_view)
+    except Exception:
+        first = {'reason': 'HA_BRIDGE_CYCLE_FAILED', 'effective': None, 'publish_status': None}
+    _emit_bridge(first)
+    thread(target=ha_bridge_loop, name='ha-bridge', daemon=True, args=(stop, ceiling),
+           kwargs={'publish_view': publish_view, 'cycle': cycle, 'initial_wait': True,
+                   'last': _bridge_log_key(first)}).start()
+    return first
 
 
 def repair_kill_switch(*, store_dir: Path | None = None, view: Path | None = None,
@@ -719,23 +980,33 @@ def main() -> int:
                 repair_kill_switch()
             else:
                 apply_kill_switch(value['kill_switch'])
-            if value['claude_only']:
-                emit('CLAUDE_ONLY_HEARTBEAT_STARTING')
-                code = run_heartbeat_only(value['perimeter_heartbeat_url'], value['perimeter_heartbeat_key'])
-                emit('CLAUDE_ONLY_STOPPED', exit_code=code)
-                return 0
-            command, env = plan(value)
-            stop = threading.Event()
-            if value['perimeter_heartbeat_url']:
-                threading.Thread(target=heartbeat_loop, name='edge-heartbeat', daemon=True,
-                                 args=(stop, value['perimeter_heartbeat_url'], value['perimeter_heartbeat_key'])).start()
-            emit('STARTING_NOT_READY')
+            bridge_stop = threading.Event()
             try:
-                code = run_once(command, env, ROOT / 'runtime')
+                if value['ha_bridge']:
+                    # 0.1.3-dev: the App option stays the ceiling; a repair start is capped at FULL_STOP and
+                    # publishes no view (as repair_kill_switch). First pass before the heartbeat or the child.
+                    repair = value['kill_switch_repair']
+                    start_ha_bridge(bridge_stop, 'FULL_STOP' if repair else value['kill_switch'],
+                                    publish_view=not repair)
+                if value['claude_only']:
+                    emit('CLAUDE_ONLY_HEARTBEAT_STARTING')
+                    code = run_heartbeat_only(value['perimeter_heartbeat_url'], value['perimeter_heartbeat_key'])
+                    emit('CLAUDE_ONLY_STOPPED', exit_code=code)
+                    return 0
+                command, env = plan(value)
+                stop = threading.Event()
+                if value['perimeter_heartbeat_url']:
+                    threading.Thread(target=heartbeat_loop, name='edge-heartbeat', daemon=True,
+                                     args=(stop, value['perimeter_heartbeat_url'], value['perimeter_heartbeat_key'])).start()
+                emit('STARTING_NOT_READY')
+                try:
+                    code = run_once(command, env, ROOT / 'runtime')
+                finally:
+                    stop.set()
+                emit('NATIVE_EXIT', exit_code=code)
+                return 0 if code == 0 else 1
             finally:
-                stop.set()
-            emit('NATIVE_EXIT', exit_code=code)
-            return 0 if code == 0 else 1
+                bridge_stop.set()
     except AdmissionError as exc:
         emit(str(exc))
         if mode == 'run':

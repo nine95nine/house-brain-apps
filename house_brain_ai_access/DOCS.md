@@ -11,9 +11,9 @@ execution only; it does not establish target Python/base/native-s6 parity.
 
 ## Configuration and secrets
 
-Only nine options exist: `enabled`, `tunnel_id`, `tunnel_api_key`, `broker_read_key`,
-`kill_switch`, `kill_switch_repair`, `perimeter_heartbeat_url`, `perimeter_heartbeat_key` and
-`claude_only`.
+Only ten options exist: `enabled`, `tunnel_id`, `tunnel_api_key`, `broker_read_key`,
+`kill_switch`, `kill_switch_repair`, `perimeter_heartbeat_url`, `perimeter_heartbeat_key`,
+`claude_only` and `ha_bridge`.
 The default is disabled with empty credentials. Enabling requires an exact tunnel
 identifier and bounded ASCII keys. Unknown options, duplicate JSON keys, invalid
 identities and missing credentials fail before any native process or network call.
@@ -38,8 +38,8 @@ still one App trust domain; same-UID environment minimization is not OS isolatio
 
 ## AI kill switch (#56)
 
-`kill_switch` is the owner's control while the Home Assistant helper tile (#56 queue
-item) is not yet approved. It offers only `FULL_STOP` (default: AI blocked) and
+`kill_switch` is the owner's control (and, since 0.1.3-dev, the ceiling for the Home Assistant
+tile; see `ha_bridge` below). It offers only `FULL_STOP` (default: AI blocked) and
 `READ_ONLY` (AI may use the three reads). `ARMED_NORMAL` is not offered: this App has
 no action class that needs it.
 
@@ -47,7 +47,8 @@ no action class that needs it.
   A new store starts at `FULL_STOP` (genesis `GENESIS_FAIL_CLOSED`).
 - At every App start the root wrapper applies the chosen option as an audited
   `OWNER_LOCAL_UI` transition (`actor_ref` `ha-app-options`, reason `OWNER_ROUTINE`).
-  An unchanged option writes no record. A change takes effect at the next App start.
+  An unchanged option writes no record. A change takes effect at the next App start
+  (or, with `ha_bridge` on, the tile can tighten or reopen it within 30 s; see below).
 - The wrapper then publishes a root-owned read-only copy (0755 directory, 0644 files)
   at `/run/house-brain-ai-kill-switch`. The MCP child (UID 10001) can read it but not
   change it, and it never receives write access to the store.
@@ -104,10 +105,64 @@ changes. The mode adds no tool, scope, Home Assistant access or authority. `kill
 `FULL_STOP` makes the perimeter refuse every read. When the App stops, the Worker blocks Claude within
 5 minutes (no synthetic FULL_STOP is sent, so the next start is not locked out).
 
+## The Home Assistant kill-switch tile (`ha_bridge`, off by default; 0.1.3-dev)
+
+**What it does, in plain words.** Your Home Assistant has a "House Brain AI kill switch" tile (a
+drop-down helper). Until 0.1.3-dev it did nothing, and its status said `NOT_CONNECTED`. When you turn
+`ha_bridge` on, this App looks at the tile every 30 seconds and does what it says, within limits:
+
+| You pick on the tile | What happens |
+|---|---|
+| `FULL_STOP` | AI reads stop at once. Claude, ChatGPT and Grok are refused within about 1 to 5 minutes. No App restart. |
+| `READ_ONLY` | AI reads are allowed again, but **only if** the App setting `kill_switch` is also `READ_ONLY`. If the App setting is `FULL_STOP`, the tile cannot open anything. |
+| `ARMED_NORMAL` | Refused. This App never offers it. Nothing loosens; the tile status shows `HA_BRIDGE_ARMED_NORMAL_REFUSED`. |
+
+Think of the App setting `kill_switch` as the **ceiling** and the tile as the **quick switch under it**.
+The tile can always stop the AI. It can only allow the AI up to what the App setting allows.
+
+**What you see.** The App writes one sensor, `sensor.house_brain_ai_kill_switch_effective`, every 30 s.
+Its state is what really applies (`FULL_STOP` or `READ_ONLY`). Its attributes say why (`reason_code`),
+the record number (`generation`) and when (`updated_at`). Your tile's status sensor then shows that
+state instead of `NOT_CONNECTED`. No Home Assistant YAML change is needed.
+
+**When something is wrong, it never opens up.**
+- If Home Assistant is down, the tile is missing, or its value is unreadable, nothing loosens. The App
+  keeps the last state it stored. The reason (`HA_BRIDGE_HA_UNREACHABLE`, `HA_BRIDGE_SELECTOR_MISSING`,
+  `HA_BRIDGE_SELECTOR_INVALID`, `HA_BRIDGE_UNAUTHORIZED`) is shown on the sensor when Home Assistant
+  answers again.
+- If the App's own kill-switch store is unreadable, the state is `FULL_STOP`, and the tile cannot
+  loosen it (`HA_BRIDGE_STORE_FAIL_CLOSED`). Restart the App, or use `kill_switch_repair`.
+- If writing the sensor fails, nothing changes on the AI side.
+- During a `kill_switch_repair` start the ceiling is `FULL_STOP`: the tile can only stop.
+
+**How it works.** Every tile change is written to the same audited, hash-chained kill-switch store
+as an owner change (`OWNER_LOCAL_UI`, `actor_ref` `ha-kill-switch-tile`, reason `OWNER_ROUTINE`), with
+the store's normal rules (staged recovery, chain checks). An unchanged tile writes nothing. The edge
+heartbeat reads that store, so a tile `FULL_STOP` reaches the Cloudflare checkpoint with the next
+heartbeat (within about 1 minute) and blocks within the 5-minute staleness bound at worst. The MCP
+child's read-only view is republished after each change, so the ChatGPT tunnel path stops too. The
+first check runs at App start, before the heartbeat and before the tunnel.
+
+**What it may touch (enforced in code).** The bridge uses the Supervisor-provided token for exactly
+two calls, and nothing else:
+- `GET http://supervisor/core/api/states/input_select.house_brain_ai_kill_switch` (read the tile);
+- `POST http://supervisor/core/api/states/sensor.house_brain_ai_kill_switch_effective` (write the sensor).
+
+Any other call is a programming error that stops before anything is sent. There is no service call,
+no other entity and no device control (`CONTROL_AUTHORITY=NONE`). A test fails on any other path, and a
+static test fails on any other `/api/` path in the App source. Requests use no proxy and no redirects,
+and time out after 5 s. The token is never logged. Cost: two local calls every 30 s, inside the house;
+no Cloudflare writes are added.
+
+**Turning it off.** Set `ha_bridge` off and restart (or reinstall 0.1.2-dev). The tile status goes back
+to `NOT_CONNECTED`; the AI side keeps its stored state.
+
 ## Network and privileges
 
 Outbound destinations are fixed in trusted code: OpenAI and the accepted Broker.
-No Home Assistant, Supervisor, Auth, Docker, USB/serial/hardware or host-namespace
+Since 0.1.3-dev the App requests `homeassistant_api` (owner approval 2026-10-10), used only by the
+opt-in `ha_bridge` for the two calls above; with `ha_bridge` off no Home Assistant call is made.
+No Supervisor, Auth, Docker, USB/serial/hardware or host-namespace
 permissions, mapped HA directories, ingress or published ports are requested.
 AppArmor stays enabled. Vendor health uses a private Unix socket, not a TCP
 listener. The configuration is not a network firewall; final container egress and

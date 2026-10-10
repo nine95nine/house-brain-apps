@@ -1,11 +1,13 @@
 # House Brain AI Access
 
-**0.1.2-dev — internal HAOS App candidate. Not install-ready or live-qualified.** 0.1.2-dev names itself to Cloudflare (live 403 fix, 2026-10-06). 0.1.1-dev added the Claude-only heartbeat mode (`claude_only`, see DOCS.md).
+**0.1.3-dev — internal HAOS App candidate. Not install-ready or live-qualified.** 0.1.3-dev adds the opt-in Home Assistant kill-switch tile bridge (`ha_bridge`, off by default; see DOCS.md). 0.1.2-dev named itself to Cloudflare (live 403 fix, 2026-10-06). 0.1.1-dev added the Claude-only heartbeat mode (`claude_only`).
 
 The approved target is the existing Home Assistant Pi (aarch64). This is a separate,
 private, outbound-only connection for House Brain status, platform versions and
 backup readiness. It does not expose Home Assistant or Supervisor APIs, devices,
-arbitrary commands, public ports, host networking or a maintenance executor.
+arbitrary commands, public ports, host networking or a maintenance executor. With
+`ha_bridge` on (0.1.3-dev), the App itself reads one HA helper and writes one HA sensor
+for the AI kill switch, and nothing else.
 
 The six runtime files are generated, byte-identical copies of product commit
 `22d8efc83df03010e75da642cc3ba5c90bebd14b`, checked against the canonical repository
