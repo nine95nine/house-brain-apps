@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.12 — 2026-10-10
+
+Request backlog fix (owner pop-up 2026-10-10 "Small hotfix now"; draft PR #985 moves to 0.3.13). Contains
+everything in 0.3.11 unchanged.
+
+- **Why:** each check read only the first 10 request folders in `deploy/requests/` (sorted by name), counting
+  folders that were already handled. Once 10 old folders were there, every newer request was never read: not
+  asked, not held, not reported, and the page said "All clear". Live example 2026-10-10:
+  `2026-10-10-ac-insight-1-1-r1` (11th folder) and `2026-10-10-evap-v23-5-r5-tiebreak-next-hour-r1` (13th).
+- **Change:** requests not yet handled are read first, then handled ones (still read for the changed-manifest
+  check), then the limit of 10 applies. Same fix as the Maintenance App (finding R2).
+- **Unchanged:** one change per check, handled ids are never run again, a changed manifest under a used id is
+  refused, the daily install limit, every approval.
+
 ## 0.3.11 — 2026-10-10
 
 Re-ask after a restart approval timed out (owner pop-ups 2026-10-10 "Build 0.3.10" and "0.3.11 on main"; 0.3.10 is

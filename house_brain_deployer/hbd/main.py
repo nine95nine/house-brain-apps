@@ -611,6 +611,10 @@ class Service:
             return  # at most one change per poll
         ledger = self.j.ledger()
         ids = [r for r in self.gh.list_request_ids(head) if RE_REQUEST_ID.fullmatch(r)]
+        # 0.3.12: unhandled ids first, then handled ones (still read for the id-reuse check), then the
+        # cap. Before, the cap came first, so an old backlog hid every request after the 10th folder.
+        handled = {r for r in ids if r in ledger or self.key(r) in ledger}
+        ids = [r for r in ids if r not in handled] + [r for r in ids if r in handled]
         for request_id in ids[:MAX_REQUESTS_PER_POLL]:
             try:
                 raw = self.gh.read_file(f"{REQUESTS_DIR}/{request_id}/manifest.json", head)
