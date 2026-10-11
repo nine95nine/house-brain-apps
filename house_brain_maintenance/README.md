@@ -14,5 +14,9 @@ Owner-approved App updates and maintenance jobs for the House Brain Home Assista
   an update, then an iPhone approval; only after Approve: full backup -> update (Core and OS separately, never
   automatically) -> health check -> automatic restore of Home Assistant from that backup if Core fails. The OS
   falls back to its previous version by itself (A/B) if it cannot boot.
+- One-tap local App source install (0.7.4, owner decision 2026-10-10): `STAGE_LOCAL_APP_SOURCE` verifies a pinned
+  carrier from `main` (commit + SHA-256), runs its own `check`, asks once, then stages it, refreshes the store
+  (`POST /store/reload`, only during this job) and runs the normal App update; on failure the carrier's `undo`.
+  Inspector, Observer and Inventory Scout only; maps `addons` and `share` read-write (AppArmor-narrowed).
 - Never updates the Supervisor or itself, never updates Core/OS without the owner's Approve. No host port, no
   `ha` CLI, no physical control.

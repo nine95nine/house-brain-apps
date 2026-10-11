@@ -23,8 +23,9 @@ from .migrate import JOB as MIGRATE_JOB, MigratePolicy, Migrator
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
-from .manifest import (ASK_UPDATE_NOW, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE, RE_REQUEST_ID, Manifest,
-                       ManifestError, parse)
+from .manifest import (ASK_UPDATE_NOW, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE, RE_REQUEST_ID,
+                       STAGE_LOCAL_APP_SOURCE, Manifest, ManifestError, parse)
+from .stage import PENDING_DOC as STAGE_PENDING_DOC, StagePolicy, Stager
 from .holds import Holds
 from .afterupdate import JOB as AFTER_JOB, AfterPolicy, AfterUpdate, loaded_snapshot
 from .web import INGRESS_PEER, MAX_WAITING, ApprovalBoard, IngressServer, ReaskQueue
@@ -289,6 +290,8 @@ class Service:
         self.entities: EntityUpdater | None = None         # 0.7.0: HACS and device firmware
         self.holds: Holds | None = None                     # 0.7.3: hold list
         self.after: AfterUpdate | None = None               # 0.7.3: after-update check
+        self.stager: Stager | None = None                   # 0.7.4: STAGE_LOCAL_APP_SOURCE
+        self.stage_policy = StagePolicy()                   # 0.7.4: /addons, /share (test mode: temp folders)
         self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
         self.watcher: Watcher | None = None
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
@@ -382,6 +385,11 @@ class Service:
                 engine.on_done = self.after.start
                 engine.snapshot = (lambda: loaded_snapshot(self.ha)) if self.o.after_update_minutes > 0 else None
             self.watcher.claimed = self.after.claimed
+            # 0.7.4: one-tap local App source install; its update step is exactly self.updater's path.
+            self.stage_policy.poll = self.poll
+            self.stage_policy.reload_seconds = 120.0 * scale
+            self.stager = Stager(self.ha, self.j, settings, self.stage_policy, self.gh, self.updater,
+                                 after_active=lambda: bool(self.after is not None and self.after.active()))
         return self.engine
 
     def key(self, request_id: str) -> str:
@@ -450,6 +458,8 @@ class Service:
             rid, job, result = self.engine.recover(txn)
             previous = self.j.ledger().get(self.key(rid), {}).get("digest")
             self.finish(rid, job, str(txn.get("digest") or previous or "recovered"), txn.get("issue"), result)
+            return
+        if self.poll_stage_pending():
             return
         if self.frozen():
             return
@@ -610,10 +620,45 @@ class Service:
             if manifest.job == ASK_UPDATE_NOW:
                 self.ask_update_now(manifest)
                 return True
+            if manifest.job == STAGE_LOCAL_APP_SOURCE:
+                self.stage_request(manifest)
+                return True
             result = self.ensure_engine().run(manifest)
             self.finish(request_id, manifest.job, manifest.digest, manifest.tracking_issue, result)
             return True  # at most one request per poll
         return False
+
+    def stage_request(self, m: Manifest) -> None:
+        """0.7.4 STAGE_LOCAL_APP_SOURCE: verify the pinned carrier, ask once, stage, update, report on #454.
+        The request is marked STAGING first, so a restart mid-job never asks twice (``poll_stage_pending``)."""
+        self.ensure_engine()
+        issue = m.tracking_issue or self.o.report_issue or None
+        self.j.record(self.key(m.request_id), m.digest, "STAGING")
+        try:
+            result = self.stager.run(m)
+        except (HAError, net.NetError) as err:
+            result = Result(FAILED, [f"preflight: {net.redact(str(err))[:200]}; nothing asked or changed"],
+                            {"slug": m.stage_slug, "to": m.stage_to})
+        self.finish(m.request_id, m.job, m.digest, issue, result)
+
+    def poll_stage_pending(self) -> bool:
+        """0.7.4: after a restart mid-install, read what is true and undo a staged source the App does not run.
+        True when one was handled."""
+        doc = self.j.load_doc(STAGE_PENDING_DOC, {})
+        if not isinstance(doc, dict) or not doc.get("request_id"):
+            return False
+        self.ensure_engine()
+        try:
+            rid, result = self.stager.recover(doc)
+        except (HAError, net.NetError) as err:
+            LOG.warning("install recovery waits (GitHub or Supervisor not answering): %s",
+                        net.redact(str(err))[:200])
+            return False
+        self.j.save_doc(STAGE_PENDING_DOC, {})
+        issue = doc.get("issue") if isinstance(doc.get("issue"), int) else None
+        self.finish(rid, STAGE_LOCAL_APP_SOURCE, str(doc.get("digest") or "recovered"),
+                    issue or self.o.report_issue or None, result)
+        return True
 
     def ask_update_now(self, m: Manifest) -> None:
         """0.6.5 ASK_UPDATE_NOW: the same ask -> backup -> update -> health -> restore path as the update check,
@@ -710,6 +755,9 @@ def build_service(options_path: str, data_dir: str) -> Service:
         poll = max(0.05, poll * scale)
     service = Service(opts, ha, gh, Journal(data_dir), approval_timeout, board=ApprovalBoard(),
                       scout_run_timeout=run_timeout, poll=poll, health_scale=health_scale)
+    if os.environ.get("HBM_TEST_MODE") == "1":       # 0.7.4: real-container test against fake folders
+        service.stage_policy.addons = os.environ.get("HBM_ADDONS_DIR", service.stage_policy.addons)
+        service.stage_policy.share = os.environ.get("HBM_SHARE_DIR", service.stage_policy.share)
     service.connector = ghpage.Connector(
         app_title="House Brain Maintenance", bot_name="House Brain Maintenance Bot",
         bot_description="House Brain Maintenance App on the owner's Home Assistant: reads maint/requests and "

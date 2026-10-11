@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.4
+
+One-tap install of a House Brain App source (owner pop-ups 2026-10-10: "A: Maintenance job (Recommended)",
+"Approve design, build it", "Build as 0.7.4 on top"; design `docs/architecture/MAINTENANCE_STAGE_LOCAL_APP_SOURCE_R1.md`).
+Contains everything in 0.7.3 unchanged.
+
+- **New job `STAGE_LOCAL_APP_SOURCE`.** An assistant files one request naming a carrier on `main` (path, commit,
+  SHA-256), the App (Engineering Inspector, Engineering Observer or Inventory Scout only; built-in list) and the
+  versions. The App checks the commit is on `main`, downloads the carrier (at most 1 MiB), checks its SHA-256,
+  unpacks it into a private folder and runs the carrier's own `check`. Only when that says the App folder holds
+  exactly the old version does it ask your phone, once: "Install Inspector 0.2.4 → 0.2.5 (source from GitHub
+  `<commit>`, checked)".
+- **On Approve:** the carrier's `stage` (verified backup, atomic swap), App store refresh, then the existing App
+  update path (backup of that App only, update, health watch, restore on failure) without a second ask; the App is
+  started only if it was running before. Any failure after staging runs the carrier's `undo` and refreshes the store.
+- Reject is final for that version; no answer changes nothing. It counts toward `max_approval_requests_per_day`.
+- **New permissions:** folders `addons` and `share` (read-write), narrowed by AppArmor to the three App folders and
+  `/share/hb91-app-update`; one more Supervisor call, `POST /store/reload`, allowed only during this job.
+
 ## 0.7.3
 
 Hold list and after-update check (owner pop-ups 2026-10-08: "Hold list", "After-update check", "Auto-hold .0 + my

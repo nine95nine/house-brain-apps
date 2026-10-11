@@ -79,6 +79,12 @@ boundary is this module:
   with no body (the restart the owner's Approve covers). Never another entity, never a Supervisor-owned update
   (Apps, Core, OS, Supervisor), never a restore.
 
+* 0.7.4 (owner decision 2026-10-10, "Approve design, build it": stage a local App source): exactly one more
+  mutating route, ``POST /store/reload`` (body empty), and only inside ``with ha.stage_target(slug)`` for one of the
+  three built-in local House Brain Apps (``manifest.STAGE_APPS``) while an owner-approved
+  ``STAGE_LOCAL_APP_SOURCE`` job runs. It only makes the Supervisor re-read the App folders; the update itself is
+  the existing ``update_target`` path. Never nested with any other target, never for this App.
+
 The ``ha`` CLI is never used (#223 R4 ``apps``/``addons`` escape).
 """
 from __future__ import annotations
@@ -93,6 +99,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import net
+from .manifest import STAGE_APPS
 
 STATUS_ENTITY = "sensor.house_brain_maintenance_status"
 APPROVAL_EVENT = "mobile_app_notification_action"
@@ -574,6 +581,7 @@ class HomeAssistant:
         self._system: dict | None = None          # 0.6.0: {"kind", "version", "backup"} while open
         self._migrate: dict | None = None         # 0.6.6: {"old", "new", "remove"} while open
         self._entity: dict | None = None          # 0.7.0: {"entity_id", "kind", "to", "frm"} while open
+        self._stage: str | None = None            # 0.7.4: the allowlisted local App whose source is being staged
         self._self_slug: str | None = None
         # 0.6.1 shared Core socket (see shared_ws)
         self._shared_lock = threading.Lock()
@@ -625,10 +633,13 @@ class HomeAssistant:
         ent = self._entity
         if ent is not None and entity_call_ok(ent, method, path, body):
             return
+        if self._stage is not None and method == "POST" and path == "/store/reload" and body in (None, {}):
+            return                                # 0.7.4: only inside stage_target (see the module docstring)
         raise ForbiddenCall(f"{method} {path}")
 
     def _busy(self) -> bool:
-        return any(t is not None for t in (self._target, self._fix, self._system, self._migrate, self._entity))
+        return any(t is not None for t in (self._target, self._fix, self._system, self._migrate, self._entity,
+                                           self._stage))
 
     @contextmanager
     def fix_target(self, kind: str, ref: str):
@@ -701,6 +712,25 @@ class HomeAssistant:
             yield
         finally:
             self._entity = None
+
+    @contextmanager
+    def stage_target(self, slug: str):
+        """0.7.4: open ``POST /store/reload`` for one allowlisted local App's source staging job (nothing else)."""
+        if not isinstance(slug, str) or slug not in STAGE_APPS or slug == "self" or slug == self.self_slug():
+            raise ForbiddenCall("stage target")
+        if self._busy():
+            raise ForbiddenCall("nested stage target")
+        self._stage = slug
+        try:
+            yield
+        finally:
+            self._stage = None
+
+    def reload_store(self) -> None:
+        """0.7.4, only inside ``stage_target``: the Supervisor re-reads the App folders (new local version)."""
+        if self._stage is None:
+            raise ForbiddenCall("store reload outside a stage job")
+        self._supervisor("POST", "/store/reload", body={}, timeout=300)
 
     def store_deployer_slug(self) -> str | None:
         """0.6.6: the store slug the Deployer gets from the same store as this App (``<hash>_house_brain_deployer``),

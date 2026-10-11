@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.7.3)
+## What it does (0.7.4)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -213,6 +213,7 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 | Run the Scout once | The Inventory Scout lists your Apps and sends the list to the Maintenance Broker. |
 | Rotate the Scout key | A new key is made here (only its fingerprint leaves this Home Assistant). The Scout switches to it only after the Broker already accepts it, so it never stops working. |
 | Check the Broker (0.5.3, no approval) | Reads the Broker's public health page and reports its version. Nothing is sent, started or changed. |
+| Install a House Brain App source (0.7.4, one approval) | See "One-tap install of a House Brain App" below. |
 | App log window (0.5.4, no approval) | Reads one House Brain App's log for one boot (this boot or up to 5 before), keeps only the lines in a UTC time window (at most 6 hours) that contain one of up to 5 words, removes secrets, addresses and long ids, and posts at most 200 lines to the tracking issue. Only Apps named `local_house_brain_…` or `<store>_house_brain_…` that are installed; never this App. Nothing is written to any App. |
 
 ## What it can never do
@@ -227,7 +228,34 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
   it just updated or, after a failed Core update, Home Assistant only from the backup it just made.
 - Keep, log or report other Apps' settings or passwords (it reads only versions and states).
 - Touch files, restart Home Assistant (except as part of the Core update or restore above), or control
-  any device.
+  any device. The one exception (0.7.4): after your Approve of a one-tap install, the carrier's own script writes
+  the new source of the Inspector, Observer or Inventory Scout into that one App folder and keeps its backup under
+  `/share/hb91-app-update`. Nothing else in `/addons` or `/share` is written, and `/config` is never touched.
+
+## One-tap install of a House Brain App — from 0.7.4
+
+Owner decision 2026-10-10 ("Approve design, build it"). Before 0.7.4 a new Engineering Inspector, Engineering
+Observer or Inventory Scout version needed six steps: download the carrier, upload it in Studio Code Server, paste a
+command, refresh the store, tap Update, start the App. Now an assistant files one `STAGE_LOCAL_APP_SOURCE` request
+and your phone asks once:
+
+> Install Inspector 0.2.4 → 0.2.5 (source from GitHub `1e54ebb`, checked). Approve / Reject
+
+Before it asks, the App checks everything and stops **without asking** when anything is off:
+- the App must be one of those three local Apps, installed at the version the request names;
+- the carrier must be a `deploy/carriers/hb<n>-<name>.tar` file at a commit on `main`, at most 1 MiB, with exactly
+  the SHA-256 in the request;
+- the carrier's own `check` must say the App folder holds exactly the old version and is ready.
+
+After your Approve: the carrier's own script puts the new source in place (verified backup of the old one under
+`/share/hb91-app-update`, one atomic swap), the App store is refreshed, then the normal App update runs (backup of
+that App only, update, health watch, restore on failure) without a second ask. The App is started again only if it
+was running before. If anything fails after the source was put in place, the carrier's `undo` puts the old source
+back and the store is refreshed. The result is posted on the tracking issue.
+
+Reject is final for that version. No answer changes nothing; ask again with a new request. It counts toward
+`max_approval_requests_per_day`. The App needs the folder permissions `addons` and `share` (read-write) for this;
+its AppArmor profile lets it write only those three App folders and the backup folder.
 
 ## Settings
 

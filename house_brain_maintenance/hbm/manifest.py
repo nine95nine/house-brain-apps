@@ -8,6 +8,10 @@ route, a URL or a secret. Those come from the App options and from Supervisor. T
 whose log is **read**; nothing is ever written to that App. ``ASK_UPDATE_NOW`` (0.6.5, owner decision
 2026-10-07) names an update only to *match* the one this App already reviewed and asked about and Supervisor
 still reports as waiting; it can never pick a new target, a version or a route, and anything else is REFUSED.
+``STAGE_LOCAL_APP_SOURCE`` (0.7.4, owner decision 2026-10-10 "Approve design, build it") names one of three built-in
+local House Brain Apps (``STAGE_APPS``; never this App, the Deployer, a store App or Home Assistant), a carrier path on
+``main`` pinned by commit and SHA-256, and the versions it moves between. The App re-checks everything, runs the
+carrier's own ``check``, and asks the owner once before anything is written.
 """
 from __future__ import annotations
 
@@ -45,6 +49,18 @@ NO_APPROVAL_JOBS = frozenset({CHECK_BROKER, APP_LOG_WINDOW, HOLD_UPDATE, RELEASE
 # It asks the owner, so it is NOT in NO_APPROVAL_JOBS: it counts against max_approval_requests_per_day.
 ASK_UPDATE_NOW = "ASK_UPDATE_NOW"
 UPDATE_KINDS = ("core", "os", "app")
+# 0.7.4 (owner-approved design R1, 2026-10-10): stage a local App source from a pinned carrier, then the normal App
+# update path. It asks the owner, so it is NOT in NO_APPROVAL_JOBS. The slug allowlist is built in (never an option):
+# local Supervisor slug -> (source folder the carrier names, short label for the phone).
+STAGE_LOCAL_APP_SOURCE = "STAGE_LOCAL_APP_SOURCE"
+STAGE_APPS: dict[str, tuple[str, str]] = {
+    "local_house_brain_engineering_inspector": ("house_brain_engineering_inspector", "Inspector"),
+    "local_house_brain_engineering_observer": ("house_brain_engineering_observer", "Observer"),
+    "local_house_brain_maintenance_inventory_scout": ("house_brain_maintenance_inventory_scout", "Inventory Scout"),
+}
+RE_CARRIER_PATH = re.compile(r"^deploy/carriers/hb[0-9]+-[a-z0-9-]+\.tar$")
+RE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+RE_STAGE_VERSION = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$")
 RE_UPDATE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,39}$")
 RE_APP_SLUG = re.compile(r"^[a-z0-9][a-z0-9_]{0,99}$")
 RE_HB_APP_SLUG = re.compile(r"^(?:local|[0-9a-f]{8})_house_brain_[a-z0-9_]{1,60}$")
@@ -60,6 +76,8 @@ JOBS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ASK_UPDATE_NOW: (frozenset({"kind", "version"}), frozenset({"slug"})),
     HOLD_UPDATE: (frozenset({"item"}), frozenset()),
     RELEASE_UPDATE: (frozenset({"item"}), frozenset()),
+    STAGE_LOCAL_APP_SOURCE: (frozenset({"carrier", "sha256", "commit", "slug", "from_version", "to_version"}),
+                             frozenset()),
 }
 _TOP = frozenset({"schema", "request_id", "job", "requested_by", "tracking_issue", "note", "params"})
 _REQUIRED_TOP = frozenset({"schema", "request_id", "job", "requested_by", "params"})
@@ -95,6 +113,13 @@ class Manifest:
     update_slug: str | None = None
     # 0.7.3 HOLD_UPDATE / RELEASE_UPDATE (holds.RE_ITEM)
     hold_item: str | None = None
+    # 0.7.4 STAGE_LOCAL_APP_SOURCE (validated again by stage.py before any download)
+    stage_carrier: str | None = None
+    stage_sha256: str | None = None
+    stage_commit: str | None = None
+    stage_slug: str | None = None
+    stage_from: str | None = None
+    stage_to: str | None = None
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict:
@@ -153,6 +178,8 @@ def parse(raw: bytes) -> Manifest:
         if not valid_item(params["item"]):
             raise ManifestError("HOLD_ITEM")
         log["hold_item"] = params["item"]
+    if job == STAGE_LOCAL_APP_SOURCE:
+        log.update(_stage(params))
     fp = params.get("expect_key_fingerprint")
     if fp is not None and (not isinstance(fp, str) or not RE_SHA256.fullmatch(fp)):
         raise ManifestError("EXPECT_KEY_FINGERPRINT")
@@ -219,3 +246,22 @@ def _ask_update(params: dict) -> dict:
             not isinstance(slug, str) or not RE_APP_SLUG.fullmatch(slug))):
         raise ManifestError("UPDATE_SLUG")
     return {"update_kind": kind, "update_version": version, "update_slug": slug}
+
+
+def _stage(params: dict) -> dict:
+    """0.7.4: the closed STAGE_LOCAL_APP_SOURCE shape (allowlisted slug, carrier path, pins, plain versions)."""
+    carrier, digest, commit, slug = params["carrier"], params["sha256"], params["commit"], params["slug"]
+    if not isinstance(carrier, str) or not RE_CARRIER_PATH.fullmatch(carrier):
+        raise ManifestError("STAGE_CARRIER")
+    if not isinstance(digest, str) or not RE_SHA256.fullmatch(digest):
+        raise ManifestError("STAGE_SHA256")
+    if not isinstance(commit, str) or not RE_COMMIT.fullmatch(commit):
+        raise ManifestError("STAGE_COMMIT")
+    if not isinstance(slug, str) or slug not in STAGE_APPS:
+        raise ManifestError("STAGE_SLUG")
+    frm, to = params["from_version"], params["to_version"]
+    if not isinstance(frm, str) or not isinstance(to, str) or not RE_STAGE_VERSION.fullmatch(frm) \
+            or not RE_STAGE_VERSION.fullmatch(to) or frm == to:
+        raise ManifestError("STAGE_VERSION")
+    return {"stage_carrier": carrier, "stage_sha256": digest, "stage_commit": commit, "stage_slug": slug,
+            "stage_from": frm, "stage_to": to}

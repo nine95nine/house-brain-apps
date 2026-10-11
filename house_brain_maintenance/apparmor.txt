@@ -27,9 +27,31 @@ profile house_brain_maintenance flags=(attach_disconnected,mediate_deleted) {
   /etc/localtime r,
   /usr/share/zoneinfo/** r,
 
-  # Own persistent state (journal, audit, ledger, options). No other mapped folder exists.
+  # Own persistent state (journal, audit, ledger, options).
   /data/ r,
   /data/** rwk,
+
+  # 0.7.4 STAGE_LOCAL_APP_SOURCE: the pinned carrier's own script (bash + its Python helpers) runs from a private
+  # folder under /tmp. It may write only the three allowlisted local App folders, its dot-prefixed swap folder and
+  # its backup folder; every other path in /addons and /share stays read-only or unreachable.
+  /bin/** rix,
+  /usr/bin/** rix,
+  /addons/ r,
+  /addons/*/ r,
+  /addons/*/config.yaml r,
+  /addons/house_brain_engineering_inspector/ rw,
+  /addons/house_brain_engineering_inspector/** rw,
+  /addons/house_brain_engineering_observer/ rw,
+  /addons/house_brain_engineering_observer/** rw,
+  /addons/house_brain_maintenance_inventory_scout/ rw,
+  /addons/house_brain_maintenance_inventory_scout/** rw,
+  /addons/.hb91-*-swap/ rw,
+  /addons/.hb91-*-swap/** rw,
+  /addons/.hb91-*-swap-previous/ rw,
+  /addons/.hb91-*-swap-previous/** rw,
+  /share/ r,
+  /share/hb91-app-update/ rw,
+  /share/hb91-app-update/** rwk,
 
   /proc/ r,
   /proc/self/** r,
