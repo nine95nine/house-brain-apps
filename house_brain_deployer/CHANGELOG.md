@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.14 — 2026-10-11
+
+The approval link opens the running Deployer, not the old local copy. Ported from draft PR #985 (ChatGPT
+Deployer chat, credited) under the owner's 2026-10-11 split ("take whatever makes it faster"); #985 keeps 0.3.13
+and renumbers when it composes main. Contains everything in 0.3.12 unchanged.
+
+- **Why:** every approval push said "Tap to open the approval page" with a fixed link to
+  `local_house_brain_deployer`. Since the store install (`fa119045_house_brain_deployer`), that link opened the
+  stopped legacy copy's panel, not the Deployer that is asking.
+- **Change:** the link is built from this App's own container name (`<local|8-hex>-house-brain-deployer` →
+  `homeassistant://navigate/<slug>?server=default`). Any other name gives no link, and the push then says
+  "Use notification actions or Open Web UI." The native Approve/Reject buttons work as before.
+- **Unchanged:** a tap only opens the page and never approves; approval, nonces, unlock and every other behaviour.
+
 ## 0.3.12 — 2026-10-10
 
 Request backlog fix (owner pop-up 2026-10-10 "Small hotfix now"; draft PR #985 moves to 0.3.13). Contains

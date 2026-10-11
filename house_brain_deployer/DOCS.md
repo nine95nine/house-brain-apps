@@ -30,6 +30,9 @@ the GitHub issue. Lookups can never change anything.
   configuration check and (after your second tap) restarts Home Assistant.
 - Opens no port on your network. Its approval page is reachable only inside the Home Assistant app
   (ingress), and only your account can decide.
+- Tapping an approval push opens this Deployer's own page (from 0.3.14 also for a store install). If the App
+  cannot tell its own name, the push says "Use notification actions or Open Web UI" and the Approve/Reject
+  buttons on the push still work.
 
 ## Options
 

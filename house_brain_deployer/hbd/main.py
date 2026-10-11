@@ -34,7 +34,25 @@ RE_BRANCH_GLOB = re.compile(r"^[A-Za-z0-9._/*-]{1,100}$")
 # Sidebar panel of this App (Core registers ingress panels at /<app slug>). The iOS Companion
 # app opened the plain relative path in Safari (live 0.2.0), so use its documented in-app
 # deep link (homeassistant://navigate/<path>, URL handler docs) instead.
-PANEL_URL = "homeassistant://navigate/local_house_brain_deployer?server=default"
+# 0.3.14 (ported from #985, credited): the slug is derived from THIS App's container hostname. A store
+# install is <8-hex>_house_brain_deployer; the old fixed local_house_brain_deployer link opened the
+# stopped legacy copy's panel instead of the running Deployer's.
+RE_DEPLOYER_HOSTNAME = re.compile(r"(?:local|[0-9a-f]{8})-house-brain-deployer")
+
+
+def panel_url(instance: str) -> str | None:
+    """Route to THIS Deployer's ingress panel, never a guessed/legacy instance.
+
+    Core maps an add-on slug to its hostname by replacing underscores with dashes
+    and registers its panel under the original slug. Only this App's two known
+    slug shapes are reversible; a generic container hostname is not an App slug.
+    Keep the proven Companion deep-link format and default-server selection.
+    An unknown identity leaves native approval actions / Open Web UI available.
+    """
+    if not isinstance(instance, str) or not RE_DEPLOYER_HOSTNAME.fullmatch(instance):
+        return None
+    return f"homeassistant://navigate/{instance.replace('-', '_')}?server=default"
+
 MAX_REQUESTS_PER_POLL = 10
 BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
 RE_BOOT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -717,8 +735,11 @@ def build_service(options_path: str, data_dir: str) -> Service:
                         restart_approval_timeout=timing.restart_approval_timeout * scale,
                         precondition_wait=900 * scale, running_timeout=900 * scale,
                         poll=max(0.05, 10 * scale), settle_scale=scale)
+    open_url = panel_url(ha_mod.INSTANCE)
+    if open_url is None:
+        LOG.warning("Deployer panel identity unavailable; use native notification actions or Open Web UI")
     service = Service(opts, ha, gh, Packages(packages), Journal(data_dir), timing,
-                      board=ApprovalBoard(), open_url=PANEL_URL)
+                      board=ApprovalBoard(), open_url=open_url)
     service.connector = ghpage.Connector(
         app_title="House Brain Deployer", bot_name="House Brain Deployer Bot",
         bot_description="House Brain Deployer App on the owner's Home Assistant: reads deploy/requests and "

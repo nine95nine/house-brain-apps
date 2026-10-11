@@ -67,7 +67,9 @@ def ask(ha: HomeAssistant, notify_service: str, owner_user_id: str, *, stage: st
     reject_id = f"HBD_{stage}_REJECT_{nonce}"
     body = message[:900]
     if board is not None:
-        body = "Tap to open the approval page.\n" + body
+        instruction = ("Tap to open the approval page." if open_url else
+                       "Use notification actions or Open Web UI.")
+        body = instruction + "\n" + body
     payload: dict = {
         "title": title[:120],
         "message": body[:950],
