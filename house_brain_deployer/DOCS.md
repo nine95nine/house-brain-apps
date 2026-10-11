@@ -112,6 +112,8 @@ Nothing is approved by the re-ask itself: Approve installs, Reject or no answer 
 - The request must be byte-for-byte what you were asked the first time; if the AI changed it, it is refused and the AI
   has to file a new request instead.
 - Read-only lookups are not asked again, and the Deployer never asks again by itself.
+- From 0.3.15, if the App stopped right after your restart Approve but before Home Assistant restarted, you are
+  asked to approve the restart again. Nothing is recorded as installed until Home Assistant has really restarted.
 
 ## GitHub connection (no token to renew) — from 0.3.6
 

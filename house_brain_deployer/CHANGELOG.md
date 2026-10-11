@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.15 — 2026-10-11
+
+Recovery never records an install as done when Home Assistant was not restarted (owner pop-up 2026-10-11 "Ask
+restart again"). Found by a test that failed about 5 in 10 runs on `main`; it was a real bug, not a flaky test.
+Contains everything in 0.3.14 unchanged.
+
+- **Why:** after your restart Approve, the Deployer writes "restarting" to its journal and then asks Home Assistant
+  to restart. If the App was stopped or killed between those two steps, the next start ran the health checks on the
+  still-running, un-restarted Home Assistant and recorded **SUCCEEDED**. The new files stayed on disk without being
+  loaded or checked, until some later restart.
+- **Change:** recovery first checks the Deployer's restart marker. If Home Assistant did not restart, you get the
+  restart approval again ("The Deployer stopped before it could restart Home Assistant"). Approve runs the usual
+  pre-restart checks, restart and health checks. Reject or no answer puts the old files back (`ROLLED_BACK`; a
+  no-answer can be asked again by a chat, as in 0.3.11). If the request changed meanwhile, the old files go back
+  without asking. If Home Assistant did restart, nothing is asked and the health checks run as before.
+- **Unchanged:** it never restarts without a fresh tap; every other path. The checks between Approve and restart are
+  now one shared step for the normal path and recovery (same checks, same order).
+
 ## 0.3.14 — 2026-10-11
 
 The approval link opens the running Deployer, not the old local copy. Ported from draft PR #985 (ChatGPT

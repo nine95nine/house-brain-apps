@@ -668,10 +668,17 @@ class Engine:
                             "Approve restarts Home Assistant now. Reject/no answer restores the old files.",
                             t.restart_approval_timeout)
         if outcome != approval.APPROVE:
-            result = self._rollback_files(txn, [f"restart not approved ({outcome})"])
-            result.restart_timed_out = outcome == approval.TIMEOUT and result.outcome == ROLLED_BACK
-            return result
-        if self.pk.snapshot(list(p.pre)) != txn["post"]:
+            return self._restart_refused(txn, outcome, [])
+        return self._restart_after_approval(txn, m)
+
+    def _restart_refused(self, txn: dict, outcome: str, reasons: list[str]) -> Result:
+        result = self._rollback_files(txn, reasons + [f"restart not approved ({outcome})"])
+        result.restart_timed_out = outcome == approval.TIMEOUT and result.outcome == ROLLED_BACK
+        return result
+
+    def _restart_after_approval(self, txn: dict, m: Manifest) -> Result:
+        """The checks between the owner's restart Approve and the restart (0.3.15: shared with recovery)."""
+        if self.pk.snapshot(list(txn["pre"])) != txn["post"]:
             return self._rollback_files(txn, ["files changed while waiting for restart approval"])
         unmet = self.wait_preconditions(m)
         if unmet:
@@ -812,6 +819,8 @@ class Engine:
         note = f"interruption: {cause} during {phase}"
         if phase in ("RESTARTING", "HEALTH"):
             m = manifest_for(rid)
+            if phase == "RESTARTING" and txn.get("marker") and not self._core_restarted(txn):
+                return rid, self._recover_unsent_restart(txn, m, note)
             if m is None or m.digest != txn["digest"]:
                 return rid, self._rollback_restart(txn, None, ["recovered after crash; manifest unavailable", note])
             txn["phase"] = "HEALTH"
@@ -825,6 +834,28 @@ class Engine:
         if phase in ("ROLLING_BACK", "ROLLBACK_RESTARTING") and txn.get("restarted"):
             return rid, self._rollback_restart(txn, None, ["recovered after crash during rollback", note])
         return rid, self._rollback_files(txn, [f"recovered after crash in {phase}", note])
+
+    def _recover_unsent_restart(self, txn: dict, m: Manifest | None, note: str) -> Result:
+        """0.3.15 (owner pop-up 2026-10-11 "Ask restart again"): the App stopped after journaling RESTARTING but
+        before Core was restarted (its marker is still there). Health checks would only see the old configuration,
+        so never record success here: ask for the restart again. Approve runs the normal pre-restart checks and
+        restart; Reject or no answer restores the old files (no answer stays re-askable, as in 0.3.11)."""
+        rid = txn["request_id"]
+        txn["phase"] = "AWAITING_RESTART"   # a crash during this ask rolls back, like any restart wait
+        txn["restarted"] = False
+        self.j.save_txn(txn)
+        self.j.audit(rid, "RESTART_NOT_SENT")
+        reasons = ["recovered after crash: Home Assistant was not restarted", note]
+        if m is None or m.digest != txn["digest"]:
+            return self._rollback_files(txn, reasons + ["manifest unavailable"])
+        outcome = self._ask(m, "RESTART", "House Brain Deployer: approve restart?",
+                            f"{rid}: files installed, config check clean. The Deployer stopped before it could "
+                            "restart Home Assistant.\n"
+                            "Approve restarts Home Assistant now. Reject/no answer restores the old files.",
+                            self.s.timing.restart_approval_timeout)
+        if outcome != approval.APPROVE:
+            return self._restart_refused(txn, outcome, reasons)
+        return self._restart_after_approval(txn, m)
 
     def interruption(self, txn: dict) -> tuple[str, dict]:
         """0.3.5 (P1/P5): why a transaction was left open, from the journal and the audit trail only."""
