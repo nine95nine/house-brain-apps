@@ -18,5 +18,11 @@ Owner-approved App updates and maintenance jobs for the House Brain Home Assista
   carrier from `main` (commit + SHA-256), runs its own `check`, asks once, then stages it, refreshes the store
   (`POST /store/reload`, only during this job) and runs the normal App update; on failure the carrier's `undo`.
   Inspector, Observer and Inventory Scout only; maps `addons` and `share` read-write (AppArmor-narrowed).
+- Automatic Broker keys (0.8.0, owner decisions K1-K4 2026-10-11; needs Broker 0.6.0): the App holds a rotation key
+  only it knows and changes the Broker keys of the Observer, Inspector, AI Access and Scout (then its own) one per
+  night every `key_rotate_days` (default 90): Broker accepts the new key next to the old one -> that App's key option
+  is set (other options unchanged) -> restart if it was running (never the Scout) -> check -> commit; any failure
+  rolls back. The first change asks once; `ROTATE_KEYS_NOW` rotates at once. Design:
+  `docs/architecture/HOUSE_BRAIN_AUTOMATIC_KEY_ROTATION_R1.md`.
 - Never updates the Supervisor or itself, never updates Core/OS without the owner's Approve. No host port, no
   `ha` CLI, no physical control.

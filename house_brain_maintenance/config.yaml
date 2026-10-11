@@ -1,5 +1,5 @@
 name: "House Brain Maintenance"
-version: "0.7.4"
+version: "0.8.1"
 slug: "house_brain_maintenance"
 description: >-
   Reviews pending App, HACS and device-firmware updates and applies them after your iPhone approval
@@ -105,6 +105,9 @@ options:
   hold_core_dot_zero: true
   after_update_minutes: 10
   undo_hours: 24
+  key_rotation: true
+  key_rotate_days: 90
+  keep_old_deployer: true
 schema:
   github_repo: "match(^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$)"
   github_token: password?
@@ -144,5 +147,8 @@ schema:
   hold_core_dot_zero: "bool?"
   after_update_minutes: "int(0,120)?"
   undo_hours: "int(1,72)?"
+  key_rotation: "bool?"
+  key_rotate_days: "int(30,365)?"
+  keep_old_deployer: "bool?"
   update_hold:
     - "match(^update\\.[a-z0-9_]{1,200}$)?"

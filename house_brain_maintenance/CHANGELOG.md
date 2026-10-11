@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.8.1
+
+Seven defects found by ChatGPT's Maintenance 0.7.5 line (PR #975), ported into the released App, plus a hold on
+removing the old Deployer. Owner pop-ups 2026-10-11: "Yes, that plan" (Claude ports #975's gate-independent fixes;
+ChatGPT keeps the qualification gate) and "Keep old Deployer for now". Contains 0.8.0 unchanged otherwise.
+
+- **One-tap install (`STAGE_LOCAL_APP_SOURCE`) keeps its recovery record when the outcome is uncertain.** Before,
+  the record was cleared even after an error once the source was already swapped, so Undo evidence was lost.
+  - A network error after your Approve is now reported as "interrupted after your Approve; checked again", not
+    "nothing changed".
+  - While the recovery read fails, nothing new starts.
+  - A recovery that needs you is held, not repeated, until you enter its request id in `clear_freeze_for` (the same
+    switch that lifts the pause).
+- **After-update check.** An integration that is missing, disabled or not loaded yet after an update no longer
+  counts as "still runs". The check waits; if it never settles it closes with "could not be read or verified".
+- **Update review:**
+  - a permission that the update adds or removes is now flagged, not only a changed one;
+  - missing permission facts are flagged;
+  - a minimum Home Assistant version that cannot be compared (malformed, empty, not text) blocks that one update.
+    It used to be treated as "no requirement".
+- **Old Deployer kept (new option `keep_old_deployer`, default on).** The stopped local Deployer 0.3.6 is no longer
+  proposed for removal 7 days after the switch to the store Deployer. Switch the option off to get the removal ask
+  back.
+
+## 0.8.0
+
+Automatic Broker keys (owner pop-ups K1–K4, 2026-10-11: "I want to be involved as little as possible, especially with
+things like swapping out keys"; design `docs/architecture/HOUSE_BRAIN_AUTOMATIC_KEY_ROTATION_R1.md`). Needs Broker
+0.6.0. Contains everything in 0.7.4 unchanged. (0.7.5 is a separate lane's candidate number; this release is 0.8.0 so
+the two never collide.)
+
+- **Rotation key.** At first start the App makes its own rotation key and keeps it in `/data/keys.json` (mode 0600).
+  Only its fingerprint is posted on #454 (`KEYS_SETUP`); an AI puts it into the Broker config and you tap Promote once.
+- **Automatic key changes.** One App per night inside the automatic-update window, each every `key_rotate_days`
+  (default 90):
+  - Engineering Observer, Engineering Inspector, AI Access and the Inventory Scout;
+  - then this App's own rotation key.
+
+  For each one:
+  1. The App makes a new key and the Broker accepts it next to the old one.
+  2. The App's Broker-key option is set (every other option stays exactly as it was).
+  3. The App is restarted, and only if it was running (the Scout is never restarted).
+  4. The App checks the new key works, then the Broker commits. The old key stays accepted for 24 hours (7 days the
+     first time).
+- **First change asks once.** "Start automatic key changes?" is asked once, in the daytime. After Approve nothing is
+  asked again; after Reject it is never asked again and nothing changes.
+- **Failure is quiet first.** Any failure before the commit is undone: the old key goes back into the App, which is
+  restarted only if it was running, and the Broker drops the new key. The old key keeps working throughout. One failed
+  night is retried the next night without a message; the second failure in a row sends one message and appears in the
+  morning summary.
+- **Old keys still in use.** If something besides the App still uses an old key after a change, you get one message.
+- **New request `ROTATE_KEYS_NOW`** (`role`: one role or `all`). For a suspected leak: rotates at once, outside the
+  night window, one App after another. Nothing is asked (after the one first question).
+- **Status sensor.** It shows each key's age, its last result and when the next change is due.
+- **Options:**
+  - `key_rotation` (default on);
+  - `key_rotate_days` (30 to 365, default 90).
+- **New permission (standing, owner K3/K4).** One more Supervisor target, only during a key change and only for those
+  four Apps:
+  - read that App's options;
+  - write them back with the same option names;
+  - restart the Observer, AI Access or Inspector right after their key changed (a stopped App is never started).
+
 ## 0.7.4
 
 One-tap install of a House Brain App source (owner pop-ups 2026-10-10: "A: Maintenance job (Recommended)",

@@ -40,7 +40,8 @@ LIVENESS_DOC = "liveness"           # written by the Recovery Report's ping (0.5
 DEVICE_SWEEP_SECONDS = 6 * 3600
 DISK_SAMPLE_SECONDS = 12 * 3600
 DISK_SAMPLES_KEPT = 40
-CREDENTIAL_SOURCES = ("credential", "credential_deployer", "credential_relay")   # 0.6.3 Credential Autopilot
+CREDENTIAL_SOURCES = ("credential", "credential_deployer", "credential_relay",   # 0.6.3 Credential Autopilot
+                      "credential_keys")                                         # 0.8.0 automatic Broker keys
 RELAY_DOC = "relay_credential"
 RELAY_READ_EVERY = 20 * 3600       # the relay self-tests weekly; one read a day is plenty
 FIXED = "FIXED"
@@ -74,6 +75,7 @@ class Watcher:
         self.credentials: Callable[[], dict] | None = None
         # 0.6.3: the relay's public dispatch-key view (option relay_credential_url; "" = off)
         self.relay_url = ""
+        self.key_findings: Callable[[], list] | None = None   # 0.8.0: automatic Broker keys (failures only)
         # 0.7.3: problem keys an open after-update check is handling (it asks Reload/Undo; no second prompt here)
         self.claimed: Callable[[], frozenset] = frozenset
         self.relay_fetch: Callable[[str], object] = lambda url: net.request("GET", url, timeout=15)[1]
@@ -270,6 +272,11 @@ class Watcher:
         else:
             out += I.from_credentials("deployer", auth)
         out += self._relay_findings(failed)
+        if self.key_findings is not None:
+            try:
+                out += self.key_findings()
+            except Exception:  # noqa: BLE001 - never a false clear: keep what is open
+                failed.append("credential_keys")
         return out
 
     def _relay_findings(self, failed: list[str]) -> list[I.Finding]:

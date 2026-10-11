@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.7.4)
+## What it does (0.8.1)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -223,7 +223,8 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 - Update the Supervisor, or update itself.
 - Reboot or shut down the Pi; the only reboot is the one the OS update you approved does.
 - Update more than one App at a time, or any App without a backup of it first.
-- Uninstall, stop or rebuild Apps, change other Apps' settings (except the Scout's key), make
+- Uninstall, stop or rebuild Apps, change other Apps' settings (except one Broker key option of the Observer,
+  Inspector, AI Access and Scout during an automatic key change, from 0.8.0), make
   full backups except right before a Core/OS update you approved, or restore anything but the one App
   it just updated or, after a failed Core update, Home Assistant only from the backup it just made.
 - Keep, log or report other Apps' settings or passwords (it reads only versions and states).
@@ -257,6 +258,59 @@ Reject is final for that version. No answer changes nothing; ask again with a ne
 `max_approval_requests_per_day`. The App needs the folder permissions `addons` and `share` (read-write) for this;
 its AppArmor profile lets it write only those three App folders and the backup folder.
 
+## Automatic Broker keys — from 0.8.0
+
+Owner decisions 2026-10-11 (K1–K4): "Once it's set up, I want to be involved as little as possible, especially with
+things like swapping out keys."
+
+**What changes by itself.** The Engineering Observer, Engineering Inspector, AI Access and the Inventory Scout each
+use a key to talk to the Maintenance Broker. This App changes those keys by itself, then its own rotation key:
+- one App per night, inside the automatic-update window;
+- each one every `key_rotate_days` (default 90).
+
+**One change, step by step:**
+1. **New key.** The App makes a new random key (384 bits) and keeps it in `/data/keys.json` (readable by this App
+   only). It never appears in a log, on GitHub or on your phone; only a short fingerprint does.
+2. **Broker accepts both.** The Broker accepts the new key next to the old one. Only this App's rotation key can ask
+   for that; a stolen App key cannot.
+3. **Switch.** The App's key option is set to the new key; every other option stays exactly as it was. The App is
+   restarted, but only if it was running. A stopped App is never started; it uses the new key at its next start. The
+   Scout is never restarted.
+4. **Check.** The Observer and Inspector must actually use the new key within 10 minutes. AI Access and the Scout are
+   checked against the Broker.
+5. **Commit.** The Broker makes the new key the current one. The old key keeps working for 24 hours (7 days after
+   the very first change), so nothing that still uses it is cut off mid-change.
+
+**If something fails.** Anything before step 5 is undone:
+- the old key goes back into the App (restarted again only if it was running);
+- the Broker forgets the new key;
+- the old key works throughout.
+
+One failed night is simply tried again the next night. Two failures in a row send you one message and appear in the
+morning summary. If something besides the App still uses an old key after a change, you get one message too.
+
+**What you are asked.** Once, in the daytime, before the very first change: "Start automatic key changes?"
+- Approve: you are never asked again.
+- Reject: nothing changes and it never asks again.
+- No answer: it asks again the next day.
+
+**Setup (one time).**
+1. At its first start the App posts its rotation key's fingerprint on the tracking issue (`KEYS_SETUP`).
+2. An assistant puts that fingerprint into the Broker's config.
+3. You tap Promote on the Broker update.
+
+Until then nothing changes.
+
+**Emergency.** An assistant can file `ROTATE_KEYS_NOW` (`role`: one key or `all`) when a key may have leaked. The
+change then runs at once, one App after another, without asking.
+
+**Status.** The status sensor shows each key's age, last result and next change.
+
+**Permission (standing, owner K3/K4).** During a key change only, for those four Apps only, this App may:
+- read that App's options;
+- write them back with the same option names;
+- restart the Observer, AI Access or Inspector right after their key changed, or to undo that change.
+
 ## Settings
 
 | Option | Meaning |
@@ -277,6 +331,9 @@ its AppArmor profile lets it write only those three App folders and the backup f
 | `hold_core_dot_zero` | From 0.7.3: hold every Core `YYYY.M.0` until a later patch is offered (default `true`). |
 | `after_update_minutes` | From 0.7.3: after-update check delay in minutes (0–120, default 10; `0` = off). |
 | `undo_hours` | From 0.7.3: how long the after-update check offers Undo (1–72, default 24). |
+| `key_rotation` | From 0.8.0: automatic Broker key changes (default `true`; see **Automatic Broker keys**). |
+| `key_rotate_days` | From 0.8.0: each Broker key is changed this often (30–365, default 90). |
+| `keep_old_deployer` | From 0.8.1: keep the stopped old local Deployer and never ask to remove it (default `true`; owner decision 2026-10-11). `false` = ask once, 7 days after the switch, as before. |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
 | `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). From 0.7.2 the same wait applies to fix asks and the Deployer switch-over ask (were fixed at 24 hours). Reject is never asked again. |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |
@@ -378,5 +435,5 @@ Deployer to the store?". After **Approve** it:
    minutes after its last report).
 
 Any problem puts the old Deployer back automatically. It never runs while the Deployer reports `DEPLOYING`. Seven
-days later it asks separately whether to remove the stopped old Deployer. Then connect the store Deployer to GitHub
+days later it asks separately whether to remove the stopped old Deployer. From 0.8.1 it keeps the old Deployer and does not ask while `keep_old_deployer` is on (the default; owner decision 2026-10-11). Then connect the store Deployer to GitHub
 on its page (3 taps).

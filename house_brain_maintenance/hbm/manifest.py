@@ -44,7 +44,12 @@ APP_LOG_WINDOW = "APP_LOG_WINDOW"   # 0.5.4: read-only, no approval: one House B
 # the App ask less (this App's own memory; nothing in Home Assistant changes), so they skip the ask limit too.
 HOLD_UPDATE = "HOLD_UPDATE"
 RELEASE_UPDATE = "RELEASE_UPDATE"
-NO_APPROVAL_JOBS = frozenset({CHECK_BROKER, APP_LOG_WINDOW, HOLD_UPDATE, RELEASE_UPDATE})
+# 0.8.0 automatic keys (owner pop-up K4 extra D, 2026-10-11): rotate a Broker key now (a suspected leak). It asks
+# nothing (the owner's standing permission covers key changes; the very first one still asks once, in keys.py),
+# so it skips the ask limit too.
+ROTATE_KEYS_NOW = "ROTATE_KEYS_NOW"
+KEY_ROLES = ("observer_write", "inspector_entity", "ai_read", "scout_inventory", "rotation", "all")
+NO_APPROVAL_JOBS = frozenset({CHECK_BROKER, APP_LOG_WINDOW, HOLD_UPDATE, RELEASE_UPDATE, ROTATE_KEYS_NOW})
 # 0.6.5: ask the phone again now for a waiting Core/OS/App update this App already reviewed (no re-ask wait).
 # It asks the owner, so it is NOT in NO_APPROVAL_JOBS: it counts against max_approval_requests_per_day.
 ASK_UPDATE_NOW = "ASK_UPDATE_NOW"
@@ -78,6 +83,7 @@ JOBS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     RELEASE_UPDATE: (frozenset({"item"}), frozenset()),
     STAGE_LOCAL_APP_SOURCE: (frozenset({"carrier", "sha256", "commit", "slug", "from_version", "to_version"}),
                              frozenset()),
+    ROTATE_KEYS_NOW: (frozenset({"role"}), frozenset()),
 }
 _TOP = frozenset({"schema", "request_id", "job", "requested_by", "tracking_issue", "note", "params"})
 _REQUIRED_TOP = frozenset({"schema", "request_id", "job", "requested_by", "params"})
@@ -120,6 +126,8 @@ class Manifest:
     stage_slug: str | None = None
     stage_from: str | None = None
     stage_to: str | None = None
+    # 0.8.0 ROTATE_KEYS_NOW
+    key_role: str | None = None
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict:
@@ -180,6 +188,10 @@ def parse(raw: bytes) -> Manifest:
         log["hold_item"] = params["item"]
     if job == STAGE_LOCAL_APP_SOURCE:
         log.update(_stage(params))
+    if job == ROTATE_KEYS_NOW:
+        if params["role"] not in KEY_ROLES:
+            raise ManifestError("KEY_ROLE")
+        log["key_role"] = params["role"]
     fp = params.get("expect_key_fingerprint")
     if fp is not None and (not isinstance(fp, str) or not RE_SHA256.fullmatch(fp)):
         raise ManifestError("EXPECT_KEY_FINGERPRINT")

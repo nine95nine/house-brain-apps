@@ -17,6 +17,7 @@ Proposed by this App (never by a request) when both are installed. One owner App
   again (UNDONE). Nothing is lost: the old Deployer's ``/data`` is untouched.
 
 Seven days after a healthy switch it asks once more, separately: remove the stopped old Deployer (uninstall).
+From 0.8.1 that ask is off while ``keep_old_deployer`` is on (default; owner decision 2026-10-11).
 Refused while the Deployer reports ``DEPLOYING`` (an install waiting for the owner's approval).
 """
 from __future__ import annotations
@@ -45,6 +46,7 @@ class MigratePolicy:
     reask_hours: float = 24.0
     practice_hours: float = 24.0
     remove_after_days: float = REMOVE_AFTER_DAYS
+    keep_old: bool = True               # 0.8.1: owner 2026-10-11 "Keep old Deployer for now"
 
 
 @dataclass
@@ -193,7 +195,7 @@ class Migrator:
                 self._save(mem)
                 self.j.audit(rid, "MIGRATE_DONE", new=new)
                 return Outcome(rid, DONE, [f"the store Deployer ({new}) is in charge; the old one is stopped and "
-                                           "kept for 7 days", "next: connect it to GitHub on its page (3 taps)"],
+                                           "kept (option keep_old_deployer)", "next: connect it to GitHub on its page (3 taps)"],
                                {"version": attrs.get("version")})
             if time.monotonic() >= deadline:
                 break
@@ -232,7 +234,9 @@ class Migrator:
 
     # -- remove the old Deployer (separate approval, 7 days later) ---------------------------------
     def _remove_cycle(self, old: str, new: str, mem: dict) -> Outcome | None:
-        if mem["removed"] or mem["remove_declined"] or self.s.dry_run:
+        # 0.8.1 (owner pop-up 2026-10-11 "Keep old Deployer for now"): while keep_old is on, the stopped old Deployer
+        # is neither proposed for removal nor removed (option keep_old_deployer).
+        if self.p.keep_old or mem["removed"] or mem["remove_declined"] or self.s.dry_run:
             return None
         if time.time() - float(mem["done_at"]) < self.p.remove_after_days * 86400:
             return None

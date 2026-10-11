@@ -113,7 +113,11 @@ class AfterUpdate:
         out = []
         for e in doc["before"]:
             now = entries.get(e["entry_id"])
-            if now is not None and not now.get("disabled") and now.get("state") in BROKEN_STATES:
+            # 0.8.1 (found by #975): missing, disabled or not-yet-loaded is not "still runs"; wait and look again
+            # (the check closes as "could not be read or verified" if it never settles).
+            if now is None or now.get("disabled") or now.get("state") not in ("loaded", *BROKEN_STATES):
+                return None
+            if now.get("state") in BROKEN_STATES:
                 out.append({**e, "state": now["state"]})
         return out
 
@@ -148,7 +152,7 @@ class AfterUpdate:
         if broken is None:
             if now >= float(doc["until"]):
                 self._clear()
-                return Outcome(rid, FAILED, [f"after {self._what(doc)}: the integrations could not be read "
+                return Outcome(rid, FAILED, [f"after {self._what(doc)}: the integrations could not be read or verified "
                                              "before the check closed; nothing was changed"], {"kind": doc["kind"].upper()})
             return None                                  # Core busy: try again next poll
         facts = self._facts(doc, broken)

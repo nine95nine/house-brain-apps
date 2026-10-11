@@ -100,6 +100,17 @@ def _newer(required: str, running: str) -> bool:
     return a + (0,) * (width - len(a)) > b + (0,) * (width - len(b))
 
 
+def minimum_core_problem(required: str | None, running: str) -> str | None:
+    """0.8.1 (found by #975): a missing requirement is fine; one that cannot be compared is refused, not ignored."""
+    if required is None:
+        return None
+    if version_tuple(required) is None or version_tuple(running) is None:
+        return "its minimum Home Assistant version cannot be compared with yours"
+    if _newer(required, running):
+        return f"needs Home Assistant {required}; you run {running}"
+    return None
+
+
 def dependents_of(target: AppDetail, others: list[AppDetail]) -> tuple[str, ...]:
     provided = {s.split(":", 1)[0] for s in target.services if s.endswith(":provide")}
     out = []
@@ -123,8 +134,9 @@ def review(*, name: str, installed: AppDetail, store: AppDetail, changelog: str,
         blocked.append(f"{to_v} failed here before and was rolled back")
     if store.available is False:
         blocked.append("Supervisor says this version cannot be installed here")
-    if store.homeassistant and _newer(store.homeassistant, core_version):
-        blocked.append(f"needs Home Assistant {store.homeassistant}; you run {core_version}")
+    minimum_problem = minimum_core_problem(store.homeassistant, core_version)
+    if minimum_problem:
+        blocked.append(minimum_problem)
     if unhealthy:
         blocked.append("Home Assistant reports it is unhealthy: " + ", ".join(sorted(unhealthy))[:120])
     if bump == "major":
@@ -137,10 +149,14 @@ def review(*, name: str, installed: AppDetail, store: AppDetail, changelog: str,
     if not changelog.strip():
         risky.append("no release notes available")
     before, after = dict(installed.privileges), dict(store.privileges)
+    # 0.8.1 (found by #975): a permission added or removed by the update is a change too; no metadata is a risk.
     changed = sorted(k for k in set(before) | set(after)
-                     if k in before and k in after and before[k] != after[k])
+                     if k not in before or k not in after or before[k] != after[k])
+    if not before or not after:
+        risky.append("permission facts are incomplete")
     if changed:
-        risky.append("permissions change: " + ", ".join(f"{k} {before[k]}->{after[k]}" for k in changed))
+        risky.append("permissions change: " + ", ".join(
+            f"{k} {before.get(k, 'unknown')}->{after.get(k, 'unknown')}" for k in changed))
     if store.stage in ("experimental", "deprecated"):
         risky.append(f"stage is {store.stage}")
     if dependents:
@@ -196,8 +212,9 @@ def review_entity(*, entity_id: str, name: str, kind: str, category: str, from_v
     risky: list[str] = []
     if quarantined:
         blocked.append(f"{to_version} failed here before and was rolled back")
-    if ha_min and _newer(ha_min, core_version):
-        blocked.append(f"needs Home Assistant {ha_min}; you run {core_version}")
+    minimum_problem = minimum_core_problem(ha_min, core_version)
+    if minimum_problem:
+        blocked.append(minimum_problem)
     if unhealthy:
         blocked.append("Home Assistant reports it is unhealthy: " + ", ".join(sorted(unhealthy))[:120])
     if in_progress:

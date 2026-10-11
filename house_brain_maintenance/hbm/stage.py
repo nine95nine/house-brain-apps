@@ -383,10 +383,12 @@ class Stager:
                                           "carrier": m.stage_carrier, "commit": m.stage_commit,
                                           "sha256": m.stage_sha256, "state_before": app.state,
                                           "issue": m.tracking_issue, "digest": m.digest, "started_at": time.time()})
-            try:
-                return self._install(m, work, app, label, facts)
-            finally:
+            # 0.8.1 (found by #975): keep the pending record on an uncertain result or an exception; an effect
+            # may already have happened although its answer was lost, so Undo evidence must not be thrown away.
+            result = self._install(m, work, app, label, facts)
+            if result.outcome != FAILED_MANUAL and not self.j.load_txn():
                 self.j.save_doc(PENDING_DOC, {})
+            return result
         finally:
             shutil.rmtree(work, ignore_errors=True)
 

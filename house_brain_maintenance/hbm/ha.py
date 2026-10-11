@@ -85,6 +85,16 @@ boundary is this module:
   ``STAGE_LOCAL_APP_SOURCE`` job runs. It only makes the Supervisor re-read the App folders; the update itself is
   the existing ``update_target`` path. Never nested with any other target, never for this App.
 
+* 0.8.0 (owner decisions K1-K4 2026-10-11, "automatic keys"): exactly one *key target* at a time,
+  ``with ha.key_target(role, slug)``, only for the Broker key of one House Brain App (``KEY_CONSUMERS``: the
+  Observer, the AI Access App, the Inspector and the Scout) during an automatic key change. Inside it the guard
+  allows that one App's ``GET /addons/<slug>/info`` read **with its options** (``key_consumer_read``; every key, token,
+  password or secret option value is registered as a secret at once and nothing is kept after the change), ``POST
+  /addons/<slug>/options`` with ``{"options": {...}}`` whose option *names* are exactly the ones just read (only
+  values change), and, for the Observer, AI Access and Inspector only, ``POST /addons/<slug>/restart`` with an
+  empty body (the owner's standing permission K3/K4: restart only right after its key changed, and to roll that
+  back; a stopped App is never started). Never this App, never another App, never nested with another target.
+
 The ``ha`` CLI is never used (#223 R4 ``apps``/``addons`` escape).
 """
 from __future__ import annotations
@@ -174,6 +184,26 @@ HACS_PLATFORM = "hacs"
 HACS_CATEGORIES = ("integration", "plugin", "theme", "python_script", "appdaemon", "netdaemon", "template")
 ENTITY_KINDS = ("hacs", "hacs_integration", "firmware")
 FEATURE_SPECIFIC_VERSION = 2              # homeassistant.components.update.UpdateEntityFeature.SPECIFIC_VERSION
+# 0.8.0 automatic keys: the Broker key option of each House Brain App (role -> option name); the slug is resolved
+# per App (the Observer and Scout from this App's options, the Inspector is local, AI Access comes from the same
+# store as this App). Restart is allowed for every consumer except the Scout (it reads its options per run).
+KEY_OPTIONS = {"observer_write": "broker_write_key", "ai_read": "broker_read_key",
+               "inspector_entity": "entity_write_key", "scout_inventory": "broker_inventory_write_key"}
+KEY_NO_RESTART = frozenset({"scout_inventory"})
+INSPECTOR_SLUG = "local_house_brain_engineering_inspector"
+RE_AI_ACCESS_SLUG = re.compile(r"^(?:local|[0-9a-f]{8})_house_brain_ai_access$")
+RE_SECRET_OPTION = re.compile(r"(?:key|token|password|secret|pass)$", re.I)
+
+
+def _min_core(v: Any) -> str | None:
+    """0.8.1 (found by #975): a minimum-Core requirement is kept even when it is malformed, so the review refuses
+    the update ("cannot be compared") instead of silently treating it as "no requirement". None = none given."""
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        return "invalid"
+    text = "".join(c for c in v if 32 < ord(c) < 127)[:40]
+    return text or "invalid"
 
 
 def _whole(v: Any) -> int | None:
@@ -413,7 +443,7 @@ def project_hacs_repo(row: Any) -> HacsRepo | None:
         return None
     dom = row.get("domain")
     return HacsRepo(id=rid, category=cat, domain=dom if isinstance(dom, str) and RE_DOMAIN.fullmatch(dom) else None,
-                    full_name=name, homeassistant=_ver(row.get("homeassistant")),
+                    full_name=name, homeassistant=_min_core(row.get("homeassistant")),
                     installed_version=_ver(row.get("installed_version")),
                     available_version=_ver(row.get("available_version")))
 
@@ -447,6 +477,23 @@ def entity_call_ok(target: dict, method: str, path: str, body: Any) -> bool:
         return body is None
     if kind == "hacs_integration" and method == "POST" and path == "/core/restart":
         return body is None
+    return False
+
+
+def key_call_ok(key: dict, method: str, path: str, body: Any) -> bool:
+    """True only for the exact calls of one open ``key_target`` (0.8.0)."""
+    slug = key["slug"]
+    if method == "GET":
+        return path == f"/addons/{slug}/info" and body is None
+    if method != "POST":
+        return False
+    if path == f"/addons/{slug}/restart":
+        return key["role"] not in KEY_NO_RESTART and body in (None, {})
+    if path == f"/addons/{slug}/options":
+        opts = body.get("options") if isinstance(body, dict) and set(body) == {"options"} else None
+        names = key.get("names")
+        return isinstance(opts, dict) and names is not None and frozenset(opts) == names \
+            and KEY_OPTIONS[key["role"]] in names
     return False
 
 
@@ -496,7 +543,7 @@ def _detail(slug: str, data: Any, *, installed: bool) -> AppDetail:
     state = data.get("state")
     return AppDetail(slug=slug, version=ver("version"), version_latest=ver("version_latest"),
                      state=state if state in SAFE_STATES else "unknown", stage=str(data.get("stage") or "")[:16],
-                     homeassistant=ver("homeassistant"),
+                     homeassistant=_min_core(data.get("homeassistant")),
                      available=data.get("available") if isinstance(data.get("available"), bool) else None,
                      privileges=privileges, services=services, installed=installed)
 
@@ -582,6 +629,7 @@ class HomeAssistant:
         self._migrate: dict | None = None         # 0.6.6: {"old", "new", "remove"} while open
         self._entity: dict | None = None          # 0.7.0: {"entity_id", "kind", "to", "frm"} while open
         self._stage: str | None = None            # 0.7.4: the allowlisted local App whose source is being staged
+        self._key: dict | None = None             # 0.8.0: {"role", "slug", "names"} during one key change
         self._self_slug: str | None = None
         # 0.6.1 shared Core socket (see shared_ws)
         self._shared_lock = threading.Lock()
@@ -635,11 +683,14 @@ class HomeAssistant:
             return
         if self._stage is not None and method == "POST" and path == "/store/reload" and body in (None, {}):
             return                                # 0.7.4: only inside stage_target (see the module docstring)
+        key = self._key
+        if key is not None and key_call_ok(key, method, path, body):
+            return                                # 0.8.0: only inside key_target (see the module docstring)
         raise ForbiddenCall(f"{method} {path}")
 
     def _busy(self) -> bool:
         return any(t is not None for t in (self._target, self._fix, self._system, self._migrate, self._entity,
-                                           self._stage))
+                                           self._stage, self._key))
 
     @contextmanager
     def fix_target(self, kind: str, ref: str):
@@ -731,6 +782,61 @@ class HomeAssistant:
         if self._stage is None:
             raise ForbiddenCall("store reload outside a stage job")
         self._supervisor("POST", "/store/reload", body={}, timeout=300)
+
+    def key_slug(self, role: str) -> str | None:
+        """0.8.0: the slug of the App that holds ``role``'s Broker key (None: not resolvable here)."""
+        if role == "observer_write":
+            return self.observer
+        if role == "scout_inventory":
+            return self.scout
+        if role == "inspector_entity":
+            return INSPECTOR_SLUG
+        if role == "ai_read":
+            prefix = self.self_slug().split("_", 1)[0]
+            slug = f"{prefix}_house_brain_ai_access"
+            return slug if RE_AI_ACCESS_SLUG.fullmatch(slug) else None
+        return None
+
+    @contextmanager
+    def key_target(self, role: str, slug: str):
+        """0.8.0: open one House Brain App's Broker-key read, option write and (not the Scout) restart."""
+        if role not in KEY_OPTIONS or not isinstance(slug, str) or slug != self.key_slug(role) \
+                or slug in ("self", self.self_slug()):
+            raise ForbiddenCall("key target")
+        if self._busy():
+            raise ForbiddenCall("nested key target")
+        self._key = {"role": role, "slug": slug, "names": None}
+        try:
+            yield
+        finally:
+            self._key = None
+
+    def key_consumer_read(self) -> tuple[str, dict]:
+        """0.8.0, only inside ``key_target``: (state, options) of the key App. Every string option value is
+        registered as a secret at once; the option names are pinned for the write that may follow."""
+        key = self._key
+        if key is None:
+            raise ForbiddenCall("key read outside a key change")
+        data = self._supervisor("GET", f"/addons/{key['slug']}/info")
+        options = data.get("options") if isinstance(data, dict) else None
+        if not isinstance(options, dict):
+            raise HAError("KEY_APP_OPTIONS")
+        for name, value in options.items():
+            # Secret-looking options only (keys, tokens, passwords), so ordinary values such as a URL or
+            # "FULL_STOP" are not blanked out of later reports.
+            if isinstance(value, str) and RE_SECRET_OPTION.search(str(name)):
+                net.register_secret(value)
+        key["names"] = frozenset(str(k) for k in options)
+        state = data.get("state")
+        return (state if state in SAFE_STATES else "unknown"), dict(options)
+
+    def key_consumer_write(self, options: dict) -> None:
+        key = self._key or {}
+        self._supervisor("POST", f"/addons/{key.get('slug')}/options", body={"options": options}, timeout=60)
+
+    def key_consumer_restart(self) -> None:
+        key = self._key or {}
+        self._supervisor("POST", f"/addons/{key.get('slug')}/restart", body={}, timeout=300)
 
     def store_deployer_slug(self) -> str | None:
         """0.6.6: the store slug the Deployer gets from the same store as this App (``<hash>_house_brain_deployer``),

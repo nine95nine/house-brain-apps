@@ -24,7 +24,8 @@ from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
 from .manifest import (ASK_UPDATE_NOW, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE, RE_REQUEST_ID,
-                       STAGE_LOCAL_APP_SOURCE, Manifest, ManifestError, parse)
+                       ROTATE_KEYS_NOW, STAGE_LOCAL_APP_SOURCE, Manifest, ManifestError, parse)
+from .keys import FAILED_MANUAL as KEY_STUCK, JOB as KEY_JOB, SETUP_JOB as KEY_SETUP_JOB, KeyPolicy, KeyRotator
 from .stage import PENDING_DOC as STAGE_PENDING_DOC, StagePolicy, Stager
 from .holds import Holds
 from .afterupdate import JOB as AFTER_JOB, AfterPolicy, AfterUpdate, loaded_snapshot
@@ -102,6 +103,9 @@ class Options:
     hold_core_dot_zero: bool = True   # 0.7.3: every Core YYYY.M.0 is held until a later patch is offered
     after_update_minutes: int = 10    # 0.7.3: after-update check delay (0 = off)
     undo_hours: int = 24              # 0.7.3: how long the after-update check offers Undo
+    key_rotation: bool = True         # 0.8.0: automatic Broker key changes (owner K1-K4 2026-10-11)
+    key_rotate_days: int = 90         # 0.8.0: each Broker key is changed this often (one App per night)
+    keep_old_deployer: bool = True    # 0.8.1: owner 2026-10-11 "Keep old Deployer for now" (no removal ask)
 
 
 def load_options(path: str) -> Options:
@@ -184,6 +188,11 @@ def load_options(path: str) -> Options:
         if isinstance(raw.get("hold_core_dot_zero", True), bool) else _bad("hold_core_dot_zero"),
         after_update_minutes=i("after_update_minutes", 0, 120) if "after_update_minutes" in raw else 10,
         undo_hours=i("undo_hours", 1, 72) if "undo_hours" in raw else 24,
+        key_rotation=raw.get("key_rotation", True) if isinstance(raw.get("key_rotation", True), bool)
+        else _bad("key_rotation"),
+        key_rotate_days=i("key_rotate_days", 30, 365) if "key_rotate_days" in raw else 90,
+        keep_old_deployer=raw.get("keep_old_deployer", True) if isinstance(raw.get("keep_old_deployer", True), bool)
+        else _bad("keep_old_deployer"),
     )
 
 
@@ -292,6 +301,8 @@ class Service:
         self.after: AfterUpdate | None = None               # 0.7.3: after-update check
         self.stager: Stager | None = None                   # 0.7.4: STAGE_LOCAL_APP_SOURCE
         self.stage_policy = StagePolicy()                   # 0.7.4: /addons, /share (test mode: temp folders)
+        self.keys: KeyRotator | None = None                 # 0.8.0: automatic Broker keys
+        self.key_broker_base: str | None = None             # 0.8.0: test mode only (a local Broker)
         self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
         self.watcher: Watcher | None = None
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
@@ -363,7 +374,8 @@ class Service:
                 enabled=self.o.entity_updates),
                 app_successes=lambda: int(self.j.load_doc("updates", {}).get("successes", 0)))
             self.migrator = Migrator(self.ha, self.j, settings, MigratePolicy(
-                watch_seconds=1200.0 * scale, poll=self.poll, reask_hours=float(self.o.update_reask_hours)))
+                watch_seconds=1200.0 * scale, poll=self.poll, reask_hours=float(self.o.update_reask_hours),
+                keep_old=self.o.keep_old_deployer))
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
                                 max_fix_asks_per_day=self.o.max_approval_requests_per_day,
                                 reask_hours=float(self.o.update_reask_hours),
@@ -390,7 +402,63 @@ class Service:
             self.stage_policy.reload_seconds = 120.0 * scale
             self.stager = Stager(self.ha, self.j, settings, self.stage_policy, self.gh, self.updater,
                                  after_active=lambda: bool(self.after is not None and self.after.active()))
+            # 0.8.0: automatic Broker keys, one App per night inside the automatic-update window.
+            self.keys = KeyRotator(self.ha, self.j, settings, KeyPolicy(
+                rotate_days=float(self.o.key_rotate_days),
+                window=(self.o.auto_window_start_hour, self.o.auto_window_end_hour), enabled=self.o.key_rotation,
+                probe_wait=90.0 * scale, verify_seconds=600.0 * scale, restart_seconds=120.0 * scale, poll=self.poll,
+                ask_hours=(min(self.o.digest_hour, 20), 21)), self._key_broker_base)
+            self.watcher.key_findings = self.keys.findings
         return self.engine
+
+    def _key_broker_base(self) -> str:
+        """0.8.0: the Broker the Scout publishes to (its URL is checked to the exact Broker shape)."""
+        if self.key_broker_base:
+            return self.key_broker_base
+        from .jobs import checked_inventory_url
+        import urllib.parse
+        host = urllib.parse.urlsplit(checked_inventory_url(self.ha.scout_view().broker_url)).hostname
+        return f"https://{host}"
+
+    def poll_keys(self) -> bool:
+        """0.8.0: one step of automatic key changes. True when something was done (one action per poll)."""
+        self.ensure_engine()
+        if self.keys is None:
+            return False
+        try:
+            out = self.keys.cycle()
+        except (HAError, net.NetError) as err:
+            LOG.warning("key check waits: %s", net.redact(str(err))[:200])
+            return False
+        if out is None:
+            return False
+        # A key change that could not be undone yet is retried each poll by keys.py itself; it must not freeze
+        # the whole App (FAILED_MANUAL would), so it is reported as FAILED.
+        outcome = FAILED if out.result_outcome == KEY_STUCK else out.result_outcome
+        job = KEY_SETUP_JOB if out.request_id == "keys-setup" else KEY_JOB
+        self.finish(out.request_id, job, f"keys:{out.request_id}", self.o.report_issue or None,
+                    Result(outcome, out.reasons, out.facts), notify=out.notify)
+        return True
+
+    def keys_request(self, m: Manifest) -> None:
+        """0.8.0 ROTATE_KEYS_NOW: queue the role(s); the change runs on the next polls (nothing asked)."""
+        self.ensure_engine()
+        issue = m.tracking_issue or self.o.report_issue or None
+        if self.keys is None or not self.o.key_rotation:
+            self.finish(m.request_id, m.job, m.digest, issue,
+                        Result(REFUSED, ["automatic key changes are turned off (option key_rotation)"]), notify=False)
+            return
+        queued = self.keys.queue(str(m.key_role))
+        self.finish(m.request_id, m.job, m.digest, issue, Result(DONE, [
+            "queued; the key change(s) run on the next polls, one App at a time"], {"queue": queued}), notify=False)
+
+    def _keys_attrs(self) -> dict:
+        if self.keys is None:
+            return {}
+        try:
+            return self.keys.summary()
+        except Exception:  # noqa: BLE001 - visibility only
+            return {}
 
     def key(self, request_id: str) -> str:
         return f"{request_id}#dry" if self.o.dry_run else request_id
@@ -476,6 +544,8 @@ class Service:
             self.last_request_error = message
         if handled:
             return
+        if self.poll_keys():                            # 0.8.0: at most one key step, then the next poll
+            return
         if not self.poll_after_update():                # an after-update check is open: no new update starts,
             self.poll_updates()                         # but the problem watch keeps running (it skips the
         self.poll_issues()                              # integrations the check is handling)
@@ -512,7 +582,7 @@ class Service:
         self.ensure_engine()
         summary = self.watcher.check()
         self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary, **self._ledger_attrs(),
-                                 **self._waiting_attrs()})
+                                 **self._waiting_attrs(), **self._keys_attrs()})
 
     def _waiting_attrs(self) -> dict:
         """0.7.2: updates asked and not answered (or reviewed and waiting for the lead time), from this App's own
@@ -560,7 +630,7 @@ class Service:
                 self.finish_entity(ent_out, str(ent_out.facts.get("kind", "")))
                 return
             self.status("IDLE", {"version": VERSION, "dry_run": self.o.dry_run, **self._waiting_attrs(),
-                                 **self._ledger_attrs()})
+                                 **self._ledger_attrs(), **self._keys_attrs()})
             return
         result = Result(out.result_outcome, out.reasons, out.facts)
         self.finish(out.request_id, UPDATE_JOB, f"update:{out.facts.get('slug')}@{out.facts.get('to')}",
@@ -623,6 +693,9 @@ class Service:
             if manifest.job == STAGE_LOCAL_APP_SOURCE:
                 self.stage_request(manifest)
                 return True
+            if manifest.job == ROTATE_KEYS_NOW:
+                self.keys_request(manifest)
+                return True
             result = self.ensure_engine().run(manifest)
             self.finish(request_id, manifest.job, manifest.digest, manifest.tracking_issue, result)
             return True  # at most one request per poll
@@ -637,8 +710,14 @@ class Service:
         try:
             result = self.stager.run(m)
         except (HAError, net.NetError) as err:
-            result = Result(FAILED, [f"preflight: {net.redact(str(err))[:200]}; nothing asked or changed"],
-                            {"slug": m.stage_slug, "to": m.stage_to})
+            # 0.8.1 (found by #975): after the Approve the source may already be swapped; never say "nothing changed".
+            if self.j.load_doc(STAGE_PENDING_DOC, {}):
+                result = Result(FAILED_MANUAL, [
+                    "the install was interrupted after your Approve; its recovery record is kept and it is checked "
+                    f"again on the next poll ({net.redact(str(err))[:200]})"], {"slug": m.stage_slug, "to": m.stage_to})
+            else:
+                result = Result(FAILED, [f"preflight: {net.redact(str(err))[:200]}; nothing asked or changed"],
+                                {"slug": m.stage_slug, "to": m.stage_to})
         self.finish(m.request_id, m.job, m.digest, issue, result)
 
     def poll_stage_pending(self) -> bool:
@@ -647,14 +726,24 @@ class Service:
         doc = self.j.load_doc(STAGE_PENDING_DOC, {})
         if not isinstance(doc, dict) or not doc.get("request_id"):
             return False
+        if doc.get("manual_recovery_hold"):
+            # 0.8.1 (found by #975): an install whose recovery needed the owner is never retried by itself. The
+            # owner's clear_freeze_for = <request id> (the same switch that lifts the pause) releases it.
+            if self.o.clear_freeze_for and self.o.clear_freeze_for == doc.get("request_id"):
+                self.j.save_doc(STAGE_PENDING_DOC, {})
+                self.j.audit(str(doc.get("request_id")), "STAGE_HOLD_CLEARED_BY_OWNER")
+                return False
+            return True
         self.ensure_engine()
         try:
             rid, result = self.stager.recover(doc)
         except (HAError, net.NetError) as err:
             LOG.warning("install recovery waits (GitHub or Supervisor not answering): %s",
                         net.redact(str(err))[:200])
-            return False
-        self.j.save_doc(STAGE_PENDING_DOC, {})
+            return True                     # 0.8.1 (#975): nothing new starts while an install is unresolved
+        # 0.8.1 (#975): a recovery that needs the owner keeps its record (no repeat without evidence).
+        self.j.save_doc(STAGE_PENDING_DOC, {**doc, "manual_recovery_hold": True} if result.outcome == FAILED_MANUAL
+                        else {})
         issue = doc.get("issue") if isinstance(doc.get("issue"), int) else None
         self.finish(rid, STAGE_LOCAL_APP_SOURCE, str(doc.get("digest") or "recovered"),
                     issue or self.o.report_issue or None, result)
