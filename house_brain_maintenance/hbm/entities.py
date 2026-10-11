@@ -64,6 +64,7 @@ class EntityUpdater:
         self.s = settings
         self.p = policy
         self.app_successes = app_successes  # the App-update track record counts for automatic installs too
+        self.holds = None                   # 0.7.3: the hold list (holds.Holds); its update.* items hold too
 
     # -- memory ------------------------------------------------------------------------
     def _mem(self) -> dict:
@@ -81,9 +82,10 @@ class EntityUpdater:
         """(entity, kind, HACS repository or None) for each update waiting that this engine handles."""
         if not self.p.enabled:
             return []
+        held = self.p.hold | (self.holds.entity_ids() if self.holds is not None else frozenset())
         ents = [e for e in self.ha.update_entities()
                 if e.state == "on" and e.installed and e.latest and e.installed != e.latest
-                and e.skipped != e.latest and not e.auto_update and e.entity_id not in self.p.hold
+                and e.skipped != e.latest and not e.auto_update and e.entity_id not in held
                 and e.platform not in ("", "hassio")]
         repos = self.ha.hacs_repos() if any(e.platform == "hacs" for e in ents) else {}
         out = []

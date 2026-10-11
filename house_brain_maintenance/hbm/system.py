@@ -85,13 +85,16 @@ class SystemUpdater:
         self.s = settings              # jobs.Settings (notify service, owner, dry_run, approval board ...)
         self.p = policy
         self.report = report           # posts one markdown text to the tracking issue (or nowhere)
+        self.holds = None              # 0.7.3: the hold list (holds.Holds); a held update is never asked
+        self.on_done = None            # 0.7.3: after-update check hook (kind, txn) on a DONE result
+        self.snapshot = None           # 0.7.3: () -> integrations running now (afterupdate.loaded_snapshot)
         self.offered: dict[str, str] = {}   # 0.7.2: kind -> offered version, as the last check read them
         self.asking = ""                    # 0.7.2: the update whose ask is on the phone right now
 
     # -- memory ------------------------------------------------------------------------
     def _mem(self) -> dict:
         mem = self.j.load_doc(DOC, {})
-        for key in ("reviewed", "asked", "declined", "practiced", "held", "quarantine"):
+        for key in ("reviewed", "asked", "declined", "practiced", "held", "quarantine", "hold_noted"):
             mem.setdefault(key, {})
         return mem
 
@@ -124,8 +127,8 @@ class SystemUpdater:
             if version is None or not RE_UPDATE_VERSION.fullmatch(version):
                 continue
             key = f"{kind}@{version}"
-            if key == self.asking or mem["declined"].get(key) or mem["quarantine"].get(key):
-                continue
+            if key == self.asking or mem["declined"].get(key) or mem["quarantine"].get(key) or self.held(kind, version):
+                continue                                  # 0.7.3: a held update is not "waiting" either
             asked, reviewed = mem["asked"].get(key), mem["reviewed"].get(key)
             if asked:
                 out.append({"kind": kind, "version": version, "asked_at": utc_iso(float(asked)),
@@ -181,6 +184,18 @@ class SystemUpdater:
             if mem["declined"].get(key) or mem["quarantine"].get(key):
                 continue
             rid = request_id_for(info.kind, str(info.version_latest))
+            why = self.held(info.kind, str(info.version_latest))
+            if why:
+                if mem["hold_noted"].get(key) != why:     # said once on the tracking issue, never on the phone
+                    try:
+                        self.report(self._held_text(rid, info, why))
+                    except net.NetError as err:
+                        self.j.audit(rid, "SYSTEM_HOLD_POST_FAILED", error=net.redact(str(err))[:200])
+                        continue
+                    mem["hold_noted"][key] = why
+                    self._save(mem)
+                    self.j.audit(rid, "SYSTEM_HELD", kind=info.kind, to=info.version_latest, why=why)
+                continue
             facts = self._facts(info)
             now = time.time()
             if self.s.dry_run:
@@ -217,6 +232,20 @@ class SystemUpdater:
             return self._ask_then_apply(rid, key, info, facts)
         return None
 
+    def held(self, kind: str, version: str) -> str | None:
+        return self.holds.why_held(kind, version) if self.holds is not None else None
+
+    def _held_text(self, rid: str, info: SystemInfo, why: str) -> str:
+        from . import VERSION
+        item = f"{info.kind}@{info.version_latest}"
+        return "\n".join([f"### House Brain Maintenance: {LABEL[info.kind]} update held", "",
+                          f"- **Request:** `{rid}`", f"- **From → to:** `{info.version}` → `{info.version_latest}`",
+                          f"- Held: {why}. Your phone is **not** asked.",
+                          f"- To let it through, tell the AI; it files `RELEASE_UPDATE` `{item}`.",
+                          f"- **App:** `{VERSION}`", "",
+                          "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted "
+                          "data)._"])
+
     def _ask_then_apply(self, rid: str, key: str, info: SystemInfo, facts: dict) -> Outcome | None:
         """The one path to a Core/OS update: ask -> full backup -> update -> health check -> restore/fallback."""
         mem = self._mem()
@@ -249,6 +278,9 @@ class SystemUpdater:
         rid = request_id_for(kind, version)
         key = f"{kind}@{version}"
         facts = {"kind": kind.upper(), "to": version, "automatic": False}
+        why = self.held(kind, version)
+        if why:
+            return Outcome(rid, REFUSED, [f"update held: {why}; nothing asked (release it first)"], facts)
         pending = {i.kind: i for i in self.pending()}
         info = pending.get(kind)
         if info is None or str(info.version_latest) != version:
@@ -262,7 +294,8 @@ class SystemUpdater:
             return Outcome(rid, REFUSED, ["this version failed before and is not offered again"], facts)
         core = pending.get("core")
         if kind == "os" and core is not None and not (mem["declined"].get(f"core@{core.version_latest}")
-                                                       or mem["quarantine"].get(f"core@{core.version_latest}")):
+                                                       or mem["quarantine"].get(f"core@{core.version_latest}")
+                                                       or self.held("core", str(core.version_latest))):
             return Outcome(rid, REFUSED, ["a Core update is waiting; Core is handled before the OS"], facts)
         reviewed = mem["reviewed"].get(key)
         if not reviewed:
@@ -307,7 +340,7 @@ class SystemUpdater:
         base_unhealthy, _ = self.ha.health_flags()
         txn = {"kind": "system", "system": kind, "request_id": rid, "from": frm, "to": to, "stage": "BACKING_UP",
                "core": core_before, "boot": boot, "baseline_unhealthy": sorted(base_unhealthy), "backup": None,
-               "started_at": time.time()}
+               "started_at": time.time(), "loaded_before": self.snapshot() if self.snapshot else None}
         self.j.save_txn(txn)
         self.j.audit(rid, "SYSTEM_BACKING_UP", kind=kind, to=to)
         try:
@@ -404,9 +437,40 @@ class SystemUpdater:
         if ok:
             self.j.clear_txn()
             self.j.audit(rid, "SYSTEM_HEALTHY", kind="core", to=txn["to"])
+            self._done(txn)
             return Outcome(rid, DONE, [f"updated Home Assistant Core {txn['from']} -> {txn['to']}; healthy "
                                        "after the check"], {"backup": txn.get("backup")})
         return self._restore(txn, why)
+
+    def _done(self, txn: dict) -> None:
+        if self.on_done is not None:
+            try:
+                self.on_done(str(txn.get("system")), txn)
+            except Exception as err:  # noqa: BLE001 - the check is extra; it never turns a DONE into a failure
+                self.j.audit(str(txn.get("request_id")), "AFTER_UPDATE_START_FAILED", error=str(err)[:200])
+
+    def undo(self, rid: str, frm: str, to: str, backup: str, why: str) -> Outcome:
+        """0.7.3 owner-approved Undo (after-update check): Home-Assistant-only restore of the full backup the
+        update to ``to`` took, back to ``frm``. Same calls and the same verification as the automatic restore."""
+        try:
+            now = self.ha.system_info("core").version
+        except (HAError, net.NetError) as err:
+            return Outcome(rid, FAILED, [f"undo: Core version could not be read ({net.redact(str(err))[:120]}); "
+                                         "nothing changed"])
+        if now != to:
+            return Outcome(rid, FAILED, [f"undo: Core runs {now}, not {to}; nothing changed"], {"backup": backup})
+        base_unhealthy, _ = self.ha.health_flags()
+        txn = {"kind": "system", "system": "core", "request_id": rid, "from": frm, "to": to, "stage": "RESTORING",
+               "backup": backup, "undo": True, "failure": why, "baseline_unhealthy": sorted(base_unhealthy),
+               "started_at": time.time()}
+        self.j.save_txn(txn)
+        self.j.audit(rid, "SYSTEM_UNDO", kind="core", backup=backup, reason=why)
+        try:
+            with self.ha.system_target("core", to, backup=backup):
+                self.ha.restore_core(backup)
+        except (HAError, net.NetError, ForbiddenCall) as err:
+            self.j.audit(rid, "RESTORE_CALL_ERROR", error=net.redact(str(err))[:200])
+        return self._verify_restore(txn)
 
     def _restore(self, txn: dict, why: str) -> Outcome:
         rid = txn["request_id"]
@@ -426,8 +490,17 @@ class SystemUpdater:
     def _verify_restore(self, txn: dict) -> Outcome:
         rid = txn["request_id"]
         ok, why = self._core_health(txn["from"], txn.get("baseline_unhealthy") or [])
-        facts = {"backup": txn.get("backup"), "failure": txn.get("failure"), "quarantined": txn["to"]}
         self.j.clear_txn()
+        if txn.get("undo"):
+            facts = {"backup": txn.get("backup"), "reason": txn.get("failure"), "undone": txn["to"]}
+            if ok:
+                return Outcome(rid, ROLLED_BACK, [f"undo approved ({txn.get('failure')}): Home Assistant was "
+                                                  f"restored from backup {txn.get('backup')} and runs {txn['from']} "
+                                                  f"again", f"{txn['to']} is on your hold list"], facts)
+            return Outcome(rid, FAILED_MANUAL, [f"undo: the restore did not bring back {txn['from']} ({why})",
+                                                f"restore backup {txn.get('backup')} by hand (Settings > System > "
+                                                "Backups); automation is paused"], facts)
+        facts = {"backup": txn.get("backup"), "failure": txn.get("failure"), "quarantined": txn["to"]}
         if ok:
             return Outcome(rid, ROLLED_BACK, [f"Core update to {txn['to']} failed ({txn.get('failure')}); Home "
                                               f"Assistant was restored from backup {txn.get('backup')} and runs "
@@ -461,6 +534,7 @@ class SystemUpdater:
         if version == txn["to"]:
             if ok:
                 self.j.audit(rid, "SYSTEM_HEALTHY", kind="os", to=txn["to"])
+                self._done(txn)
                 return Outcome(rid, DONE, [f"updated Home Assistant OS {txn['from']} -> {txn['to']}; the Pi "
                                            "rebooted and Core is healthy"], facts)
             return Outcome(rid, FAILED_MANUAL, [f"OS updated to {txn['to']}, but Core is not healthy ({why})",

@@ -74,6 +74,8 @@ class Watcher:
         self.credentials: Callable[[], dict] | None = None
         # 0.6.3: the relay's public dispatch-key view (option relay_credential_url; "" = off)
         self.relay_url = ""
+        # 0.7.3: problem keys an open after-update check is handling (it asks Reload/Undo; no second prompt here)
+        self.claimed: Callable[[], frozenset] = frozenset
         self.relay_fetch: Callable[[str], object] = lambda url: net.request("GET", url, timeout=15)[1]
 
     # -- state -------------------------------------------------------------------------
@@ -380,7 +382,7 @@ class Watcher:
             return now - st["asked"].get(f.key, 0) >= self.p.reask_hours * 3600
         candidates = [f for f in current.values()
                       if f.action and st["open"].get(f.key, {}).get("polls", 0) >= CONFIRM_POLLS
-                      and not st["declined"].get(f.key) and due(f)]
+                      and not st["declined"].get(f.key) and due(f) and f.key not in self.claimed()]
         if not candidates:
             return None
         candidates.sort(key=lambda f: (f.severity != I.CRITICAL, f.key))

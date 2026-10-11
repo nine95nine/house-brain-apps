@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from . import SCHEMA
+from .holds import valid_item
 from .logwindow import parse_keywords
 
 MAX_MANIFEST_BYTES = 16 * 1024
@@ -35,7 +36,11 @@ CHECK_BROKER = "CHECK_BROKER"   # 0.5.3: read-only, no approval: which Broker ve
 APP_LOG_WINDOW = "APP_LOG_WINDOW"   # 0.5.4: read-only, no approval: one House Brain App's log in a UTC window
 # 0.6.4: jobs that never ask the owner anything. The daily approval-ask limit does not hold them back (live
 # 2026-10-07: an APP_LOG_WINDOW request waited 3 hours behind four unrelated approval asks).
-NO_APPROVAL_JOBS = frozenset({CHECK_BROKER, APP_LOG_WINDOW})
+# 0.7.3 hold list (owner pop-ups 2026-10-08): put an update on hold / release it. They ask nothing and only make
+# the App ask less (this App's own memory; nothing in Home Assistant changes), so they skip the ask limit too.
+HOLD_UPDATE = "HOLD_UPDATE"
+RELEASE_UPDATE = "RELEASE_UPDATE"
+NO_APPROVAL_JOBS = frozenset({CHECK_BROKER, APP_LOG_WINDOW, HOLD_UPDATE, RELEASE_UPDATE})
 # 0.6.5: ask the phone again now for a waiting Core/OS/App update this App already reviewed (no re-ask wait).
 # It asks the owner, so it is NOT in NO_APPROVAL_JOBS: it counts against max_approval_requests_per_day.
 ASK_UPDATE_NOW = "ASK_UPDATE_NOW"
@@ -53,6 +58,8 @@ JOBS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     CHECK_BROKER: (frozenset({"expect_scout_version"}), frozenset()),
     APP_LOG_WINDOW: (frozenset({"target_slug", "since", "until"}), frozenset({"boot", "keywords"})),
     ASK_UPDATE_NOW: (frozenset({"kind", "version"}), frozenset({"slug"})),
+    HOLD_UPDATE: (frozenset({"item"}), frozenset()),
+    RELEASE_UPDATE: (frozenset({"item"}), frozenset()),
 }
 _TOP = frozenset({"schema", "request_id", "job", "requested_by", "tracking_issue", "note", "params"})
 _REQUIRED_TOP = frozenset({"schema", "request_id", "job", "requested_by", "params"})
@@ -86,6 +93,8 @@ class Manifest:
     update_kind: str | None = None
     update_version: str | None = None
     update_slug: str | None = None
+    # 0.7.3 HOLD_UPDATE / RELEASE_UPDATE (holds.RE_ITEM)
+    hold_item: str | None = None
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict:
@@ -140,6 +149,10 @@ def parse(raw: bytes) -> Manifest:
         raise ManifestError("EXPECT_SCOUT_VERSION")
     log = _log_window(params) if job == APP_LOG_WINDOW else {}
     log.update(_ask_update(params) if job == ASK_UPDATE_NOW else {})
+    if job in (HOLD_UPDATE, RELEASE_UPDATE):
+        if not valid_item(params["item"]):
+            raise ManifestError("HOLD_ITEM")
+        log["hold_item"] = params["item"]
     fp = params.get("expect_key_fingerprint")
     if fp is not None and (not isinstance(fp, str) or not RE_SHA256.fullmatch(fp)):
         raise ManifestError("EXPECT_KEY_FINGERPRINT")

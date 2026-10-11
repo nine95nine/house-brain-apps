@@ -23,7 +23,10 @@ from .migrate import JOB as MIGRATE_JOB, MigratePolicy, Migrator
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
-from .manifest import ASK_UPDATE_NOW, NO_APPROVAL_JOBS, RE_REQUEST_ID, Manifest, ManifestError, parse
+from .manifest import (ASK_UPDATE_NOW, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE, RE_REQUEST_ID, Manifest,
+                       ManifestError, parse)
+from .holds import Holds
+from .afterupdate import JOB as AFTER_JOB, AfterPolicy, AfterUpdate, loaded_snapshot
 from .web import INGRESS_PEER, MAX_WAITING, ApprovalBoard, IngressServer, ReaskQueue
 
 LOG = logging.getLogger("hbm")
@@ -95,6 +98,9 @@ class Options:
     entity_updates: bool = True       # 0.7.0: HACS and device-firmware updates (owner 2026-10-08)
     firmware_wait_days: int = 30      # 0.7.0: firmware is asked only after it was offered this long
     update_hold: tuple[str, ...] = () # 0.7.0: update entities the owner holds (never asked, never installed)
+    hold_core_dot_zero: bool = True   # 0.7.3: every Core YYYY.M.0 is held until a later patch is offered
+    after_update_minutes: int = 10    # 0.7.3: after-update check delay (0 = off)
+    undo_hours: int = 24              # 0.7.3: how long the after-update check offers Undo
 
 
 def load_options(path: str) -> Options:
@@ -173,6 +179,10 @@ def load_options(path: str) -> Options:
         else _bad("entity_updates"),
         firmware_wait_days=i("firmware_wait_days", 0, 90) if "firmware_wait_days" in raw else 30,
         update_hold=_hold(raw.get("update_hold", [])),
+        hold_core_dot_zero=raw.get("hold_core_dot_zero", True)
+        if isinstance(raw.get("hold_core_dot_zero", True), bool) else _bad("hold_core_dot_zero"),
+        after_update_minutes=i("after_update_minutes", 0, 120) if "after_update_minutes" in raw else 10,
+        undo_hours=i("undo_hours", 1, 72) if "undo_hours" in raw else 24,
     )
 
 
@@ -277,6 +287,8 @@ class Service:
         self.updater: Updater | None = None
         self.system: SystemUpdater | None = None
         self.entities: EntityUpdater | None = None         # 0.7.0: HACS and device firmware
+        self.holds: Holds | None = None                     # 0.7.3: hold list
+        self.after: AfterUpdate | None = None               # 0.7.3: after-update check
         self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
         self.watcher: Watcher | None = None
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
@@ -358,6 +370,18 @@ class Service:
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
             self.watcher.credentials = self.gh.auth.summary if hasattr(self.gh, "auth") else None
             self.watcher.relay_url = self.o.relay_credential_url
+            # 0.7.3: hold list (all update paths) and the after-update check (Core, OS and App updates).
+            self.holds = Holds(self.j, dot_zero=self.o.hold_core_dot_zero)
+            self.after = AfterUpdate(self.ha, self.j, settings, AfterPolicy(
+                settle_seconds=self.o.after_update_minutes * 60.0 * scale, undo_hours=float(self.o.undo_hours),
+                reask_hours=float(self.o.update_reask_hours), verify_seconds=120.0 * scale, poll=self.poll,
+                enabled=self.o.after_update_minutes > 0), holds=self.holds, system=self.system, updater=self.updater)
+            for engine in (self.updater, self.system, self.entities):
+                engine.holds = self.holds
+            for engine in (self.updater, self.system):
+                engine.on_done = self.after.start
+                engine.snapshot = (lambda: loaded_snapshot(self.ha)) if self.o.after_update_minutes > 0 else None
+            self.watcher.claimed = self.after.claimed
         return self.engine
 
     def key(self, request_id: str) -> str:
@@ -442,8 +466,31 @@ class Service:
             self.last_request_error = message
         if handled:
             return
-        self.poll_updates()
-        self.poll_issues()
+        if not self.poll_after_update():                # an after-update check is open: no new update starts,
+            self.poll_updates()                         # but the problem watch keeps running (it skips the
+        self.poll_issues()                              # integrations the check is handling)
+
+    def poll_after_update(self) -> bool:
+        """0.7.3: one step of an open after-update check. True while one is open (updates wait)."""
+        self.ensure_engine()
+        if self.after is None or not self.after.active():
+            return False
+        out = self.after.cycle()
+        if out is not None:
+            self.finish(out.request_id, AFTER_JOB, f"after:{out.facts.get('update_request')}",
+                        self.o.report_issue or None, Result(out.result_outcome, out.reasons, out.facts))
+        return self.after.active() is not None
+
+    def hold_request(self, m: Manifest) -> None:
+        """0.7.3 HOLD_UPDATE / RELEASE_UPDATE: change the hold list (this App's memory only; nothing asked)."""
+        self.ensure_engine()
+        if m.job == HOLD_UPDATE:
+            ok, why = self.holds.hold(str(m.hold_item), by=m.request_id, note=m.note)
+        else:
+            ok, why = self.holds.release(str(m.hold_item))
+        issue = m.tracking_issue or self.o.report_issue or None
+        self.finish(m.request_id, m.job, m.digest, issue, Result(DONE if ok else REFUSED, [why], self.holds.summary()),
+                    notify=False)
 
     def report_text(self, text: str) -> None:
         if self.o.report_issue:
@@ -557,6 +604,9 @@ class Service:
                     and self.j.approvals_requested_since(86400) >= self.o.max_approval_requests_per_day):
                 self.j.audit(request_id, "RATE_LIMITED")
                 return True
+            if manifest.job in (HOLD_UPDATE, RELEASE_UPDATE):
+                self.hold_request(manifest)
+                return True
             if manifest.job == ASK_UPDATE_NOW:
                 self.ask_update_now(manifest)
                 return True
@@ -575,6 +625,10 @@ class Service:
     def _ask_now(self, rid: str, job: str, digest: str, issue: int | None, kind: str, slug: str | None,
                  version: str, extra: dict) -> None:
         self.ensure_engine()
+        if self.after is not None and self.after.active():
+            self.finish(rid, job, digest, issue, Result(REFUSED, [
+                "an after-update check is still open (Reload/Undo); no new update starts until it closes"], dict(extra)))
+            return
         self.j.record(self.key(rid), digest, "ASKING")
         try:
             if kind == "app":

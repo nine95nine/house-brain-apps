@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.7.2)
+## What it does (0.7.3)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -74,8 +74,36 @@ Supervisor does not own (Apps, Core and OS keep their own paths above) and handl
    restarted again for an integration) and the failed version is never offered again. **Firmware cannot be
    rolled back**: a device that does not come back is reported and the App pauses (`FAILED_MANUAL`).
 
+**Hold list** (new in 0.7.3, owner decisions 2026-10-08: "Hold list", "Auto-hold .0 + my list", "AI files a
+request"). An update on hold is **never sent to your phone**, so a tap cannot approve it by mistake. Every update
+path respects it (Apps, Core, OS, HACS, firmware and `ASK_UPDATE_NOW`).
+
+- **Automatic:** every new Core `YYYY.M.0` is held until a later patch (`.1` or newer) is offered. It is your
+  standing rule "wait for .1" (option `hold_core_dot_zero`, default on). The App says so once on the tracking issue.
+- **Your list:** tell the AI in chat. It files a `HOLD_UPDATE` or `RELEASE_UPDATE` request, and the App confirms
+  on the tracking issue with the whole list. Items: `core`, `os`, `core@2026.10.0`, `os@18.4`, `app:<slug>`,
+  `app:<slug>@<version>`, `update.<item>`. `RELEASE_UPDATE core@2026.10.0` lets one held `.0` through.
+- Nothing in Home Assistant changes; the list lives in this App's own storage.
+
+**After-update check** (new in 0.7.3, owner decision 2026-10-08). Before every Core, OS or App update the App notes
+which integrations are running. `after_update_minutes` (default 10) after a successful update it compares:
+
+1. If everything that ran before still runs, it posts one line on the tracking issue.
+2. If an integration that ran before now fails to start (as GoveeLife did after Core 2026.10.0), your phone asks
+   **Reload** and the App reloads exactly those integrations and checks them.
+3. If any still fail, your phone asks **Undo the update**:
+   - Core goes back by restoring Home Assistant only from the full backup the update took. Anything changed in
+     Home Assistant since then is lost.
+   - An App is restored from the App backup the update took.
+   - The undone version goes on the hold list.
+   - Reject keeps the update.
+4. An OS update cannot be undone. The App reports it, and the problem watch keeps offering fixes.
+
+Undo is offered for `undo_hours` (default 24). While a check is open, no new update starts, and the problem watch
+does not ask about the same integrations, so you get one prompt, not two.
+
 Skipped versions (Skip in Home Assistant's update dialog), items that update themselves, and items listed in
-`update_hold` are never asked. Reject is final, as for Apps. Results go to the tracking issue as `UPDATE_HACS` or
+`update_hold` or the hold list are never asked. Reject is final, as for Apps. Results go to the tracking issue as `UPDATE_HACS` or
 `UPDATE_FIRMWARE`.
 
 **Problem alerts** (`issue_checks`, on by default). Every check it looks, without changing
@@ -218,6 +246,9 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 | `entity_updates` | From 0.7.0: HACS and device-firmware updates (default `true`). `false` = Apps, Core and OS only. |
 | `firmware_wait_days` | From 0.7.0: a firmware version is asked only after it has been offered this long (0–90, default 30). |
 | `update_hold` | From 0.7.0: update items never to ask about or install, for example `update.backyard_zen_16_multirelay_firmware`. |
+| `hold_core_dot_zero` | From 0.7.3: hold every Core `YYYY.M.0` until a later patch is offered (default `true`). |
+| `after_update_minutes` | From 0.7.3: after-update check delay in minutes (0–120, default 10; `0` = off). |
+| `undo_hours` | From 0.7.3: how long the after-update check offers Undo (1–72, default 24). |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
 | `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). From 0.7.2 the same wait applies to fix asks and the Deployer switch-over ask (were fixed at 24 hours). Reject is never asked again. |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |

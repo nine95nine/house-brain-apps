@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.3
+
+Hold list and after-update check (owner pop-ups 2026-10-08: "Hold list", "After-update check", "Auto-hold .0 + my
+list", "AI files a request"). Contains everything in 0.7.2 unchanged (it was built as 0.7.1, PR #988, and renumbered after 0.7.2 merged first).
+
+On 2026-10-08 the owner had chosen to wait for Core 2026.10.1, but the 2026.10.0 prompt came back after its re-ask
+time and was approved by mistake. GoveeLife then failed to start, although Core itself passed its health check.
+
+- **Hold list.** A held update is never sent to the phone, on every update path. Every Core `YYYY.M.0` is held
+  until a later patch is out (`hold_core_dot_zero`, default on). The AI adds or removes items with
+  `HOLD_UPDATE` / `RELEASE_UPDATE` requests (no approval: they only make the App ask less). A held Core no longer
+  makes an OS update wait.
+- **After-update check.** The integrations running before a Core, OS or App update are compared with those running
+  `after_update_minutes` (default 10) after it. Anything that broke gets a one-tap **Reload**, then an **Undo the
+  update** offer (Core: Home-Assistant-only restore of the update's own full backup; App: its App backup; the
+  undone version goes on the hold list) for `undo_hours` (default 24). OS updates cannot be undone and are
+  reported. No new update starts while a check is open, and the problem watch does not ask twice.
+- New options `hold_core_dot_zero`, `after_update_minutes`, `undo_hours`. No new Home Assistant or Supervisor
+  call: the same config-entry read, entry reload and restore calls as before.
+
 ## 0.7.2
 
 Owner-approved (pop-ups 2026-10-08, and 2026-10-10 "Port to 0.7.2 now"; built as 0.6.7, moved onto 0.7.0). Contains

@@ -90,6 +90,9 @@ class Updater:
         self.j = journal
         self.s = settings        # jobs.Settings: notify service, owner, dry_run, approval board ...
         self.p = policy
+        self.holds = None        # 0.7.3: the hold list (holds.Holds); a held App update is never asked
+        self.on_done = None      # 0.7.3: after-update check hook (kind, txn) on a DONE result
+        self.snapshot = None     # 0.7.3: () -> integrations running now (afterupdate.loaded_snapshot)
         self.offered: dict[str, str] = {}    # 0.7.2: slug -> offered version, as the last check read them
         self.asking = ""                     # 0.7.2: the update whose ask is on the phone right now
 
@@ -111,10 +114,14 @@ class Updater:
         for app in self.ha.installed_apps():
             if app.slug == own or app.slug in self.p.exclude:
                 continue
-            if app.update_available and app.version and app.version_latest and app.version != app.version_latest:
+            if app.update_available and app.version and app.version_latest and app.version != app.version_latest \
+                    and not self.held(app.slug, app.version_latest):
                 out.append(app)
         self.offered = {a.slug: str(a.version_latest) for a in out}
         return sorted(out, key=lambda a: a.slug)
+
+    def held(self, slug: str, version: str | None) -> str | None:
+        return self.holds.why_held("app", version, slug) if self.holds is not None else None
 
     def waiting(self) -> list[dict]:
         """0.7.2: App updates asked and not answered (timed out) that are still offered: not declined, not
@@ -275,6 +282,9 @@ class Updater:
         backup -> update -> health watch -> restore path as ``cycle``; only the wait is skipped. Reject is final."""
         rid = request_id_for(slug, version)
         facts = {"slug": slug, "to": version, "automatic": False}
+        why = self.held(slug, version)
+        if why:
+            return Outcome(rid, REFUSED, [f"update held: {why}; nothing asked (release it first)"], facts)
         app = next((a for a in self.candidates() if a.slug == slug), None)
         if app is None or app.version_latest != version:
             return Outcome(rid, REFUSED, [f"{slug} {version} is not an App update this App offers right now "
@@ -325,7 +335,8 @@ class Updater:
         txn = {"kind": "update", "request_id": rid, "slug": slug, "from": rev.from_version,
                "to": rev.to_version, "prior_state": prior_state, "stage": "BACKING_UP",
                "baseline_unhealthy": sorted(base_unhealthy), "deps_started": deps_started,
-               "automatic": automatic, "backup": None}
+               "automatic": automatic, "backup": None,
+               "loaded_before": self.snapshot() if self.snapshot else None}
         self.j.save_txn(txn)
         self.j.audit(rid, "UPDATE_BACKING_UP", slug=slug, automatic=automatic)
         try:
@@ -384,6 +395,11 @@ class Updater:
             mem["successes"] = int(mem["successes"]) + 1
             self._save(mem)
             self.j.audit(rid, "UPDATE_HEALTHY", slug=slug, to=txn["to"])
+            if self.on_done is not None:
+                try:
+                    self.on_done("app", txn)
+                except Exception as err:  # noqa: BLE001 - the check is extra; it never turns DONE into a failure
+                    self.j.audit(rid, "AFTER_UPDATE_START_FAILED", error=str(err)[:200])
             return Outcome(rid, DONE, [f"updated {slug} {txn['from']} -> {txn['to']}; healthy after the watch"],
                            {"backup": txn.get("backup"), "automatic": txn.get("automatic")})
         return self._restore(txn, why)
@@ -417,6 +433,24 @@ class Updater:
                 return False, f"dependent App {dep} stopped"
         return True, "healthy"
 
+    def undo(self, rid: str, slug: str, frm: str, to: str, backup: str, why: str) -> Outcome:
+        """0.7.3 owner-approved Undo (after-update check): restore the App backup the update to ``to`` took."""
+        detail = self.ha.app_detail(slug)
+        if detail.version != to:
+            return Outcome(rid, FAILED, [f"undo: {slug} runs {detail.version}, not {to}; nothing changed"],
+                           {"backup": backup})
+        txn = {"kind": "update", "request_id": rid, "slug": slug, "from": frm, "to": to,
+               "prior_state": "started" if detail.state == "started" else "stopped", "stage": "RESTORING",
+               "backup": backup, "undo": True, "failure": why, "automatic": False}
+        self.j.save_txn(txn)
+        self.j.audit(rid, "UPDATE_UNDO", slug=slug, backup=backup, reason=why)
+        try:
+            with self.ha.update_target(slug):
+                self.ha.restore_app(backup, slug)
+        except (HAError, net.NetError, ForbiddenCall) as err:
+            self.j.audit(rid, "RESTORE_CALL_ERROR", error=net.redact(str(err))[:200])
+        return self._verify_restore(txn)
+
     def _restore(self, txn: dict, why: str) -> Outcome:
         rid, slug = txn["request_id"], txn["slug"]
         mem = self._mem()
@@ -441,8 +475,20 @@ class Updater:
             if detail.version == txn["from"] and (txn["prior_state"] != "started" or detail.state == "started"):
                 break
             time.sleep(self.p.poll)
+        back = detail.version == txn["from"] and (txn["prior_state"] != "started" or detail.state == "started")
+        if txn.get("undo"):
+            self.j.clear_txn()
+            facts = {"backup": txn.get("backup"), "reason": txn.get("failure"), "undone": txn["to"]}
+            if back:
+                return Outcome(rid, RESTORED, [f"undo approved ({txn.get('failure')}): restored {slug} "
+                                               f"{txn['from']} from its backup", f"{txn['to']} is on your hold list"],
+                               facts)
+            return Outcome(rid, FAILED_MANUAL, [f"undo: the restore did not bring back {slug} {txn['from']} (now "
+                                                f"{detail.version}, {detail.state})",
+                                                f"restore backup {txn.get('backup')} manually; automation is paused"],
+                           facts)
         facts = {"backup": txn.get("backup"), "failure": txn.get("failure"), "quarantined": txn["to"]}
-        if detail.version == txn["from"] and (txn["prior_state"] != "started" or detail.state == "started"):
+        if back:
             self.j.clear_txn()
             return Outcome(rid, RESTORED, [f"update to {txn['to']} failed ({txn.get('failure')}); "
                                            f"restored {txn['from']} from its backup",
