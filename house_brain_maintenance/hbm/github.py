@@ -1,4 +1,4 @@
-"""GitHub REST client: Contents read, Issues read/write.
+"""GitHub REST client: Contents read, Issues read/write (0.8.2: issue comments read for the Cloudflare relay).
 
 Signed by a GitHub App installation token (Credential Autopilot, 0.6.3/0.3.6) or the hand-made
 fine-grained token (PAT), chosen per call by ``ghauth.Auth``.
@@ -93,6 +93,11 @@ class GitHub:
         data = self._get(f"compare/{commit}...{quoted}")
         status = (data or {}).get("status")
         return status in ("ahead", "identical")
+
+    def issue_comments(self, issue: int, since: str) -> list:
+        """0.8.2: comments on one issue updated at or after ``since`` (oldest first, at most 100 per poll)."""
+        data = self._get(f"issues/{int(issue)}/comments", since=since, per_page="100")
+        return data if isinstance(data, list) else []
 
     def comment(self, issue: int, body: str) -> None:
         self.calls += 1

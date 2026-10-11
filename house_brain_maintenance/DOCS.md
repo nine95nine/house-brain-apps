@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.8.1)
+## What it does (0.8.2)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -311,6 +311,25 @@ change then runs at once, one App after another, without asking.
 - write them back with the same option names;
 - restart the Observer, AI Access or Inspector right after their key changed, or to undo that change.
 
+## Cloudflare approvals on your phone — from 0.8.2
+
+When a chat files a Cloudflare control request (for example "promote the Broker"), the control Worker posts its plan
+on GitHub #454 and waits for your Approve. From 0.8.2 this App reads #454 every poll and sends you an ordinary Home
+Assistant notification:
+
+1. **"Cloudflare: approve?"** with the Worker, the planned steps and the time left. Tap **Open Approve page**
+   (or the notification). Cloudflare may ask you to sign in, then tap **Approve** or **Reject** on that page.
+2. When that request ends, a second notification replaces the first: done, failed, rejected, expired, and so on.
+
+- **Safe by design.** This App only reads GitHub and notifies. It cannot approve anything; the tap on the
+  Cloudflare page (behind Cloudflare Access) is the only approval.
+- **Links can't be faked.** Only your account's control results count, and the button always opens the control's
+  own address for that request id. Nothing in a comment chooses where the button goes.
+- **No old news.** A request is announced only while it is still waiting (6 hours). Requests that end before
+  the next poll are not announced.
+- **Cost.** One GitHub read per poll (288 a day at the default 5 minutes), $0.
+- **Off.** Set `cf_control_issue` to `0`.
+
 ## Settings
 
 | Option | Meaning |
@@ -334,6 +353,8 @@ change then runs at once, one App after another, without asking.
 | `key_rotation` | From 0.8.0: automatic Broker key changes (default `true`; see **Automatic Broker keys**). |
 | `key_rotate_days` | From 0.8.0: each Broker key is changed this often (30–365, default 90). |
 | `keep_old_deployer` | From 0.8.1: keep the stopped old local Deployer and never ask to remove it (default `true`; owner decision 2026-10-11). `false` = ask once, 7 days after the switch, as before. |
+| `cf_control_issue` | From 0.8.2: the GitHub issue where the Cloudflare control posts its requests (default `454`; `0` = no Cloudflare pushes). See **Cloudflare approvals on your phone**. |
+| `cf_control_url` | From 0.8.2: the Cloudflare control address the button opens. Leave empty: the App uses the control on the same Cloudflare account as the Broker the Scout reports to. |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
 | `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). From 0.7.2 the same wait applies to fix asks and the Deployer switch-over ask (were fixed at 24 hours). Reject is never asked again. |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |

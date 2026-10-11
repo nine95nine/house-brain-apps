@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.2
+
+Cloudflare control approvals on your phone (owner pop-up 2026-10-11: the ntfy pushes did not arrive, "link them up
+with … the maintenance app"). Contains 0.8.1 unchanged otherwise.
+
+- **New: Cloudflare approvals.**
+  - Every poll the App reads the Cloudflare control's results on GitHub #454.
+  - A request waiting for your Approve sends one notification with an **Open Approve page** button.
+  - When the request ends, one more notification replaces the first.
+  - **Safe:** only results posted by your account count, the button is built from the fixed control address and the
+    request id, and the App approves nothing itself.
+- **New options:** `cf_control_issue` (default `454`, `0` = off) and `cf_control_url` (leave empty).
+
 ## 0.8.1
 
 Seven defects found by ChatGPT's Maintenance 0.7.5 line (PR #975), ported into the released App, plus a hold on

@@ -25,6 +25,7 @@ from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
 from .manifest import (ASK_UPDATE_NOW, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE, RE_REQUEST_ID,
                        ROTATE_KEYS_NOW, STAGE_LOCAL_APP_SOURCE, Manifest, ManifestError, parse)
+from .cfrelay import RE_CONTROL_URL, CfRelay, control_url_from_broker, safe_cycle as cf_safe_cycle
 from .keys import FAILED_MANUAL as KEY_STUCK, JOB as KEY_JOB, SETUP_JOB as KEY_SETUP_JOB, KeyPolicy, KeyRotator
 from .stage import PENDING_DOC as STAGE_PENDING_DOC, StagePolicy, Stager
 from .holds import Holds
@@ -106,6 +107,8 @@ class Options:
     key_rotation: bool = True         # 0.8.0: automatic Broker key changes (owner K1-K4 2026-10-11)
     key_rotate_days: int = 90         # 0.8.0: each Broker key is changed this often (one App per night)
     keep_old_deployer: bool = True    # 0.8.1: owner 2026-10-11 "Keep old Deployer for now" (no removal ask)
+    cf_control_issue: int = 454       # 0.8.2: Cloudflare control approvals to the phone (0 = off; owner 2026-10-11)
+    cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
 
 
 def load_options(path: str) -> Options:
@@ -193,7 +196,19 @@ def load_options(path: str) -> Options:
         key_rotate_days=i("key_rotate_days", 30, 365) if "key_rotate_days" in raw else 90,
         keep_old_deployer=raw.get("keep_old_deployer", True) if isinstance(raw.get("keep_old_deployer", True), bool)
         else _bad("keep_old_deployer"),
+        cf_control_issue=i("cf_control_issue", 0, 10**7) if "cf_control_issue" in raw else 454,
+        cf_control_url=_cf_url(raw.get("cf_control_url")),
     )
+
+
+def _cf_url(value) -> str:
+    """0.8.2: the Cloudflare control address the phone button opens (empty or missing = worked out from the
+    Broker address the Scout already uses: the same Cloudflare account)."""
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str) or not RE_CONTROL_URL.fullmatch(value):
+        raise OptionsError("cf_control_url")
+    return value
 
 
 RELAY_WORKER = "house-brain-live-read-relay"
@@ -302,6 +317,7 @@ class Service:
         self.stager: Stager | None = None                   # 0.7.4: STAGE_LOCAL_APP_SOURCE
         self.stage_policy = StagePolicy()                   # 0.7.4: /addons, /share (test mode: temp folders)
         self.keys: KeyRotator | None = None                 # 0.8.0: automatic Broker keys
+        self.cf_relay: CfRelay | None = None                # 0.8.2: Cloudflare approvals to the phone
         self.key_broker_base: str | None = None             # 0.8.0: test mode only (a local Broker)
         self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
         self.watcher: Watcher | None = None
@@ -459,6 +475,26 @@ class Service:
             return self.keys.summary()
         except Exception:  # noqa: BLE001 - visibility only
             return {}
+
+    def poll_cf_relay(self) -> list[str]:
+        """0.8.2: one read of the Cloudflare control results; runs every poll, even while frozen or mid-update
+        (it only reads GitHub and notifies; it changes nothing)."""
+        if not self.o.cf_control_issue:
+            return []
+        if self.cf_relay is None:
+            try:
+                url = self.o.cf_control_url or control_url_from_broker(self._key_broker_base())
+            except Exception as err:  # noqa: BLE001 - no Broker address yet: try again next poll
+                LOG.debug("Cloudflare relay waits for the Broker address: %s", type(err).__name__)
+                return []
+            if not url:
+                return []
+            self.cf_relay = CfRelay(self.gh, self.ha, self.j.dir, self.o.notify_service, self.o.cf_control_issue,
+                                    url)
+        sent = cf_safe_cycle(self.cf_relay, LOG)
+        for item in sent:
+            self.j.audit(item.split(":", 1)[0], "CF_RELAY", state=item.split(":", 1)[1])
+        return sent
 
     def key(self, request_id: str) -> str:
         return f"{request_id}#dry" if self.o.dry_run else request_id
@@ -887,6 +923,7 @@ def poll_cycle(service: Service) -> None:
     """One loop step: R2 old-token retire (no token in the log, ever), then the poll."""
     if service.gh.auth.maybe_retire() == "RETIRED":
         LOG.info("the old hand-made GitHub token was retired on GitHub (the GitHub App signs in now)")
+    service.poll_cf_relay()
     service.poll_once()
 
 
