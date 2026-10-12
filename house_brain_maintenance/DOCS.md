@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.3)
+## What it does (0.9.4)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -443,7 +443,19 @@ Deployer created it once, with your approval). This App holds it during every st
 - removing the old Deployer.
 
 If the Deployer is busy, nothing is changed. The result says "the Deployer is writing right now", and the update is
-asked again later. This App never creates, repairs or removes the lock. While it does not exist, everything works as
+asked again later.
+
+**From 0.9.4:**
+- **Identity on GitHub.** Once the lock folder exists, the App posts what it sees of the lock on `report_issue`
+  ("shared writer lock": state, device, inode), only when that changes. It also shows it on the status sensor
+  (`writer_lock`). It must match the Deployer's lock: device 8.1, inode 134848.
+- **Two-way busy test (step E6).** An assistant may file a `WRITER_PROBE` request, and your phone asks once:
+  - `operation: try` takes the lock once without waiting and lets it go at once. The result is `ACQUIRED` with the
+    device and inode, or `WRITER_BUSY` when the Deployer holds it.
+  - `operation: hold` keeps the lock 60 seconds, checking every 5 seconds that it is still the same file, then lets
+    it go.
+
+  Neither touches anything else, and neither ever creates the lock. It counts toward `max_approval_requests_per_day`. This App never creates, repairs or removes the lock. While it does not exist, everything works as
 in 0.9.0. At start the App logs one line, `HBM-NATIVE writer_lock state=enrolled dev=… ino=…`.
 
 ## Needs your decision: approve or decline on the page — from 0.9.0

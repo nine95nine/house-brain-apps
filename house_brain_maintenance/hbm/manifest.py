@@ -85,6 +85,11 @@ JOBS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
                              frozenset()),
     ROTATE_KEYS_NOW: (frozenset({"role"}), frozenset()),
 }
+# 0.9.4 (#985 enrollment plan R1 step E6, Deployer handoff #942 6133340527): the Maintenance half of the two-way
+# busy test. Owner-approved; uses only the existing shared writer lock (never creates it) and writes nothing else.
+WRITER_PROBE = "WRITER_PROBE"
+PROBE_OPERATIONS = ("try", "hold")
+JOBS[WRITER_PROBE] = (frozenset({"operation"}), frozenset())
 _TOP = frozenset({"schema", "request_id", "job", "requested_by", "tracking_issue", "note", "params"})
 _REQUIRED_TOP = frozenset({"schema", "request_id", "job", "requested_by", "params"})
 
@@ -128,6 +133,8 @@ class Manifest:
     stage_to: str | None = None
     # 0.8.0 ROTATE_KEYS_NOW
     key_role: str | None = None
+    # 0.9.4 WRITER_PROBE
+    probe_operation: str | None = None
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict:
@@ -192,6 +199,10 @@ def parse(raw: bytes) -> Manifest:
         if params["role"] not in KEY_ROLES:
             raise ManifestError("KEY_ROLE")
         log["key_role"] = params["role"]
+    if job == WRITER_PROBE:
+        if params["operation"] not in PROBE_OPERATIONS:
+            raise ManifestError("PROBE_OPERATION")
+        log["probe_operation"] = params["operation"]
     fp = params.get("expect_key_fingerprint")
     if fp is not None and (not isinstance(fp, str) or not RE_SHA256.fullmatch(fp)):
         raise ManifestError("EXPECT_KEY_FINGERPRINT")

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.4
+
+The Maintenance half of the shared writer lock's proof (#985 enrollment plan R1 step E6; Deployer handoff #942
+comment 6133340527). Contains 0.9.3 unchanged otherwise.
+
+- **Lock identity where an AI can read it.** The App posts its view of the lock on `report_issue` ("shared writer
+  lock": state, device, inode, with a machine line), once per change, and puts it on the status sensor
+  (`writer_lock`). Before, the identity was only in this App's own log, which this App does not read back.
+- **`WRITER_PROBE` request** (owner-approved):
+  - `try` takes the lock without waiting and reports `ACQUIRED` (device, inode) or `WRITER_BUSY`, letting it go at
+    once;
+  - `hold` keeps it 60 s, re-checking its identity.
+
+  It uses only the existing lock (`create=False`) and writes nothing else. The Deployer's half (0.3.21) has the
+  same two operations.
+
 ## 0.9.3
 
 Inventory Scout from the store, the pilot of moving the local House Brain Apps into the store (owner pop-up

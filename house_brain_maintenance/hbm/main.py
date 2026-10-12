@@ -350,6 +350,7 @@ class Service:
         self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
         self.writer = SharedWriter()                       # 0.9.1: shared writer lock with the Deployer (never created)
         self.scoutmove: ScoutMove | None = None            # 0.9.3: Inventory Scout local -> store switch
+        self._writer_reported = False                      # 0.9.4: lock identity posted on #454 once per start
         self.watcher: Watcher | None = None
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
         self.health_scale = health_scale
@@ -434,6 +435,7 @@ class Service:
                 keep_old=self.o.keep_old_deployer))
             self.updater.writer = self.migrator.writer = self.writer     # 0.9.1: the shared writer lock
             self.scoutmove = ScoutMove(self.ha, self.j, settings, reask_hours=float(self.o.update_reask_hours))
+            self.engine.writer = self.writer                             # 0.9.4: WRITER_PROBE
             if self.scoutmove.restore():                                 # 0.9.3: the recorded store Scout
                 LOG.info("Inventory Scout: the store Scout %s is in use", self.ha.scout)
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
@@ -584,7 +586,35 @@ class Service:
             return None
         return rid
 
+    def report_writer_identity(self) -> None:
+        """0.9.4 (Deployer handoff #942 6133340527): post this App's view of the shared writer lock on the tracking
+        issue whenever it changes, so an AI can compare it with the Deployer's (device and inode must match)."""
+        ident = self.writer.identity()
+        doc = self.j.load_doc("writer_identity", {})
+        if not self.o.report_issue or ident.get("state") == "not_enrolled" \
+                or (isinstance(doc, dict) and doc.get("last") == ident):
+            return                                  # no lock folder (a new install): nothing to compare
+        line = " ".join(f"{k}={v}" for k, v in ident.items())
+        self.report_text("\n".join([
+            "### House Brain Maintenance: shared writer lock", "",
+            f"- **Seen by this App:** `{line}`", f"- **App:** `{VERSION}`", "",
+            "The Deployer's lock is device `8.1`, inode `134848` (#561 comment 6125839870); both must match.", "",
+            "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._", "",
+            "<!-- house_brain_maintenance_writer_lock.v1 " + json.dumps(ident, sort_keys=True) + " -->"]))
+        self.j.save_doc("writer_identity", {"last": ident, "at": time.time()})
+
+    def _writer_attrs(self) -> dict:
+        ident = (self.j.load_doc("writer_identity", {}) or {}).get("last") or {}
+        return {"writer_lock": " ".join(str(ident.get(k)) for k in ("state", "dev", "ino") if k in ident)} \
+            if ident else {}
+
     def poll_once(self) -> None:
+        if not self._writer_reported:              # 0.9.4: once per start (and only when it changed)
+            self._writer_reported = True
+            try:
+                self.report_writer_identity()
+            except Exception as err:  # noqa: BLE001 - a report problem never stops the App; retried next start
+                LOG.warning("writer lock report waits: %s", net.redact(str(err))[:200])
         txn = self.j.load_txn()
         if txn:
             self.ensure_engine()
@@ -730,6 +760,7 @@ class Service:
         self.ensure_engine()
         summary = self.watcher.check()
         self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary, **self._ledger_attrs(),
+                                 **self._writer_attrs(),
                                  **self._waiting_attrs(), **self._keys_attrs()})
 
     def _waiting_attrs(self) -> dict:

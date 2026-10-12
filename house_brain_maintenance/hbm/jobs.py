@@ -27,7 +27,8 @@ from . import approval, net
 from .ha import AppView, ForbiddenCall, HAError, HomeAssistant, fingerprint
 from .journal import Journal
 from . import logwindow
-from .manifest import APP_LOG_WINDOW, CHECK_BROKER, ROTATE_SCOUT_KEY, RUN_SCOUT_ONCE, Manifest
+from .manifest import APP_LOG_WINDOW, CHECK_BROKER, ROTATE_SCOUT_KEY, RUN_SCOUT_ONCE, WRITER_PROBE, Manifest
+from .writer import WriterError
 from .web import ApprovalBoard
 
 DONE = "DONE"
@@ -126,11 +127,17 @@ def broker_accepts(inventory_url: str, key: str, timeout: float = 20.0) -> tuple
     return False, "unexpected: the Broker accepted an empty inventory"
 
 
+PROBE_HOLD_SECONDS = 60.0          # 0.9.4 WRITER_PROBE hold: fixed, like the Deployer's half
+PROBE_CHECK_EVERY = 5.0
+
+
 class Engine:
     def __init__(self, ha: HomeAssistant, journal: Journal, settings: Settings) -> None:
         self.ha = ha
         self.j = journal
         self.s = settings
+        self.writer = None                # 0.9.4: the shared writer lock (writer.SharedWriter), set by the service
+        self.probe_hold_seconds = PROBE_HOLD_SECONDS
 
     # -- helpers --------------------------------------------------------------
     def _ask(self, m: Manifest, title: str, lines: list[str]) -> str:
@@ -177,6 +184,8 @@ class Engine:
                 return self._check_broker(m)
             if m.job == APP_LOG_WINDOW:
                 return self._app_log_window(m)
+            if m.job == WRITER_PROBE:
+                return self._writer_probe(m)
         except (HAError, net.NetError) as err:
             reason = net.redact(str(err))[:200]
             if self.j.load_txn():
@@ -321,6 +330,53 @@ class Engine:
         if found["matched"] > found["shown"]:
             reasons.append(f"only the first {found['shown']} lines are shown")
         return Result(DONE, reasons, facts, lines)
+
+    def _writer_probe(self, m: Manifest) -> Result:
+        """0.9.4 E6, Maintenance half: ``try`` takes the shared writer lock without waiting and lets it go at once;
+        ``hold`` keeps it for PROBE_HOLD_SECONDS, re-checking its identity. Owner-approved; the lock is never
+        created (``create=False``) and nothing else is written."""
+        op = m.probe_operation
+        facts = {"operation": op, **(self.writer.identity() if self.writer is not None else {"state": "none"})}
+        if facts.get("state") != "enrolled":
+            return Result(REFUSED, [f"the shared writer lock is not usable here ({facts.get('state')}); nothing "
+                                    "was asked or changed"], facts)
+        hold = int(self.probe_hold_seconds)
+        lines = ["Test the shared writer lock with the Deployer (two-way busy test, step E6)?",
+                 (f"Plan: take the lock, keep it {hold} s while checking it is still the same file, then let it go."
+                  if op == "hold" else "Plan: try to take the lock once without waiting, then let it go at once."),
+                 f"Lock: device {facts.get('dev')}, inode {facts.get('ino')}. Nothing else is read or written; "
+                 "the Deployer is not stopped."]
+        if self.s.dry_run:
+            return Result(DRY_RUN_OK, ["dry run: nothing asked or taken"], facts)
+        outcome = self._ask(m, "Maintenance: test the shared writer lock?", lines)
+        if outcome != approval.APPROVE:
+            return Result(REJECTED, [f"owner decision: {outcome}"], facts)
+        try:
+            with self.writer.hold() as lease:
+                if lease is None:
+                    return Result(REFUSED, ["the shared writer lock is no longer enrolled; nothing taken"], facts)
+                st = os.fstat(lease._file)
+                facts.update(probe="ACQUIRED", held_dev=f"{os.major(st.st_dev)}.{os.minor(st.st_dev)}",
+                             held_ino=st.st_ino)
+                self.j.audit(m.request_id, "WRITER_PROBE_ACQUIRED", operation=op, ino=st.st_ino)
+                if op == "try":
+                    return Result(DONE, [f"ACQUIRED: the lock (device {facts['held_dev']}, inode {st.st_ino}) was "
+                                         "free; taken and let go at once"], facts)
+                checks, deadline = 0, time.monotonic() + self.probe_hold_seconds
+                while (left := deadline - time.monotonic()) > 0:
+                    time.sleep(min(PROBE_CHECK_EVERY, left))
+                    lease.check()
+                    checks += 1
+                facts.update(probe="HELD", held_seconds=hold, checks=checks)
+                return Result(DONE, [f"HELD: the lock (device {facts['held_dev']}, inode {st.st_ino}) was kept "
+                                     f"{hold} s, identity checked {checks} times, then let go"], facts)
+        except WriterError as err:
+            code = str(err)
+            facts["probe"] = code
+            self.j.audit(m.request_id, "WRITER_PROBE_REFUSED", operation=op, code=code)
+            if code == "WRITER_BUSY":
+                return Result(DONE, ["WRITER_BUSY: another holder (the Deployer) has the lock; nothing taken"], facts)
+            return Result(FAILED, [f"{code}: the lock could not be used; nothing else was touched"], facts)
 
     def _scout_readback(self, request_id: str, deadline: float, facts: dict) -> Result:
         # The Scout is one-shot: once it is stopped again, /logs/latest holds exactly that run.
