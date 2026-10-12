@@ -91,6 +91,8 @@ class Updater:
         self.s = settings        # jobs.Settings: notify service, owner, dry_run, approval board ...
         self.p = policy
         self.holds = None        # 0.7.3: the hold list (holds.Holds); a held App update is never asked
+        self.ai = None           # 0.8.9: aireview.AiReviews; no ask and no automatic install before the AI review
+        self.queue: dict[str, dict] = {}   # 0.8.9: every offered App update and why it is (not) asked yet
         self.on_done = None      # 0.7.3: after-update check hook (kind, txn) on a DONE result
         self.snapshot = None     # 0.7.3: () -> integrations running now (afterupdate.loaded_snapshot)
         self.offered: dict[str, str] = {}    # 0.7.2: slug -> offered version, as the last check read them
@@ -111,12 +113,19 @@ class Updater:
     def candidates(self) -> list[InstalledApp]:
         own = self.ha.self_slug()
         out = []
+        queue = {}
         for app in self.ha.installed_apps():
             if app.slug == own or app.slug in self.p.exclude:
                 continue
-            if app.update_available and app.version and app.version_latest and app.version != app.version_latest \
-                    and not self.held(app.slug, app.version_latest):
-                out.append(app)
+            if app.update_available and app.version and app.version_latest and app.version != app.version_latest:
+                key = f"{app.slug}@{app.version_latest}"
+                why = self.held(app.slug, app.version_latest)
+                old = self.queue.get(key) or {}
+                queue[key] = {"kind": "app", "item": f"app:{key}", "name": app.name, "from": app.version,
+                              "to": app.version_latest, "state": f"held: {why}" if why else old.get("state", "")}
+                if not why:
+                    out.append(app)
+        self.queue = queue
         self.offered = {a.slug: str(a.version_latest) for a in out}
         return sorted(out, key=lambda a: a.slug)
 
@@ -142,9 +151,14 @@ class Updater:
                         "state": "waiting_reask"})
         return out
 
+    def _note(self, key: str, state: str) -> None:
+        if key in self.queue:
+            self.queue[key]["state"] = state
+
     def _due(self, app: InstalledApp, mem: dict) -> bool:
         key = f"{app.slug}@{app.version_latest}"
         if mem["declined"].get(key):
+            self._note(key, "you rejected this version (final)")
             return False
         if self.s.dry_run:
             # Practice mode reports each version once per practice period (a day), not every hourly check.
@@ -152,7 +166,11 @@ class Updater:
             if practiced and time.time() - float(practiced) < self.p.practice_hours * 3600:
                 return False
         asked = mem["asked"].get(key)
-        return not (asked and time.time() - float(asked) < self.p.reask_hours * 3600)
+        if asked and time.time() - float(asked) < self.p.reask_hours * 3600:
+            self._note(key, "asked on your phone; asks again at "
+                       + time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(float(asked) + self.p.reask_hours * 3600)))
+            return False
+        return True
 
     def review_app(self, app: InstalledApp, mem: dict) -> Review:
         installed = self.ha.app_detail(app.slug)
@@ -227,23 +245,39 @@ class Updater:
             rev = self.review_app(app, mem)
             rid = request_id_for(app.slug, rev.to_version)
             facts = self._facts(rev)
+            key = f"{app.slug}@{rev.to_version}"
+            if key in self.queue:
+                self.queue[key].update(verdict=rev.verdict, reasons=list(rev.reasons[:4]))
             if rev.verdict == BLOCKED:
-                key = f"{app.slug}@{rev.to_version}"
+                self._note(key, "held by this App's review: " + "; ".join(rev.reasons)[:160])
                 if mem["blocked_noted"].get(key) == "|".join(rev.reasons):
                     continue
                 mem["blocked_noted"][key] = "|".join(rev.reasons)
                 self._save(mem)
                 return Outcome(rid, REFUSED, [f"update held: {r}" for r in rev.reasons], facts)
+            gate = self.ai.gate(f"app:{key}", mem["first_seen"].get(key)) if self.ai is not None else None
+            if gate is not None and not gate.proceed:
+                self._note(key, "waiting for the AI review (then asked, or installed at night if low risk; asked "
+                           f"anyway from {self.ai.ask_anyway_at(mem['first_seen'].get(key))})")
+                continue
             auto, why = self.auto_allowed(rev, mem)
+            if auto and gate is not None and not gate.auto_ok:
+                auto, why = False, gate.line
             facts["automatic"] = auto
             facts["automatic_reason"] = why
+            if gate is not None and gate.state != "off":
+                facts["ai_review"] = gate.verdict or gate.state
             if self.s.dry_run:
                 mem["practiced"][f"{app.slug}@{rev.to_version}"] = time.time()
                 self._save(mem)
                 return Outcome(rid, DRY_RUN_OK, ["dry run: reviewed, nothing asked or changed"], facts)
-            if not auto and self.waits_for_auto(rev, mem):
+            if not auto and (gate is None or gate.auto_ok) and self.waits_for_auto(rev, mem):
+                self._note(key, f"low risk: installs by itself in the {self.p.window[0]:02d}-{self.p.window[1]:02d} h "
+                           f"window once it is {self.p.wait_days:g} days old, with a backup, health watch and "
+                           "automatic restore")
                 continue                          # installs by itself later (waiting period / night window)
-            return self._ask_then_apply(app, rev, rid, facts, automatic=auto)
+            self._note(key, "installing by itself now" if auto else "asking on your phone now")
+            return self._ask_then_apply(app, rev, rid, facts, automatic=auto, ai_line=gate.line if gate else "")
         return None
 
     @staticmethod
@@ -251,7 +285,8 @@ class Updater:
         return {"slug": rev.slug, "from": rev.from_version, "to": rev.to_version, "bump": rev.bump,
                 "verdict": rev.verdict, "reasons": list(rev.reasons), "dependents": list(rev.dependents)}
 
-    def _ask_then_apply(self, app: InstalledApp, rev: Review, rid: str, facts: dict, *, automatic: bool) -> Outcome:
+    def _ask_then_apply(self, app: InstalledApp, rev: Review, rid: str, facts: dict, *, automatic: bool,
+                        ai_line: str = "") -> Outcome:
         """The one path to an update: ask (unless automatic) -> backup -> update -> health watch -> restore."""
         key = f"{app.slug}@{rev.to_version}"
         if not automatic:
@@ -260,7 +295,7 @@ class Updater:
             self._save(mem)
             self.asking = key
             try:
-                decision = self._ask(rid, rev)
+                decision = self._ask(rid, rev, ai_line)
             finally:
                 self.asking = ""
             if decision != approval.APPROVE:
@@ -304,14 +339,18 @@ class Updater:
             return Outcome(rid, REFUSED, [f"update held: {r}" for r in rev.reasons], facts)
         if self.s.dry_run:
             return Outcome(rid, DRY_RUN_OK, ["dry run: reviewed, nothing asked or changed"], facts)
-        return self._ask_then_apply(app, rev, rid, facts, automatic=False)
+        # 0.8.9: the owner asked for it, so no AI-review wait; a review that exists is still shown on the phone.
+        gate = self.ai.gate(f"app:{slug}@{version}", None) if self.ai is not None else None
+        line = gate.line if gate is not None and gate.state == "ok" else ""
+        return self._ask_then_apply(app, rev, rid, facts, automatic=False, ai_line=line)
 
-    def _ask(self, rid: str, rev: Review) -> str:
+    def _ask(self, rid: str, rev: Review, ai_line: str = "") -> str:
         label = {LOW: "LOW RISK", "risky": "RISKY - read the reasons"}.get(rev.verdict, rev.verdict)
         lines = [
             f"Update {rev.name} {rev.from_version} -> {rev.to_version} ({rev.bump})?",
             f"Review: {label}",
             *[f"- {r}" for r in rev.reasons[:4]],
+            *([ai_line] if ai_line else []),
             "Plan: back up this App only -> update -> watch its health "
             f"{int(self.p.health_seconds // 60)} min -> restore its backup automatically if it fails.",
             "Home Assistant itself is not updated or restarted.",

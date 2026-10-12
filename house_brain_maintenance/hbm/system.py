@@ -95,6 +95,8 @@ class SystemUpdater:
         self.p = policy
         self.report = report           # posts one markdown text to the tracking issue (or nowhere)
         self.holds = None              # 0.7.3: the hold list (holds.Holds); a held update is never asked
+        self.ai = None                 # 0.8.9: aireview.AiReviews (no ask before the AI review, or 48 h)
+        self.queue: dict[str, dict] = {}   # 0.8.9: Core/OS updates offered and why they are (not) asked yet
         self.on_done = None            # 0.7.3: after-update check hook (kind, txn) on a DONE result
         self.snapshot = None           # 0.7.3: () -> integrations running now (afterupdate.loaded_snapshot)
         self.offered: dict[str, str] = {}   # 0.7.2: kind -> offered version, as the last check read them
@@ -182,9 +184,21 @@ class SystemUpdater:
                 "Free disk: " + (f"{free:g} GB" if free is not None else "unknown")
                 + f" (the backup needs {facts['needed_free_gb']:g} GB)",
                 *([upgradeinfo.phone_line(intel)] if intel else []),
-                RELEASE_NOTE_LINE,
+                self._ai_text(info),
                 plan,
                 "Never automatic. The Supervisor, Apps and this App are not updated."]
+
+    def _ai_text(self, info: SystemInfo) -> str:
+        """0.8.9: the AI-review line (before 0.8.9 a request to the AI in chat that nothing ever sent)."""
+        if self.ai is None:
+            return RELEASE_NOTE_LINE
+        key = f"{info.kind}@{info.version_latest}"
+        reviewed = self._mem()["reviewed"].get(key)
+        gate = self.ai.gate(key, float(reviewed) if reviewed else None)
+        if gate.state == "wait":
+            return (f"AI review: requested on the tracking issue as `{key}`; the phone asks after it (or from "
+                    f"{self.ai.ask_anyway_at(float(reviewed) if reviewed else None)} at the latest)")
+        return gate.line
 
     def _review_text(self, rid: str, info: SystemInfo, facts: dict) -> str:
         from . import VERSION
@@ -204,13 +218,26 @@ class SystemUpdater:
     def cycle(self) -> Outcome | None:
         """At most one Core/OS item per call; Core before OS. None when there is nothing to do now."""
         mem = self._mem()
-        for info in self.pending():
+        pending = self.pending()
+        old = self.queue
+        self.queue = {f"{i.kind}@{i.version_latest}": {
+            "kind": i.kind, "item": f"{i.kind}@{i.version_latest}", "name": LABEL[i.kind], "from": i.version,
+            "to": i.version_latest, "state": (old.get(f"{i.kind}@{i.version_latest}") or {}).get("state", "")}
+            for i in pending}
+
+        def note(key: str, state: str) -> None:
+            if key in self.queue:
+                self.queue[key]["state"] = state
+        for info in pending:
             key = f"{info.kind}@{info.version_latest}"
             if mem["declined"].get(key) or mem["quarantine"].get(key):
+                note(key, "you rejected this version (final)" if mem["declined"].get(key)
+                     else "failed here before; not offered again")
                 continue
             rid = request_id_for(info.kind, str(info.version_latest))
             why = self.held(info.kind, str(info.version_latest))
             if why:
+                note(key, f"held: {why}")
                 if mem["hold_noted"].get(key) != why:     # said once on the tracking issue, never on the phone
                     try:
                         self.report(self._held_text(rid, info, why))
@@ -250,10 +277,17 @@ class SystemUpdater:
                 self.j.audit(rid, "SYSTEM_REVIEW_POSTED", kind=info.kind, to=info.version_latest)
                 return None
             if now - float(reviewed) < self.p.lead_seconds:
+                note(key, "review posted; the phone asks after the lead time")
                 return None
+            if self.ai is not None and not self.ai.gate(key, float(reviewed)).proceed:
+                note(key, f"waiting for the AI review (asked after it, or from {self.ai.ask_anyway_at(float(reviewed))})")
+                continue
             asked = mem["asked"].get(key)
             if asked and now - float(asked) < self.p.reask_hours * 3600:
+                note(key, "asked on your phone; asks again at "
+                     + time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(float(asked) + self.p.reask_hours * 3600)))
                 return None
+            note(key, "asking on your phone now")
             return self._ask_then_apply(rid, key, info, facts)
         return None
 

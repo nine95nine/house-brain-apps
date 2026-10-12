@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.9
+
+Update review queue (owner pop-ups 2026-10-12: "Yes, build it", "Keep auto for low-risk"). Contains 0.8.8 unchanged
+otherwise.
+
+- **Why.** The owner waited for an AI review of waiting updates that nothing ever asked for. Low-risk App updates
+  (Tailscale 0.30.2, Z-Wave JS 1.9.1) waited silently for their night install, and nothing showed any of it.
+- **Updates waiting list on GitHub.** Every App, Core, OS, HACS and firmware update, with this App's review, the AI
+  review and the exact reason it is (not) asked yet: held, rejected, waiting for the AI review, waiting for its
+  night install, firmware waiting days, re-ask time, or the daily ask limit. It is posted when something changes,
+  and a phone line goes out when a new update appears.
+- **AI review before anything happens.** No phone ask and no automatic install until an AI review is posted on
+  the tracking issue. `APPROVE` keeps the usual path, and a low-risk update may still install by itself at night.
+  `HOLD` or `DECLINE` never installs by itself: your phone asks, with the AI's recommendation. Without a review
+  after 48 hours your phone is asked anyway, and nothing installs by itself. Only reviews from the repository
+  owner's account count, and a review never approves anything; your Approve tap still does. New option
+  `ai_review` (default on).
+- **Fix: update checks could stall.** A queued request waiting for the daily ask limit ended every poll before the
+  update check and the problem watch ran. Now it waits while everything else runs.
+
 ## 0.8.8
 
 Fixes from the first live 0.8.7 reports (2026-10-12). Contains 0.8.7 unchanged otherwise.

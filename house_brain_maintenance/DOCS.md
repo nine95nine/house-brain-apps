@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.8.8)
+## What it does (0.8.9)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -34,8 +34,8 @@ If you tap Reject, that version is not offered again. If you do not answer, it a
 reads whether Core or the OS has an update. It never installs one by itself, also not with `auto_low_risk`:
 
 1. **Review.** It posts one review on the tracking issue (`report_issue`): the kind (CORE or OS), from and to
-   version, how old the latest backup with Home Assistant is, the free disk, and "Release-note check: by the AI
-   in chat; approve only after it". The House Brain AI adds its release-note check there.
+   version, how old the latest backup with Home Assistant is, and the free disk. From 0.8.9 the phone asks only
+   after the AI review is posted on that issue (see **Update review queue**), or after 48 hours without one.
 2. **Ask.** About an hour later your phone asks, with the same facts. Approve needs Face ID. Reject means that
    version is not offered again; no answer asks again after `update_reask_hours` (default 6 hours), or right
    away with **Ask me now** (below). Only one Core or OS update is asked at a
@@ -389,6 +389,7 @@ Assistant notification:
 | `backup_report` | From 0.8.5: the monthly backup report on GitHub plus one phone line (default `true`). The backup checks themselves are always on. |
 | `pi_health` | From 0.8.6: power/heat, disk errors, App outliers and the weekly health score (default `true`; `false` = none of these reads). |
 | `pi_firmware_updates` | From 0.8.6: Pi firmware (bootloader) updates in the approval flow (default `true`; never automatic). |
+| `ai_review` | From 0.8.9: the updates-waiting list and an AI review on the tracking issue before any update is asked or installed by itself (default `true`). |
 | `housekeeping` | From 0.8.7: failing automations, missing entities, error floods, database size and the monthly housekeeping report (default `true`; `false` = none of these reads). |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
 | `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). From 0.7.2 the same wait applies to fix asks and the Deployer switch-over ask (were fixed at 24 hours). Reject is never asked again. |
@@ -411,6 +412,24 @@ the timeout counts as No.
 From 0.7.2, when an update ask (App, Core or OS) ends with no answer, one more push without buttons tells you:
 "Missed: update Home Assistant Core 2026.10.1. I'll ask again at 14:05 (local), or tap Ask me again on the
 Maintenance page." It is sent once per missed ask, never after Reject and never in dry run.
+
+## Update review queue — from 0.8.9
+
+- **Updates waiting list.** On the tracking issue, one table of every waiting App, Core, OS, HACS and firmware
+  update, with this App's review, the AI review and why it is (not) asked yet. It is posted when something changes
+  (at most hourly). Your phone gets one line when a new update appears.
+- **AI review first.** An AI (a scheduled Claude routine, or a chat) reads the list, checks the real release notes
+  and posts one review per update, with the machine line
+  `<!-- house_brain_ai_update_review.v1 {"item": "app:<slug>@<version>", "verdict": "APPROVE", "summary": "..."} -->`.
+  The item names come from the list's own machine line.
+  - Only comments from the repository owner's account count.
+  - A review cannot approve anything; your Approve tap still does.
+- **What each verdict does:**
+  - `APPROVE`: the usual path. Your phone asks, or a low-risk update installs by itself at night with
+    `auto_low_risk`.
+  - `HOLD` or `DECLINE`: nothing installs by itself. Your phone asks, showing the AI's recommendation.
+  - No review after 48 hours: your phone asks anyway ("AI review: none"), and nothing installs by itself.
+- `ai_review: false` switches the list and the gate off, and every update behaves as in 0.8.8.
 
 ## Updates waiting and "Ask me again" — from 0.7.2
 

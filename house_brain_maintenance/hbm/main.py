@@ -31,6 +31,8 @@ from .cfrelay import RE_CONTROL_URL, CfRelay, control_url_from_broker, safe_cycl
 from .keys import FAILED_MANUAL as KEY_STUCK, JOB as KEY_JOB, SETUP_JOB as KEY_SETUP_JOB, KeyPolicy, KeyRotator
 from .stage import PENDING_DOC as STAGE_PENDING_DOC, StagePolicy, Stager
 from .holds import Holds
+from .aireview import AiReviews
+from .updatequeue import UpdateQueue
 from .afterupdate import JOB as AFTER_JOB, AfterPolicy, AfterUpdate, loaded_snapshot
 from .web import INGRESS_PEER, MAX_WAITING, ApprovalBoard, IngressServer, ReaskQueue
 
@@ -114,6 +116,7 @@ class Options:
     pi_health: bool = True            # 0.8.6: power/heat, disk errors, App outliers, weekly health score
     pi_firmware_updates: bool = True  # 0.8.6: Pi bootloader firmware updates in the approval flow (never automatic)
     housekeeping: bool = True         # 0.8.7: failing automations, missing entities, error flood, database size
+    ai_review: bool = True            # 0.8.9: an AI review on the tracking issue before any update ask/auto install
     cf_control_issue: int = 454       # 0.8.2: Cloudflare control approvals to the phone (0 = off; owner 2026-10-11)
     cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
 
@@ -213,6 +216,7 @@ def load_options(path: str) -> Options:
         if isinstance(raw.get("pi_firmware_updates", True), bool) else _bad("pi_firmware_updates"),
         housekeeping=raw.get("housekeeping", True) if isinstance(raw.get("housekeeping", True), bool)
         else _bad("housekeeping"),
+        ai_review=raw.get("ai_review", True) if isinstance(raw.get("ai_review", True), bool) else _bad("ai_review"),
         cf_control_url=_cf_url(raw.get("cf_control_url")),
     )
 
@@ -335,6 +339,9 @@ class Service:
         self.keys: KeyRotator | None = None                 # 0.8.0: automatic Broker keys
         self.cf_relay: CfRelay | None = None                # 0.8.2: Cloudflare approvals to the phone
         self.pifirmware: PiFirmware | None = None          # 0.8.6: Pi firmware updates
+        self.ai: AiReviews | None = None                   # 0.8.9: AI reviews read from the tracking issue
+        self.update_queue: UpdateQueue | None = None       # 0.8.9: the "updates waiting" list
+        self.rate_noted: set[str] = set()                  # 0.8.9: requests waiting for the ask limit (audited once)
         self.key_broker_base: str | None = None             # 0.8.0: test mode only (a local Broker)
         self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
         self.watcher: Watcher | None = None
@@ -434,6 +441,13 @@ class Service:
                 enabled=self.o.after_update_minutes > 0), holds=self.holds, system=self.system, updater=self.updater)
             for engine in (self.updater, self.system, self.entities):
                 engine.holds = self.holds
+            # 0.8.9 Update review queue: the AI review gate (needs the tracking issue) and the waiting list.
+            if self.o.report_issue and self.o.ai_review:
+                self.ai = AiReviews(self.gh, self.j, self.o.report_issue)
+                for engine in (self.updater, self.system, self.entities):
+                    engine.ai = self.ai
+                self.update_queue = UpdateQueue(self.j, self.report_text, lambda title, msg: approval.inform(
+                    self.ha, self.o.notify_service, title, msg))
             for engine in (self.updater, self.system):
                 engine.on_done = self.after.start
                 engine.snapshot = (lambda: loaded_snapshot(self.ha)) if self.o.after_update_minutes > 0 else None
@@ -623,6 +637,7 @@ class Service:
             return
         if not self.poll_after_update():                # an after-update check is open: no new update starts,
             self.poll_updates()                         # but the problem watch keeps running (it skips the
+        self.poll_update_queue()                        # 0.8.9: the "updates waiting" list (only when it changed)
         self.poll_issues()                              # integrations the check is handling)
 
     def poll_after_update(self) -> bool:
@@ -646,6 +661,17 @@ class Service:
         issue = m.tracking_issue or self.o.report_issue or None
         self.finish(m.request_id, m.job, m.digest, issue, Result(DONE if ok else REFUSED, [why], self.holds.summary()),
                     notify=False)
+
+    def poll_update_queue(self) -> None:
+        """0.8.9: post the waiting list when it changed. Never stops the poll (a GitHub fault only waits)."""
+        if self.update_queue is None or self.o.dry_run:
+            return
+        try:
+            limit = self.j.approvals_requested_since(86400) >= self.o.max_approval_requests_per_day
+            queues = [e.queue if e is not None else {} for e in (self.system, self.updater, self.entities)]
+            self.update_queue.cycle(queues, self.ai, limit, VERSION)
+        except net.NetError as err:
+            LOG.warning("updates-waiting list waits: %s", net.redact(str(err))[:200])
 
     def report_text(self, text: str) -> None:
         if self.o.report_issue:
@@ -684,6 +710,11 @@ class Service:
             return
         self.last_update_check = time.monotonic()
         self.ensure_engine()
+        if self.ai is not None:                         # 0.8.9: new AI reviews before anything is asked
+            try:
+                self.ai.refresh()
+            except net.NetError as err:
+                LOG.warning("AI review read waits (the last reviews read stand): %s", net.redact(str(err))[:200])
         out = self.updater.cycle()
         if out is None:
             # 0.6.6: the Deployer switch-over, only when no App update ran in this cycle.
@@ -779,8 +810,12 @@ class Service:
                 continue
             if (manifest.job not in NO_APPROVAL_JOBS
                     and self.j.approvals_requested_since(86400) >= self.o.max_approval_requests_per_day):
-                self.j.audit(request_id, "RATE_LIMITED")
-                return True
+                if request_id not in self.rate_noted:  # once per request (the poll now goes on every minute)
+                    self.rate_noted.add(request_id)
+                    self.j.audit(request_id, "RATE_LIMITED")
+                # 0.8.9: not "handled". Returning True here ended every poll at this request until the ask limit
+                # freed, so neither update checks nor the problem watch ran meanwhile (nor queued read-only jobs).
+                continue
             if manifest.job in (HOLD_UPDATE, RELEASE_UPDATE):
                 self.hold_request(manifest)
                 return True

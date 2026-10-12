@@ -65,6 +65,8 @@ class EntityUpdater:
         self.p = policy
         self.app_successes = app_successes  # the App-update track record counts for automatic installs too
         self.holds = None                   # 0.7.3: the hold list (holds.Holds); its update.* items hold too
+        self.ai = None                      # 0.8.9: aireview.AiReviews (no ask/automatic install before the review)
+        self.queue: dict[str, dict] = {}    # 0.8.9: HACS/firmware updates offered and why they are (not) asked yet
 
     # -- memory ------------------------------------------------------------------------
     def _mem(self) -> dict:
@@ -171,30 +173,61 @@ class EntityUpdater:
         mem = self._mem()
         found = self.candidates()
         self._note_first_seen(found, mem)
+        old = self.queue
+        self.queue = {self._key(e): {"kind": k, "item": f"entity:{self._key(e)}", "name": e.title or e.entity_id,
+                                     "from": e.installed, "to": e.latest,
+                                     "state": (old.get(self._key(e)) or {}).get("state", "")} for e, k, _ in found}
+
+        def note(key: str, state: str) -> None:
+            if key in self.queue:
+                self.queue[key]["state"] = state
         for ent, kind, repo in found:
             key = self._key(ent)
             if not self._due(key, mem):
+                asked = mem["asked"].get(key)
+                note(key, "you rejected this version (final)" if mem["declined"].get(key) else
+                     "asked on your phone; asks again at " + time.strftime(
+                         "%Y-%m-%d %H:%M UTC", time.gmtime(float(asked or 0) + self.p.reask_hours * 3600)))
                 continue
             if kind == "firmware" and self._waited(key, mem) < self.p.firmware_wait_days:
+                first = float(mem["first_seen"].get(key) or time.time())
+                note(key, "firmware: asked from " + time.strftime(
+                    "%Y-%m-%d", time.gmtime(first + self.p.firmware_wait_days * 86400))
+                     + f" ({self.p.firmware_wait_days:g} days after it was first offered)")
                 continue                      # firmware is asked only after it has been out for a while
             rev = self.review(ent, kind, repo, mem)
             rid = request_id_for(kind, ent.entity_id, rev.to_version)
             facts = self._facts(rev)
+            if key in self.queue:
+                self.queue[key].update(verdict=rev.verdict, reasons=list(rev.reasons[:4]))
             if rev.verdict == BLOCKED:
+                note(key, "held by this App's review: " + "; ".join(rev.reasons)[:160])
                 if mem["blocked_noted"].get(key) == "|".join(rev.reasons):
                     continue
                 mem["blocked_noted"][key] = "|".join(rev.reasons)
                 self._save(mem)
                 return Outcome(rid, REFUSED, [f"update held: {r}" for r in rev.reasons], facts)
+            gate = self.ai.gate(f"entity:{key}", mem["first_seen"].get(key)) if self.ai is not None else None
+            if gate is not None and not gate.proceed:
+                note(key, "waiting for the AI review (then asked, or installed at night if low risk; asked anyway "
+                     f"from {self.ai.ask_anyway_at(mem['first_seen'].get(key))})")
+                continue
             auto, why = self.auto_allowed(rev, key, mem)
+            if auto and gate is not None and not gate.auto_ok:
+                auto, why = False, gate.line
             facts["automatic"] = auto
             facts["automatic_reason"] = why
+            if gate is not None and gate.state != "off":
+                facts["ai_review"] = gate.verdict or gate.state
             if self.s.dry_run:
                 mem["practiced"][key] = time.time()
                 self._save(mem)
                 return Outcome(rid, DRY_RUN_OK, ["dry run: reviewed, nothing asked or changed"], facts)
-            if not auto and self.waits_for_auto(rev, mem):
+            if not auto and (gate is None or gate.auto_ok) and self.waits_for_auto(rev, mem):
+                note(key, "low risk: installs by itself in the night window, with a configuration backup first")
                 continue
+            note(key, "installing by itself now" if auto else "asking on your phone now")
+            self._ai_line = gate.line if gate is not None else ""
             return self._ask_then_apply(ent, rev, rid, key, facts, automatic=auto)
         return None
 
@@ -237,7 +270,8 @@ class EntityUpdater:
         self.j.audit(rid, "APPROVAL_REQUESTED", job=JOBS[rev.kind])
         decision = approval.ask(self.ha, self.s.notify_service, self.s.owner_user_id, stage="UPDATE",
                                 title=f"Maintenance: update {rev.name[:40]}?",
-                                message="\n".join(self._lines(rev)) + f"\n\nRequest: {rid}",
+                                message="\n".join(self._lines(rev) + ([self._ai_line] if getattr(self, "_ai_line", "")
+                                                                        else [])) + f"\n\nRequest: {rid}",
                                 timeout=self.s.approval_timeout, require_auth=self.s.require_auth,
                                 board=self.s.board, open_url=self.s.open_url,
                                 should_stop=getattr(self.s, "should_stop", None))
