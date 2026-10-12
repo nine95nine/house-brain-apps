@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from . import backupcheck as B, pihealth as P, approval, issues as I, net
+from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issues as I, net
 from .ha import DEPLOYER_STATUS_ENTITY, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
 
@@ -62,6 +62,7 @@ class WatchPolicy:
     power_cycle_gap_seconds: float = 30 * 60
     backup_report: bool = True     # 0.8.5: the monthly backup report on GitHub (+ one phone line)
     pi_health: bool = True         # 0.8.6: power/heat, disk errors, App outliers, weekly health score
+    housekeeping: bool = True      # 0.8.7: failing automations, missing entities, error flood, database size
 
 
 def summary_lists(summary: list[dict], cleared: list, open_keys: set[str]) -> tuple[list[dict], list[str]]:
@@ -104,6 +105,7 @@ class Watcher:
         self.os_findings: Callable[[], list] | None = None    # 0.8.3: an OS update waiting for a restart
         self.sysfs = P.SysReader()                            # 0.8.6: Pi health reads (tests point it elsewhere)
         self.pi_now: dict = {}                                # 0.8.6: this check's temperature/throttle/write rate
+        self.log_now: list | None = None                      # 0.8.7: this check's system-log rows
         # 0.7.3: problem keys an open after-update check is handling (it asks Reload/Undo; no second prompt here)
         self.claimed: Callable[[], frozenset] = frozenset
         self.relay_fetch: Callable[[str], object] = lambda url: net.request("GET", url, timeout=15)[1]
@@ -184,6 +186,7 @@ class Watcher:
             findings += I.from_entries(core["entries"], first_seen, now, self.ha.power_cycle_entity, heard,
                                        frozenset(core.get("reauth") or ()))
             findings += I.from_log(core["log"])
+            self.log_now = core["log"]                                     # 0.8.7: the error-rate trend
         except Exception:  # noqa: BLE001 - Core may be restarting; try again next check
             failed.append("core")
         try:
@@ -235,6 +238,11 @@ class Watcher:
                 findings += self.os_findings()
             except Exception:  # noqa: BLE001 - never a false clear: keep what is open
                 failed.append("os_pending")
+        if self.p.housekeeping:
+            try:
+                findings += self._hk_findings(now)
+            except Exception:  # noqa: BLE001 - never a false clear: keep what is open
+                failed.append("housekeeping")
         if self.p.pi_health:
             try:
                 findings += self._pi_findings(now)
@@ -300,6 +308,7 @@ class Watcher:
         self._maybe_summary(now)
         self._maybe_backup_report(now)
         self._maybe_health_score(now)
+        self._maybe_housekeeping_report(now)
         open_count = sum(1 for r in self._state()["open"].values() if r.get("alerted"))
         return {"open_problems": open_count, "unreadable": sorted(failed), "fix": outcome}
 
@@ -430,6 +439,62 @@ class Watcher:
         self.pi_now = {"throttled": throttled, "temp": temp, "rate": P.write_rate_gb_per_day(doc)}
         self.j.save_doc(P.DOC, doc)
         return out
+
+    def _hk_findings(self, now: float) -> list[I.Finding]:
+        """0.8.7: automations and traces hourly, dead references daily, database size 6-hourly, log trend each check.
+        Between reads the last result stands; a read that fails keeps the last result and is retried next time."""
+        doc = self.j.load_doc(K.DOC, {})
+        doc = doc if isinstance(doc, dict) else {}
+        if now - float(doc.get("read_at") or 0) >= K.READ_EVERY:
+            reads = self.ha.housekeeping_reads()
+            autos = reads["automations"]
+            doc.update(read_at=now, automation_count=len(autos),
+                       names={a["entity_id"]: a["name"] for a in autos},
+                       failing=[{"key": f.key, "title": f.title, "detail": list(f.detail), "facts": f.facts}
+                                for f in K.failing_automations(autos, reads["traces"])],
+                       unused=K.unused_automations(autos, now)[:50])
+            if now - float(doc.get("related_at") or 0) >= K.RELATED_EVERY:
+                ids = sorted(a["entity_id"] for a in autos)[:K.RELATED_MAX]
+                related = self.ha.related_entities(ids)
+                doc["related_at"] = now
+                doc["dead"] = [{"key": f.key, "title": f.title, "facts": f.facts}
+                               for f in K.dead_references(related, reads["known"], doc["names"])]
+        if now - float(doc.get("db_at") or 0) >= K.DB_EVERY:
+            doc["db_at"] = now
+            try:
+                K.db_sample(doc, self.ha.db_size_mib(), now)
+            except Exception:  # noqa: BLE001 - size not readable this time: the report says so
+                pass
+        out = [I.Finding(r["key"], "housekeeping", I.WARNING, r["title"], detail=tuple(r["detail"]),
+                         steps=("Open the automation, then Traces, to see the step that failed.",
+                                "A renamed or removed device or entity is the usual cause."),
+                         link=K.AUTOMATIONS_LINK, facts=r["facts"]) for r in doc.get("failing") or []]
+        out += [I.Finding(r["key"], "housekeeping", I.WARNING, r["title"],
+                          steps=("The entity was renamed or its device was removed; the automation will fail or do "
+                                 "nothing at that step.", "Open the automation and pick the current entity."),
+                          link=K.AUTOMATIONS_LINK, facts=r["facts"]) for r in doc.get("dead") or []]
+        if self.log_now is not None:
+            out += K.log_trend(doc, self.log_now, now)
+        out += K.db_findings(doc)
+        self.j.save_doc(K.DOC, doc)
+        return out
+
+    def _maybe_housekeeping_report(self, now: float) -> None:
+        """0.8.7: the monthly housekeeping report (first one right after install), from what the checks stored."""
+        if not self.p.housekeeping:
+            return
+        doc = self.j.load_doc(K.DOC, {})
+        doc = doc if isinstance(doc, dict) else {}
+        if not doc.get("read_at") or not K.report_due(doc, now, self.p.digest_hour):
+            return
+        from . import VERSION
+        text, phone = K.report_text(doc, VERSION)
+        lt = time.localtime(now)
+        doc["month"] = f"{lt.tm_year:04d}-{lt.tm_mon:02d}"
+        self.j.save_doc(K.DOC, doc)
+        self.j.audit("housekeeping", "HOUSEKEEPING_REPORT")
+        approval.inform(self.ha, self.s.notify_service, "Maintenance: monthly housekeeping report", phone)
+        self._post(text)
 
     def _maybe_health_score(self, now: float) -> None:
         """0.8.6: every Sunday after the morning summary hour, one number for the week (GitHub + one phone line)."""

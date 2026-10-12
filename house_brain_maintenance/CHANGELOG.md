@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.7
+
+Housekeeping, the last of the four feature releases (owner pop-up 2026-10-11). Contains 0.8.6 unchanged otherwise.
+
+- **Failing automations.** An automation whose newest run ended in an error, and that failed at least twice in its
+  stored runs, is a morning-summary problem with Home Assistant's own error text.
+- **Missing entities.** An automation that refers to an entity that no longer exists (renamed, or its device
+  removed) is named, with the missing entities. Checked once a day.
+- **Error floods.** One error repeating 1,000 times a day or more (it fills the log and wears the disk).
+- **Database size.** A history database of 2 GB or more, or one growing 100 MB a day, gets advice.
+- **Monthly housekeeping report** on GitHub plus one phone line, including automations that are turned on but have
+  not run in 90 days (new option `housekeeping`, default on).
+- Read-only: nothing is turned off, edited, run or purged.
+
 ## 0.8.6
 
 Pi health, the third of the four feature releases (owner pop-up 2026-10-11). Contains 0.8.5 unchanged otherwise.

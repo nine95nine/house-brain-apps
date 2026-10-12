@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.8.6)
+## What it does (0.8.7)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -389,6 +389,7 @@ Assistant notification:
 | `backup_report` | From 0.8.5: the monthly backup report on GitHub plus one phone line (default `true`). The backup checks themselves are always on. |
 | `pi_health` | From 0.8.6: power/heat, disk errors, App outliers and the weekly health score (default `true`; `false` = none of these reads). |
 | `pi_firmware_updates` | From 0.8.6: Pi firmware (bootloader) updates in the approval flow (default `true`; never automatic). |
+| `housekeeping` | From 0.8.7: failing automations, missing entities, error floods, database size and the monthly housekeeping report (default `true`; `false` = none of these reads). |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
 | `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). From 0.7.2 the same wait applies to fix asks and the Deployer switch-over ask (were fixed at 24 hours). Reject is never asked again. |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |
@@ -487,6 +488,23 @@ Every check reads the backup list it already reads; nothing is created, changed 
   after you install 0.8.5.
 - **Not checked:** whether your password opens a backup. This App never holds that password. Once a year, open
   one backup on another device to be sure.
+
+## Housekeeping — from 0.8.7
+
+Read-only checks of Home Assistant's own setup, in the morning summary like every other problem:
+- **Failing automations:** the newest run of an automation ended in an error, and it failed at least twice in the
+  runs Home Assistant keeps (5 by default). The summary shows Home Assistant's error text; open the automation,
+  then **Traces**, to see the step. (An automation that cannot even load already shows up as a Home Assistant
+  repair.)
+- **Missing entities:** an automation refers to an entity that no longer exists, usually after a rename or a
+  removed device. Checked once a day.
+- **Error floods:** one error repeating 1,000 times a day or more.
+- **Database size:** the history database is 2 GB or more, or grows 100 MB a day. The fix (keep fewer days,
+  exclude chatty sensors) is a YAML change; the House Brain AI can prepare it for your approval.
+- **Monthly housekeeping report** (`housekeeping`): automations and which fail, missing entities, automations
+  turned on but not run in 90 days (seasonal ones are fine), the most repeated errors and the database size.
+
+Nothing is changed: no automation is turned off, edited or run, and no history is purged.
 
 ## Pi health — from 0.8.6
 

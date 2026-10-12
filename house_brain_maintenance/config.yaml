@@ -1,5 +1,5 @@
 name: "House Brain Maintenance"
-version: "0.8.6"
+version: "0.8.7"
 slug: "house_brain_maintenance"
 description: >-
   Reviews pending App, HACS and device-firmware updates and applies them after your iPhone approval
@@ -117,6 +117,7 @@ options:
   backup_report: true
   pi_health: true
   pi_firmware_updates: true
+  housekeeping: true
 schema:
   github_repo: "match(^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$)"
   github_token: password?
@@ -164,6 +165,7 @@ schema:
   backup_report: "bool?"
   pi_health: "bool?"
   pi_firmware_updates: "bool?"
+  housekeeping: "bool?"
   cf_control_url: "match(^(https://house-brain-cloudflare-control\\.[a-z0-9-]{1,63}\\.workers\\.dev)?$)?"
   update_hold:
     - "match(^update\\.[a-z0-9_]{1,200}$)?"

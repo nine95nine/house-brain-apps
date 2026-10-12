@@ -136,7 +136,11 @@ _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/li
                        # 0.5.1: pending "log in again" flows (read-only list; never starts or answers one).
                        "config_entries/flow/progress",
                        # 0.7.0: HACS repository list and one update entity's release notes (both read-only).
-                       "hacs/repositories/list", "update/release_notes"})
+                       "hacs/repositories/list", "update/release_notes",
+                       # 0.8.7 Housekeeping (read-only): automation run traces, what an automation refers to, and the
+                       # system-health subscription (only the recorder's database size is kept).
+                       "trace/list", "search/related", "system_health/info"})
+RE_AUTOMATION_ENTITY = re.compile(r"^automation\.[a-z0-9_]{1,200}$")
 RE_ENTITY_ID = re.compile(r"^[a-z0-9_]{1,40}\.[a-z0-9_]{1,200}$")
 RE_DEVICE_ID = re.compile(r"^[A-Za-z0-9]{1,64}$")
 RE_AGENT_ID = re.compile(r"^[a-z0-9_]{1,40}\.[A-Za-z0-9_.-]{1,80}$")
@@ -975,6 +979,14 @@ class HomeAssistant:
             raise ForbiddenCall("ws release notes")
         if kind == "hacs/repositories/list" and set(msg) != {"type"}:
             raise ForbiddenCall("ws hacs list")
+        if kind == "trace/list" and msg != {"type": "trace/list", "domain": "automation"}:
+            raise ForbiddenCall("ws trace list")
+        if kind == "search/related" and (set(msg) != {"type", "item_type", "item_id"} or msg["item_type"] != "automation"
+                                         or not isinstance(msg["item_id"], str)
+                                         or not RE_AUTOMATION_ENTITY.fullmatch(msg["item_id"])):
+            raise ForbiddenCall("ws search related")
+        if kind == "system_health/info" and set(msg) != {"type"}:
+            raise ForbiddenCall("ws system health")
 
     # -- HTTP ---------------------------------------------------------------
     def _call(self, method: str, path: str, body: Any = None, timeout: float = 30.0,
@@ -1747,6 +1759,94 @@ class HomeAssistant:
             if live.get(row["entity_id"]) in (None, "unavailable"):
                 c["unavailable"] += 1
         return out
+
+    # -- 0.8.7 Housekeeping (read-only) ------------------------------------------------------------
+    def housekeeping_reads(self) -> dict:
+        """Automations (projected), their stored run traces (projected) and every known entity id."""
+        sock = self.shared_ws()
+        try:
+            states = sock.command({"type": "get_states"}, timeout=60)
+            entities = sock.command({"type": "config/entity_registry/list"}, timeout=60)
+            traces = sock.command({"type": "trace/list", "domain": "automation"}, timeout=60)
+        finally:
+            sock.close()
+
+        def s(v, n: int) -> str | None:
+            return str(v)[:n] if isinstance(v, (str, int, float)) and not isinstance(v, bool) else None
+        known: set[str] = set()
+        automations = []
+        for row in (states if isinstance(states, list) else [])[:20000]:
+            eid = row.get("entity_id") if isinstance(row, dict) else None
+            if not isinstance(eid, str) or not RE_ENTITY_ID.fullmatch(eid):
+                continue
+            known.add(eid)
+            if RE_AUTOMATION_ENTITY.fullmatch(eid) and len(automations) < 1000:
+                attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+                automations.append({"entity_id": eid, "name": s(attrs.get("friendly_name"), 80) or eid,
+                                    "state": s(row.get("state"), 20), "id": s(attrs.get("id"), 80),
+                                    "last_triggered": s(attrs.get("last_triggered"), 40)})
+        for row in (entities if isinstance(entities, list) else [])[:20000]:
+            eid = row.get("entity_id") if isinstance(row, dict) else None
+            if isinstance(eid, str) and RE_ENTITY_ID.fullmatch(eid):
+                known.add(eid)
+        out_traces = []
+        for row in (traces if isinstance(traces, list) else [])[:5000]:
+            if not isinstance(row, dict) or row.get("domain") != "automation":
+                continue
+            stamp = row.get("timestamp") if isinstance(row.get("timestamp"), dict) else {}
+            out_traces.append({"item_id": s(row.get("item_id"), 80), "execution": s(row.get("script_execution"), 40),
+                               "error": s(row.get("error"), 300), "start": s(stamp.get("start"), 40)})
+        return {"automations": automations, "traces": out_traces, "known": known}
+
+    def related_entities(self, automation_ids: list[str]) -> dict[str, list[str]]:
+        """What each automation refers to (``search/related``; entity ids only, existing or not)."""
+        out: dict[str, list[str]] = {}
+        sock = self.shared_ws()
+        try:
+            for aid in automation_ids:
+                if not RE_AUTOMATION_ENTITY.fullmatch(aid):
+                    continue
+                try:
+                    rel = sock.command({"type": "search/related", "item_type": "automation", "item_id": aid},
+                                       timeout=30)
+                except HAError as err:
+                    if err.code == "WS_COMMAND":
+                        continue                       # this one could not be searched; the others still can
+                    raise
+                ents = rel.get("entity") if isinstance(rel, dict) else None
+                out[aid] = sorted({e for e in (ents if isinstance(ents, list) else [])[:500]
+                                   if isinstance(e, str) and RE_ENTITY_ID.fullmatch(e)})
+        finally:
+            sock.close()
+        return out
+
+    def db_size_mib(self, timeout: float = 20.0) -> float | None:
+        """The recorder's ``estimated_db_size`` from the system-health subscription; everything else dropped."""
+        from .housekeeping import parse_size_mib
+        sock = self.ws()
+        try:
+            sock.command({"type": "system_health/info"}, timeout=timeout)
+            deadline = time.monotonic() + timeout
+            while (remaining := deadline - time.monotonic()) > 0:
+                event = sock.next_event(remaining)
+                if not isinstance(event, dict) or not event:
+                    if event is None:
+                        return None
+                    continue
+                if event.get("type") == "initial":
+                    rec = (event.get("data") or {}).get("recorder") if isinstance(event.get("data"), dict) else None
+                    info = rec.get("info") if isinstance(rec, dict) else None
+                    size = parse_size_mib(info.get("estimated_db_size")) if isinstance(info, dict) else None
+                    if size is not None:
+                        return size
+                elif event.get("type") == "update" and event.get("domain") == "recorder" \
+                        and event.get("key") == "estimated_db_size" and event.get("success") is not False:
+                    return parse_size_mib(event.get("data"))
+                elif event.get("type") == "finish":
+                    return None
+            return None
+        finally:
+            sock.close()
 
     # -- WebSocket ------------------------------------------------------------
     def ws(self, max_size: int = 4 * 1024 * 1024) -> CoreSocket:

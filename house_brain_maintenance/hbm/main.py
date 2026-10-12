@@ -113,6 +113,7 @@ class Options:
     backup_report: bool = True        # 0.8.5: monthly backup report (findings about backups are always on)
     pi_health: bool = True            # 0.8.6: power/heat, disk errors, App outliers, weekly health score
     pi_firmware_updates: bool = True  # 0.8.6: Pi bootloader firmware updates in the approval flow (never automatic)
+    housekeeping: bool = True         # 0.8.7: failing automations, missing entities, error flood, database size
     cf_control_issue: int = 454       # 0.8.2: Cloudflare control approvals to the phone (0 = off; owner 2026-10-11)
     cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
 
@@ -210,6 +211,8 @@ def load_options(path: str) -> Options:
         pi_health=raw.get("pi_health", True) if isinstance(raw.get("pi_health", True), bool) else _bad("pi_health"),
         pi_firmware_updates=raw.get("pi_firmware_updates", True)
         if isinstance(raw.get("pi_firmware_updates", True), bool) else _bad("pi_firmware_updates"),
+        housekeeping=raw.get("housekeeping", True) if isinstance(raw.get("housekeeping", True), bool)
+        else _bad("housekeeping"),
         cf_control_url=_cf_url(raw.get("cf_control_url")),
     )
 
@@ -418,7 +421,8 @@ class Service:
                                 verify_seconds=60.0 * self.health_scale, poll=self.poll,
                                 power_off_seconds=10.0 * self.health_scale,
                                 power_verify_seconds=600.0 * self.health_scale,
-                                backup_report=self.o.backup_report, pi_health=self.o.pi_health)
+                                backup_report=self.o.backup_report, pi_health=self.o.pi_health,
+                                housekeeping=self.o.housekeeping)
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
             self.watcher.credentials = self.gh.auth.summary if hasattr(self.gh, "auth") else None
             self.watcher.relay_url = self.o.relay_credential_url
