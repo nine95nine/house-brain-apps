@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.8.7)
+## What it does (0.8.8)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -509,9 +509,11 @@ Nothing is changed: no automation is turned off, edited or run, and no history i
 ## Pi health — from 0.8.6
 
 Read-only checks of the Raspberry Pi itself, in the morning summary like every other problem:
-- **Power and heat:** the Pi's own under-voltage and throttle flags ("now" and "since the last restart") and a
-  CPU temperature of 80 °C or more. Under-voltage causes random restarts and corrupted disks: use the official
-  power supply and a short cable; an SSD on USB can need a powered hub.
+- **Power and heat:** under-voltage and a CPU temperature of 80 °C or more. Under-voltage causes random restarts
+  and corrupted disks: use the official power supply and a short cable; an SSD on USB can need a powered hub.
+  From 0.8.8, under-voltage comes from the Pi's `rpi_volt` voltage sensor, because current Pi kernels no longer
+  have the old throttle-flag file. A dip seen at any check stays on record for 7 days. Older kernels still give
+  the full throttle flags. If a reading cannot be taken, the weekly score says why.
 - **Disk:** new read/write errors reported by the system disk (SSD/USB disks; an SD card has no such counter and
   shows "not checked"), and how many GB a day are written.
 - **App outliers:** an App at 90 % or more of its memory limit, or 90 % CPU, three reads in a row (at most every

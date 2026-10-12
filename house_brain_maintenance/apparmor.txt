@@ -63,6 +63,10 @@ profile house_brain_maintenance flags=(attach_disconnected,mediate_deleted) {
   /sys/block/ r,
   /sys/devices/**/block/*/stat r,
   /sys/devices/**/block/*/device/ioerr_cnt r,
+  # 0.8.8: current Pi kernels report under-voltage only through the rpi_volt hwmon sensor (read-only).
+  /sys/class/hwmon/ r,
+  /sys/devices/**/hwmon/hwmon*/name r,
+  /sys/devices/**/hwmon/hwmon*/in0_lcrit_alarm r,
 
   /tmp/ rw,
   /tmp/** rwk,

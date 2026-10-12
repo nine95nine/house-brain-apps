@@ -46,8 +46,14 @@ def _days(seconds: float) -> str:
 
 
 def newest_full(inventory: list[dict]) -> dict | None:
-    """Newest backup that includes Home Assistant and was not made by this App's own pre-update step."""
+    """Newest backup that includes Home Assistant and was not made by this App's own pre-update step.
+
+    0.8.8: a backup with Apps in it wins over a newer settings-only one (Home Assistant without any App, for
+    example another tool's pre-change copy): the first live report took a 0.03 GB settings-only backup as the
+    newest full one and called 16 Apps missing. Only when no backup holds any App is a settings-only one used."""
     rows = [r for r in inventory if r.get("ha") and not r.get("ours") and _ts(r.get("date")) is not None]
+    with_apps = [r for r in rows if r.get("apps")]
+    rows = with_apps or rows
     return max(rows, key=lambda r: _ts(r["date"])) if rows else None
 
 

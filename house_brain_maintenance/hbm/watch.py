@@ -413,6 +413,7 @@ class Watcher:
         doc = self.j.load_doc(P.DOC, {})
         doc = doc if isinstance(doc, dict) else {}
         throttled, temp = self.sysfs.throttled(), self.sysfs.temperature_c()
+        throttled = P.remember_undervoltage(doc, throttled, now)          # 0.8.8
         out = P.throttle_findings(throttled) + P.heat_findings(temp)
         out += P.disk_findings(doc, self.sysfs.disks(), now)
         if self.apps_now is not None and now - float(doc.get("stats_at") or 0) >= P.STATS_EVERY:
@@ -508,7 +509,7 @@ class Watcher:
         score, parts = P.health_score(self._state()["open"])
         history = doc.get("scores") or []
         text, phone = P.weekly_text(score, parts, history, self.pi_now.get("temp"), self.pi_now.get("rate"),
-                                    self.pi_now.get("throttled"), VERSION)
+                                    self.pi_now.get("throttled"), VERSION, dict(self.sysfs.why))
         doc["score_day"] = time.strftime("%Y-%m-%d", time.localtime(now))
         doc["scores"] = (history + [[doc["score_day"], score]])[-12:]
         self.j.save_doc(P.DOC, doc)

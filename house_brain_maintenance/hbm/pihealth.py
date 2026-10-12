@@ -35,7 +35,7 @@ DISK_SAMPLES = 60
 # get_throttled bits (Raspberry Pi firmware): 0 under-voltage now, 1 freq capped now, 2 throttled now,
 # 3 soft temp limit now; 16-19 the same "has occurred since boot".
 THROTTLE_BITS = {0: "under-voltage now", 1: "CPU speed capped now", 2: "throttled now", 3: "soft temperature limit now",
-                 16: "under-voltage since boot", 17: "CPU speed capped since boot", 18: "throttled since boot",
+                 16: "under-voltage earlier (since boot or in the last 7 days)", 17: "CPU speed capped since boot", 18: "throttled since boot",
                  19: "soft temperature limit since boot"}
 RE_BLOCK = re.compile(r"^(?:sd[a-z]|mmcblk\d|nvme\d+n\d+)$")
 
@@ -45,26 +45,45 @@ class SysReader:
 
     def __init__(self, root: str = "/") -> None:
         self.root = root
+        self.why: dict[str, str] = {}                  # 0.8.8: why a reading is "not checked" (shown in the score)
 
-    def _read(self, rel: str, limit: int = 256) -> str | None:
+    def _read(self, rel: str, limit: int = 256, what: str = "") -> str | None:
         try:
             with open(os.path.join(self.root, rel.lstrip("/")), encoding="ascii", errors="replace") as fh:
                 return fh.read(limit).strip()
-        except (OSError, ValueError):
-            return None
+        except (OSError, ValueError) as err:
+            if what:
+                self.why.setdefault(what, "not allowed to read" if isinstance(err, PermissionError) else
+                                    "not on this system" if isinstance(err, FileNotFoundError) else "unreadable")
+        return None
 
     def throttled(self) -> int | None:
+        """The firmware's throttle flags. Older Pi kernels expose ``get_throttled``; current ones (6.x) only the
+        ``rpi_volt`` hwmon sensor, whose alarm is under-voltage seen in its last 2-second poll (bit 0 "now")."""
+        self.why.pop("power", None)
         raw = self._read("/sys/devices/platform/soc/soc:firmware/get_throttled", 32)
-        if raw is None:
+        if raw is not None:
+            try:
+                value = int(raw, 16)                   # the firmware prints "%x" (no 0x); "0x..." works too
+            except ValueError:
+                value = -1
+            if 0 <= value < 1 << 32:
+                return value
+        for hw in sorted(glob.glob(os.path.join(self.root, "sys/class/hwmon/hwmon*")))[:32]:
+            rel = "/" + os.path.relpath(hw, self.root)
+            if self._read(f"{rel}/name", 32, "power") != "rpi_volt":
+                continue
+            alarm = self._read(f"{rel}/in0_lcrit_alarm", 8, "power")
+            if alarm in ("0", "1"):
+                self.why.pop("power", None)
+                return int(alarm)
             return None
-        try:
-            value = int(raw, 16)                       # the firmware prints "%x" (no 0x); "0x..." works too
-        except ValueError:
-            return None
-        return value if 0 <= value < 1 << 32 else None
+        self.why.setdefault("power", "no Raspberry Pi voltage sensor found")
+        return None
 
     def temperature_c(self) -> float | None:
-        raw = self._read("/sys/class/thermal/thermal_zone0/temp", 16)
+        self.why.pop("temperature", None)
+        raw = self._read("/sys/class/thermal/thermal_zone0/temp", 16, "temperature")
         try:
             value = int(raw) / 1000.0 if raw is not None else None
         except ValueError:
@@ -210,16 +229,28 @@ def weekly_due(doc: dict, now: float, digest_hour: int, localtime=time.localtime
     return doc.get("score_day") != time.strftime("%Y-%m-%d", lt)
 
 
+def remember_undervoltage(doc: dict, value: int | None, now: float) -> int | None:
+    """0.8.8: under-voltage seen "now" is kept for 7 days as bit 16, so a dip between two checks is not lost."""
+    if value is None:
+        return None
+    if value & 1:
+        doc["uv_at"] = now
+    if now - float(doc.get("uv_at") or 0) < 7 * 86400:
+        value |= 1 << 16
+    return value
+
+
 def weekly_text(score: int, parts: dict, history: list, temp: float | None, rate: float | None,
-                throttled: int | None, version: str) -> tuple[str, str]:
+                throttled: int | None, version: str, why: dict | None = None) -> tuple[str, str]:
     last = history[-1][1] if history else None
     trend = "" if last is None else f" (last week {last})"
     lines = ["### House Brain Maintenance: weekly health score", "",
              f"- **Score: {score}/100**{trend}",
              f"- Open: {parts['critical']} critical, {parts['hardware_backup']} hardware/backup, "
              f"{parts['warnings']} other warnings (details in the morning summaries)",
-             "- CPU temperature: " + (f"{temp:.0f} °C" if temp is not None else "not checked"),
-             "- Power/heat flags since boot: " + ("not checked" if throttled is None else
+             "- CPU temperature: " + (f"{temp:.0f} °C" if temp is not None else
+                                      f"not checked ({(why or {}).get('temperature', 'unreadable')})"),
+             "- Power flags: " + (f"not checked ({(why or {}).get('power', 'unreadable')})" if throttled is None else
                                                   ", ".join(THROTTLE_BITS[b] for b in sorted(THROTTLE_BITS)
                                                             if throttled & (1 << b)) or "none"),
              "- Disk writes: " + (f"{rate:g} GB/day" if rate is not None else "not measured yet"),

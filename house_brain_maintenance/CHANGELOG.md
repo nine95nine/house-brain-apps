@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.8
+
+Fixes from the first live 0.8.7 reports (2026-10-12). Contains 0.8.7 unchanged otherwise.
+
+- **Backup report: a false "16 Apps missing".** A newer settings-only backup (Home Assistant without any App,
+  0.03 GB) was taken as the newest full backup. That made every running App look missing, and the backup look
+  unprotected and not off the Pi. A backup that holds Apps now wins. A settings-only one is used only when no
+  backup holds any App.
+- **Pi power check: "not checked" on current Pi kernels.** Kernel 6.x no longer has the `get_throttled` file. The
+  App now reads under-voltage from the Pi's `rpi_volt` voltage sensor, and keeps a dip seen at any check on record
+  for 7 days. The weekly score says why a reading was not checked. Three read-only AppArmor rules were added.
+- **Housekeeping report wording:** alerts that never fired are fine.
+
 ## 0.8.7
 
 Housekeeping, the last of the four feature releases (owner pop-up 2026-10-11). Contains 0.8.6 unchanged otherwise.

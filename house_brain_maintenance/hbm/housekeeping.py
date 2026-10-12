@@ -217,7 +217,8 @@ def report_text(doc: dict, version: str) -> tuple[str, str]:
         shown = "; ".join(f"{u['name']} ({'never' if u['last'] is None else time.strftime('%Y-%m-%d', time.gmtime(u['last']))})"
                           for u in unused[:10])
         lines.append(f"- **Turned on but not run in {UNUSED_DAYS} days:** {len(unused)} — {shown}"
-                     + (" …" if len(unused) > 10 else "") + " (seasonal ones are fine; delete the rest)")
+                     + (" …" if len(unused) > 10 else "")
+                     + " (alerts that never fired and seasonal ones are fine; delete the ones you no longer use)")
     else:
         lines.append(f"- **Turned on but not run in {UNUSED_DAYS} days:** none")
     rates = top_rates(doc, 5)
