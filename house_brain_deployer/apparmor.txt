@@ -43,9 +43,8 @@ profile house_brain_deployer flags=(attach_disconnected,mediate_deleted) {
   /share/ r,
   /share/house_brain_writer_v1/ r,
   /share/house_brain_writer_v1/.house_brain_writer_v1.lock rwk,
-  # TEMPORARY (enrollment plan R1 step E3): lets the one-tap enrollment create that one folder.
-  # The next release removes this line (step E5).
-  /share/house_brain_writer_v1/ w,
+  # 0.3.20 (enrollment plan R1 step E5): the temporary folder-create rule from 0.3.19 is removed. The folder and
+  # lock exist on the Pi (#561 comment 6125839870); nothing here can create, rename or delete them.
 
   /proc/ r,
   /proc/self/** r,

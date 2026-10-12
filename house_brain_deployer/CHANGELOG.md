@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.20 — 2026-10-12
+
+Removes the temporary folder-create permission and logs each approval ask (owner pop-up 2026-10-12 "E5 + ask/answer
+log"; #985 enrollment plan R1 step E5). Contains everything in 0.3.19 unchanged otherwise. Draft PR #985 moves to
+0.3.21.
+
+- **Why:** the shared writer lock now exists on the Pi (#561 comment 6125839870), so the folder-create rule is no
+  longer needed. On 2026-10-12, nobody could tell from the log when the enrollment prompt went out.
+- **Change:**
+  - `apparmor.txt` drops `/share/house_brain_writer_v1/ w,`. The folder and lock rules stay as they were.
+  - The log gets two lines for every approval: `approval asked: <request> stage=<stage> expires in <N> min`, then
+    `approval answered: <request> stage=<stage> outcome=<APPROVE|REJECT|TIMEOUT|UNAVAILABLE|STOPPED> channel=<push|page|->`.
+    They hold the request id and stage only, never the message text.
+- **Unchanged:** every install, lookup, re-ask, HTTP and enrollment path. A repeat enrollment request still reports
+  the existing folder and lock without changing them.
+
 ## 0.3.19 — 2026-10-12
 
 One-tap creation of the shared writer lock (owner pop-up 2026-10-12 "Build it now"; #985 enrollment plan R1 step

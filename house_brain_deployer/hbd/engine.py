@@ -17,6 +17,7 @@ into new changes.
 """
 from __future__ import annotations
 
+import logging
 import secrets
 import os
 import stat
@@ -33,6 +34,8 @@ from .journal import Journal
 from .manifest import Manifest, StateCheck
 from .policy import DEFAULT_SENSITIVE_PATTERNS, PolicyError, basename, scan_package
 from .web import ApprovalBoard
+
+LOG = logging.getLogger("hbd")
 
 # Terminal outcomes
 SUCCEEDED = "SUCCEEDED"
@@ -545,10 +548,15 @@ class Engine:
     def _ask(self, m: Manifest | str, stage: str, title: str, message: str, timeout: float) -> str:
         rid = m if isinstance(m, str) else m.request_id
         self.j.audit(rid, "APPROVAL_REQUESTED", stage=stage)
+        # 0.3.20 (owner pop-up 2026-10-12): one line per ask and per answer, so the time a prompt went out is
+        # readable through the Maintenance log window. Request id and stage only; never the message text.
+        LOG.info("approval asked: %s stage=%s expires in %s min", rid, stage, max(1, round(timeout / 60)))
         decision = approval.ask(self.ha, self.s.notify_service, self.s.owner_user_id, stage=stage,
                                 title=title, message=message, timeout=timeout,
                                 require_auth=self.s.require_auth, board=self.s.board,
                                 open_url=self.s.open_url, should_stop=self.s.should_stop)
+        LOG.info("approval answered: %s stage=%s outcome=%s channel=%s", rid, stage, decision.outcome,
+                 decision.channel or "-")
         if decision.outcome == approval.STOPPED:
             self.j.audit(rid, "APPROVAL_STOPPED", stage=stage)
             raise Stopping(stage)

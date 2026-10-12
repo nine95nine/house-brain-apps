@@ -128,8 +128,11 @@ which still needs your separate approval. You do not need to do anything with th
 
 The Deployer and the Maintenance App will share one empty lock file, so they can never write at the same time.
 An AI files a one-time request. You get one push: **"Create the shared writer lock?"** Approve creates only the
-empty folder `/share/house_brain_writer_v1/` and its empty lock file. Reject or no answer changes nothing. This
-release can create that one folder; the next release removes that ability again.
+empty folder `/share/house_brain_writer_v1/` and its empty lock file. Reject or no answer changes nothing. Only
+0.3.19 could create that folder; from 0.3.20 the Deployer can use the lock but no longer create the folder.
+
+From 0.3.20 the log shows one `approval asked: …` line when a push goes out and one `approval answered: …` line
+when you answer or it expires (the default window is 6 hours).
 
 ## GitHub connection (no token to renew) — from 0.3.6
 
