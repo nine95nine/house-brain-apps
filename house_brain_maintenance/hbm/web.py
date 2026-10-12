@@ -186,7 +186,7 @@ def render_waiting(items: list[dict], queued: dict | None, nonce: str, action: s
 
 STAGE_LABEL = {"UPDATE": "Update", "SYSTEM": "Home Assistant update", "OSBOOT": "OS restart", "OSBACK": "OS rollback",
                "PIFW": "Pi firmware", "FIX": "Fix", "AFTER": "After an update", "MIGRATE": "Deployer",
-               "KEYS": "Broker keys", "JOB": "Request", "STAGE": "App install"}
+               "KEYS": "Broker keys", "JOB": "Request", "STAGE": "App install", "SCOUTMOVE": "Scout to the store"}
 
 
 def render_inbox(items: list[dict], nonce: str, action: str) -> str:

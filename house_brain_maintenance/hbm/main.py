@@ -20,6 +20,7 @@ from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Up
 from .system import JOBS as SYSTEM_JOBS, ROLLED_BACK, SystemPolicy, SystemUpdater
 from .entities import JOBS as ENTITY_JOBS, EntityPolicy, EntityUpdater
 from .migrate import JOB as MIGRATE_JOB, MigratePolicy, Migrator
+from .scoutmove import JOB as SCOUTMOVE_JOB, ScoutMove
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
@@ -348,6 +349,7 @@ class Service:
         self.key_broker_base: str | None = None             # 0.8.0: test mode only (a local Broker)
         self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
         self.writer = SharedWriter()                       # 0.9.1: shared writer lock with the Deployer (never created)
+        self.scoutmove: ScoutMove | None = None            # 0.9.3: Inventory Scout local -> store switch
         self.watcher: Watcher | None = None
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
         self.health_scale = health_scale
@@ -431,6 +433,9 @@ class Service:
                 watch_seconds=1200.0 * scale, poll=self.poll, reask_hours=float(self.o.update_reask_hours),
                 keep_old=self.o.keep_old_deployer))
             self.updater.writer = self.migrator.writer = self.writer     # 0.9.1: the shared writer lock
+            self.scoutmove = ScoutMove(self.ha, self.j, settings, reask_hours=float(self.o.update_reask_hours))
+            if self.scoutmove.restore():                                 # 0.9.3: the recorded store Scout
+                LOG.info("Inventory Scout: the store Scout %s is in use", self.ha.scout)
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
                                 max_fix_asks_per_day=self.o.max_approval_requests_per_day,
                                 reask_hours=float(self.o.update_reask_hours),
@@ -765,6 +770,11 @@ class Service:
             if mig is not None:
                 self.finish(mig.request_id, MIGRATE_JOB, f"migrate:{mig.facts.get('new') or mig.facts.get('old')}",
                             self.o.report_issue or None, Result(mig.result_outcome, mig.reasons, mig.facts))
+                return
+            sm = self.scoutmove.cycle() if self.scoutmove is not None else None
+            if sm is not None:                          # 0.9.3: Inventory Scout from the store
+                self.finish(sm.request_id, SCOUTMOVE_JOB, f"scoutmove:{sm.facts.get('new')}",
+                            self.o.report_issue or None, Result(sm.result_outcome, sm.reasons, sm.facts))
                 return
             # 0.6.0: Core/OS only when no App update ran in this cycle (never in the same run).
             sys_out = self.system.cycle()

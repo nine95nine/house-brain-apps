@@ -35,7 +35,7 @@ import time
 
 RE_REQUEST = re.compile(r"(?m)^Request: ([A-Za-z0-9][A-Za-z0-9._:@/-]{0,119})\s*$")   # fix ids: fix-app:<slug>
 RESUMABLE = frozenset({"UPDATE", "SYSTEM", "OSBOOT", "OSBACK", "PIFW", "FIX", "AFTER", "MIGRATE", "MIGRATE_REMOVE",
-                       "KEYS"})
+                       "KEYS", "SCOUTMOVE"})
 DECISION_TTL = 24 * 3600.0
 MISSED_TTL = 7 * 86400.0
 CONFIRM_TTL = 600.0

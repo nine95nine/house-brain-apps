@@ -1,0 +1,45 @@
+name: "House Brain Maintenance Inventory Scout"
+version: "0.1.2"
+slug: "house_brain_maintenance_inventory_scout"
+description: >-
+  One-shot, privilege-isolated House Brain maintenance App inventory producer.
+  Uses the minimum Supervisor manager role required for GET /addons, sanitizes
+  the result locally, and publishes only the bounded inventory contract to the
+  Maintenance Broker. No Home Assistant API, Docker API, host/device access,
+  shell-command API, entity control, or physical authority.
+arch:
+  - aarch64
+homeassistant: "2026.8.3"
+startup: once
+boot: manual_only
+stage: experimental
+backup: hot
+init: false
+apparmor: true
+hassio_api: true
+hassio_role: manager
+homeassistant_api: false
+docker_api: false
+auth_api: false
+full_access: false
+host_network: false
+host_ipc: false
+host_dbus: false
+host_pid: false
+host_uts: false
+stdin: false
+usb: false
+uart: false
+udev: false
+gpio: false
+devicetree: false
+kernel_modules: false
+audio: false
+video: false
+tmpfs: true
+options:
+  broker_url: null
+  broker_inventory_write_key: null
+schema:
+  broker_url: url
+  broker_inventory_write_key: password

@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.2)
+## What it does (0.9.3)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -413,6 +413,24 @@ From 0.7.2, when an update ask (App, Core or OS) ends with no answer, one more p
 "Missed: update Home Assistant Core 2026.10.1. I'll ask again at 14:05 (local), or tap Ask me again on the
 Maintenance page." It is sent once per missed ask, never after Reject and never in dry run. From 0.9.0 it reads
 "Tap to approve or decline it on the Maintenance page, or I'll ask again at 14:05 (local)." (see below).
+
+## Inventory Scout from the store — from 0.9.3
+
+The Inventory Scout is now published in the House Brain store. Before, each new Scout version needed an assistant's
+request and your tap to install it from GitHub. From the store, Scout updates come like every other store App
+update (review, AI review, backup, health watch, automatic restore).
+
+1. Install **House Brain Maintenance Inventory Scout** from the House Brain store (Settings → Apps → App store).
+   Do not start it: this App runs it when needed.
+2. Your phone asks once: **"Use the store Inventory Scout?"** (also on the Maintenance page under Needs your
+   decision).
+3. On Approve, the old Scout must be stopped. Its two settings (Broker address and key) are copied to the store
+   Scout, and read back by fingerprint. The key never leaves Home Assistant and is never shown or logged. From then
+   on this App runs the store Scout, also after a restart.
+
+The old local Scout is kept, stopped; this App never uninstalls it. If the copy or the read-back fails, the old Scout
+stays in use and nothing else changes. Reject is final. If the store Scout is uninstalled later, this App goes back
+to the local one. Observer and Inspector follow later, one at a time, each with its own approval.
 
 ## Shared writer lock with the Deployer — from 0.9.1
 

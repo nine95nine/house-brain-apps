@@ -543,6 +543,11 @@ def key_call_ok(key: dict, method: str, path: str, body: Any) -> bool:
 
 # -- 0.6.6 (Credential Autopilot R2): move the Deployer from the local folder to the store -----------------
 MIGRATE_OLD = "local_house_brain_deployer"
+# 0.9.3 (owner pop-up 2026-10-12 "Scout first, then others"): the Inventory Scout moves from the local folder to the
+# House Brain store. Only this store's Scout may become the Scout target, and only by an owner-approved switch.
+LOCAL_SCOUT = "local_house_brain_maintenance_inventory_scout"
+RE_STORE_SCOUT = re.compile(r"[0-9a-f]{8}_house_brain_maintenance_inventory_scout")
+SCOUT_OPTION_NAMES = ("broker_inventory_write_key", "broker_url")
 RE_MIGRATE_NEW = re.compile(r"[0-9a-f]{8}_house_brain_deployer")
 # The Deployer 0.3.7 option names; nothing else is ever copied (the store App has the same schema).
 DEPLOYER_OPTION_KEYS = ("github_repo", "github_token", "github_auth", "retire_old_token", "requests_branch",
@@ -658,15 +663,8 @@ class HomeAssistant:
         self.observer = observer_slug
         self._token = token
         net.register_secret(token)
-        s, o = re.escape(scout_slug), re.escape(observer_slug)
-        routes = _STATIC_ALLOW + (
-            ("GET", rf"/addons/{s}/info"),
-            ("GET", rf"/addons/{o}/info"),
-            ("POST", rf"/addons/{s}/options"),
-            ("POST", rf"/addons/{s}/start"),
-            ("GET", rf"/addons/{s}/logs/latest"),
-        ) + ((("GET", r"/core/api/states/" + re.escape(power_cycle_entity)),) if power_cycle_entity else ())
-        self._allow = tuple((m, re.compile(p)) for m, p in routes)
+        self._scout_move: str | None = None       # 0.9.3: the store Scout, only inside copy_scout_to
+        self._build_routes()
         self._target: str | None = None
         self._fix: tuple[str, str] | None = None
         self._system: dict | None = None          # 0.6.0: {"kind", "version", "backup"} while open
@@ -725,6 +723,12 @@ class HomeAssistant:
         system = self._system
         if system is not None and system_call_ok(system["kind"], system["version"], method, path, body,
                                                  system["backup"]):
+            return
+        move = self._scout_move                   # 0.9.3: the store Scout's info and its two settings only
+        if move is not None and ((method == "GET" and path == f"/addons/{move}/info") or (
+                method == "POST" and path == f"/addons/{move}/options" and isinstance(body, dict)
+                and set(body) == {"options"} and isinstance(body["options"], dict)
+                and tuple(sorted(body["options"])) == SCOUT_OPTION_NAMES)):
             return
         mig = self._migrate
         if mig is not None and migrate_call_ok(mig["old"], mig["new"], mig["remove"], method, path, body):
@@ -1024,6 +1028,67 @@ class HomeAssistant:
             # Never echo the body: an info reply may carry other Apps' option values.
             raise HAError("SUPERVISOR_RESULT", path)
         return data.get("data") or {}
+
+    def _build_routes(self) -> None:
+        s, o = re.escape(self.scout), re.escape(self.observer)
+        routes = _STATIC_ALLOW + (
+            ("GET", rf"/addons/{s}/info"),
+            ("GET", rf"/addons/{o}/info"),
+            ("POST", rf"/addons/{s}/options"),
+            ("POST", rf"/addons/{s}/start"),
+            ("GET", rf"/addons/{s}/logs/latest"),
+        ) + ((("GET", r"/core/api/states/" + re.escape(self.power_cycle_entity)),) if self.power_cycle_entity
+             else ())
+        self._allow = tuple((m, re.compile(p)) for m, p in routes)
+
+    # -- 0.9.3 Inventory Scout from the store ------------------------------------------------
+    def store_scout_slug(self) -> str | None:
+        """This store's Scout (``<hash>_house_brain_maintenance_inventory_scout``), or None when this App is not a
+        store App itself."""
+        slug = f"{self.self_slug().split('_', 1)[0]}_house_brain_maintenance_inventory_scout"
+        return slug if RE_STORE_SCOUT.fullmatch(slug) else None
+
+    def _check_store_scout(self, new: str) -> None:
+        if not isinstance(new, str) or not RE_STORE_SCOUT.fullmatch(new) or new != self.store_scout_slug() \
+                or new == self.observer:
+            raise ForbiddenCall("scout target")
+
+    def copy_scout_to(self, new: str) -> tuple[str, str]:
+        """Copy the current Scout's two settings to this store's Scout. The key is registered as a secret at once,
+        held in memory only for the copy and never returned: (broker URL, key fingerprint)."""
+        self._check_store_scout(new)
+        if self.scout == new or self._busy() or self._scout_move is not None:
+            raise ForbiddenCall("scout copy")
+        data = self._supervisor("GET", f"/addons/{self.scout}/info")
+        raw = data.get("options") if isinstance(data, dict) else None
+        if not isinstance(raw, dict) or tuple(sorted(raw)) != SCOUT_OPTION_NAMES:
+            raise HAError("SCOUT_OPTIONS")
+        url, key = raw.get("broker_url"), raw.get("broker_inventory_write_key")
+        if not isinstance(url, str) or not isinstance(key, str) or not key or len(url) > 300:
+            raise HAError("SCOUT_OPTIONS")
+        net.register_secret(key)
+        self._scout_move = new
+        try:
+            self._supervisor("POST", f"/addons/{new}/options",
+                             body={"options": {"broker_url": url, "broker_inventory_write_key": key}})
+        finally:
+            self._scout_move = None
+        return url, fingerprint(key)
+
+    def store_scout_view(self, new: str) -> AppView:
+        """The store Scout's state, version, option names, broker URL and key fingerprint (the key is dropped)."""
+        self._check_store_scout(new)
+        self._scout_move = new
+        try:
+            return _project(new, self._supervisor("GET", f"/addons/{new}/info"), "broker_inventory_write_key")
+        finally:
+            self._scout_move = None
+
+    def retarget_scout(self, new: str) -> None:
+        """Make this store's Scout the one Scout target (owner-approved switch, or its record after a restart)."""
+        self._check_store_scout(new)
+        self.scout = new
+        self._build_routes()
 
     def self_slug(self) -> str:
         if self._self_slug:

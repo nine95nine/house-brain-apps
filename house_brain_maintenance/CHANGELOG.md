@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.3
+
+Inventory Scout from the store, the pilot of moving the local House Brain Apps into the store (owner pop-up
+2026-10-12: "Scout first, then others"). Contains 0.9.2 unchanged otherwise.
+
+- **Store.** The Inventory Scout is published in the House Brain store (unchanged source, Scout 0.1.2).
+- **Switch.** When the store Scout is installed, your phone asks once: "Use the store Inventory Scout?". On
+  Approve, the old Scout's two settings are copied in memory and read back by fingerprint, and the store Scout
+  becomes the Scout this App runs. The switch is recorded, so it survives a restart. The old local Scout is kept,
+  stopped, and never uninstalled. A failed copy changes nothing. Reject is final. A missed ask can be decided on the
+  Maintenance page.
+- **Narrow.** Only this store's Scout can become the target. Its settings can be written only during the copy, and
+  only the two known settings. Observer and Inspector are unchanged.
+
 ## 0.9.2
 
 Who fills the history database (owner pop-up 2026-10-12: "Measure first"). Contains 0.9.1 unchanged otherwise.
