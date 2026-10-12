@@ -170,7 +170,8 @@ class AfterUpdate:
             self._clear()
             return Outcome(rid, FAILED, [f"after {self._what(doc)}: {self._names(broken)} still not running; "
                                          "the Undo offer has closed. The problem watch keeps offering its fixes"], facts)
-        if doc.get("asked_at") and now - float(doc["asked_at"]) < self.p.reask_hours * 3600:
+        if doc.get("asked_at") and now - float(doc["asked_at"]) < self.p.reask_hours * 3600 \
+                and not approval.decided("AFTER", doc["request_id"]):
             self._save(doc)
             return None
         doc["asked_at"] = now

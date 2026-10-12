@@ -573,6 +573,8 @@ class Watcher:
             (not cycles or now - max(cycles) >= self.p.power_cycle_gap_seconds)
 
         def due(f: I.Finding) -> bool:
+            if approval.decided("FIX", f"fix-{f.key}"[:80]):    # 0.9.0: decided on the Maintenance page
+                return True
             if f.action.kind == "power_cycle":
                 return power_ok and now - st["asked"].get(f.key, 0) >= self.p.power_cycle_gap_seconds
             return now - st["asked"].get(f.key, 0) >= self.p.reask_hours * 3600
@@ -583,7 +585,7 @@ class Watcher:
             return None
         candidates.sort(key=lambda f: (f.severity != I.CRITICAL, f.key))
         f = candidates[0]
-        if len(st["asks"]) >= self.p.max_fix_asks_per_day:
+        if len(st["asks"]) >= self.p.max_fix_asks_per_day and not approval.decided("FIX", f"fix-{f.key}"[:80]):
             # Daily limit reached: tell (once) instead of asking.
             if not st["asked"].get(f.key):
                 st["asked"][f.key] = now
@@ -596,7 +598,8 @@ class Watcher:
         rid = f"fix-{f.key}"[:80]
         lines = [f"Problem: {f.title}", *[f"- {s}" for s in f.steps[:2]],
                  f"Fix: {f.action.label}. Nothing else is changed.",
-                 "Approve to run it now; Reject and I won't ask again while this problem stays."]
+                 "Approve to run it now; Reject and I won't ask again while this problem stays.",
+                 f"Request: {rid}"]
         self.j.audit(rid, "APPROVAL_REQUESTED", job="FIX", fix=f.action.kind)
         decision = approval.ask(self.ha, self.s.notify_service, self.s.owner_user_id, stage="FIX",
                                 title=f"Maintenance: fix {f.title[:60]}?", message="\n".join(lines),

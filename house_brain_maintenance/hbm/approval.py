@@ -21,6 +21,22 @@ APPROVE = "APPROVE"
 REJECT = "REJECT"
 TIMEOUT = "TIMEOUT"
 UNAVAILABLE = "UNAVAILABLE"
+INBOX_CHANNEL = "inbox"   # 0.9.0: answered by the owner's decision on the Maintenance page (no push was sent)
+
+# 0.9.0 Approve from the page: the App's one decision inbox (inbox.Inbox), set by main.py; None = no inbox.
+INBOX = None
+
+
+def decided(stage: str, rid: str) -> bool:
+    """0.9.0: the owner decided this exact item on the page; its job should ask (and so get the answer) now."""
+    return INBOX is not None and bool(rid) and INBOX.decided(f"{stage}:{rid}|")
+
+
+def _from_inbox(key: str) -> str | None:
+    if INBOX is None:
+        return None
+    choice = INBOX.take(key)
+    return {"approve": APPROVE, "reject": REJECT}.get(choice) if choice else None
 
 
 @dataclass
@@ -54,6 +70,30 @@ def ask(ha: HomeAssistant, notify_service: str, owner_user_id: str, *, stage: st
         title: str, message: str, timeout: float, require_auth: bool = True,
         board: ApprovalBoard | None = None, open_url: str | None = None,
         should_stop=None) -> Decision:
+    from .inbox import key_of
+    key = key_of(stage, message, title)
+    early = _from_inbox(key)
+    if early is not None:                       # 0.9.0: decided on the page already: no push
+        return Decision(early, channel=INBOX_CHANNEL)
+    decision = _ask(ha, notify_service, owner_user_id, stage=stage, title=title, message=message, timeout=timeout,
+                    require_auth=require_auth, board=board, open_url=open_url, should_stop=should_stop, key=key)
+    if INBOX is not None:
+        if decision.outcome in (APPROVE, REJECT):
+            INBOX.answered(key)
+        elif decision.detail != "shutting down":
+            INBOX.missed(key, stage, title, message)   # listed on the page with Approve / Decline
+            if decision.outcome == TIMEOUT and stage not in ("UPDATE", "SYSTEM", "PIFW", "JOB", "STAGE"):
+                # (updates send their own missed note; one-shot chat requests are re-filed by the chat)
+                inform(ha, notify_service, "Maintenance: missed ask",
+                       f"Missed: {title[:90]}. Open the Maintenance page to approve or decline it.",
+                       tag="hbm-missed", url=open_url)
+    return decision
+
+
+def _ask(ha: HomeAssistant, notify_service: str, owner_user_id: str, *, stage: str,
+         title: str, message: str, timeout: float, require_auth: bool = True,
+         board: ApprovalBoard | None = None, open_url: str | None = None,
+         should_stop=None, key: str = "") -> Decision:
     nonce = secrets.token_hex(12)
     approve_id = f"HBM_{stage}_APPROVE_{nonce}"
     reject_id = f"HBM_{stage}_REJECT_{nonce}"
@@ -90,6 +130,9 @@ def ask(ha: HomeAssistant, notify_service: str, owner_user_id: str, *, stage: st
                 choice = board.decision(nonce)
                 if choice is not None:
                     return Decision(APPROVE if choice == "approve" else REJECT, ignored, channel="page")
+            early = _from_inbox(key)            # 0.9.0: decided in the page's list while this ask is open
+            if early is not None:
+                return Decision(early, ignored, channel=INBOX_CHANNEL)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return Decision(TIMEOUT, ignored)
@@ -116,9 +159,12 @@ def ask(ha: HomeAssistant, notify_service: str, owner_user_id: str, *, stage: st
         sock.close()
 
 
-def inform(ha: HomeAssistant, notify_service: str, title: str, message: str, tag: str = "hbm-result") -> None:
+def inform(ha: HomeAssistant, notify_service: str, title: str, message: str, tag: str = "hbm-result",
+           url: str | None = None) -> None:
+    data: dict = {"tag": tag}
+    if url:                                      # 0.9.0: tap opens the Maintenance page (it decides nothing itself)
+        data.update(url=url, clickAction=url)
     try:
-        ha.notify(notify_service, {"title": title[:120], "message": message[:900],
-                                   "data": {"tag": tag}})
+        ha.notify(notify_service, {"title": title[:120], "message": message[:900], "data": data})
     except Exception:  # noqa: BLE001, S110 - information only
         pass

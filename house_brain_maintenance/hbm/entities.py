@@ -181,15 +181,21 @@ class EntityUpdater:
         def note(key: str, state: str) -> None:
             if key in self.queue:
                 self.queue[key]["state"] = state
+        def decided_of(ent, kind) -> bool:              # 0.9.0: the owner decided it on the Maintenance page
+            return approval.decided("UPDATE", request_id_for(kind, ent.entity_id, str(ent.latest)))
+        found = sorted(found, key=lambda t: not decided_of(t[0], t[1]))
         for ent, kind, repo in found:
             key = self._key(ent)
-            if not self._due(key, mem):
+            decided = decided_of(ent, kind)
+            if not decided and not self._due(key, mem):
                 asked = mem["asked"].get(key)
                 note(key, "you rejected this version (final)" if mem["declined"].get(key) else
                      "asked on your phone; asks again at " + time.strftime(
                          "%Y-%m-%d %H:%M UTC", time.gmtime(float(asked or 0) + self.p.reask_hours * 3600)))
                 continue
-            if kind == "firmware" and self._waited(key, mem) < self.p.firmware_wait_days:
+            if mem["declined"].get(key):
+                continue
+            if kind == "firmware" and not decided and self._waited(key, mem) < self.p.firmware_wait_days:
                 first = float(mem["first_seen"].get(key) or time.time())
                 note(key, "firmware: asked from " + time.strftime(
                     "%Y-%m-%d", time.gmtime(first + self.p.firmware_wait_days * 86400))
@@ -208,7 +214,7 @@ class EntityUpdater:
                 self._save(mem)
                 return Outcome(rid, REFUSED, [f"update held: {r}" for r in rev.reasons], facts)
             gate = self.ai.gate(f"entity:{key}", mem["first_seen"].get(key)) if self.ai is not None else None
-            if gate is not None and not gate.proceed:
+            if gate is not None and not gate.proceed and not decided:
                 note(key, "waiting for the AI review (then asked, or installed at night if low risk; asked anyway "
                      f"from {self.ai.ask_anyway_at(mem['first_seen'].get(key))})")
                 continue
@@ -223,7 +229,10 @@ class EntityUpdater:
                 mem["practiced"][key] = time.time()
                 self._save(mem)
                 return Outcome(rid, DRY_RUN_OK, ["dry run: reviewed, nothing asked or changed"], facts)
-            if not auto and (gate is None or gate.auto_ok) and self.waits_for_auto(rev, mem):
+            if decided:
+                auto, why = False, "decided by you on the Maintenance page"
+                facts["automatic"], facts["automatic_reason"] = auto, why
+            if not auto and not decided and (gate is None or gate.auto_ok) and self.waits_for_auto(rev, mem):
                 note(key, "low risk: installs by itself in the night window, with a configuration backup first")
                 continue
             note(key, "installing by itself now" if auto else "asking on your phone now")

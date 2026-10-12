@@ -124,6 +124,15 @@ class Journal:
         cutoff = time.time() - seconds
         count = 0
         for rec in self.audit_events():
+            # 0.9.0: an ask answered from the owner's page decision sent no push; it does not count.
+            if str(rec.get("event", "")).startswith("APPROVAL_") and rec.get("channel") == "inbox":
+                try:
+                    ts = calendar.timegm(time.strptime(rec["ts"], "%Y-%m-%dT%H:%M:%SZ"))
+                except (KeyError, ValueError):
+                    continue
+                if ts >= cutoff:
+                    count -= 1
+                continue
             if rec.get("event") == "APPROVAL_REQUESTED":
                 try:
                     ts = calendar.timegm(time.strptime(rec["ts"], "%Y-%m-%dT%H:%M:%SZ"))
@@ -131,4 +140,4 @@ class Journal:
                     continue
                 if ts >= cutoff:
                     count += 1
-        return count
+        return max(0, count)

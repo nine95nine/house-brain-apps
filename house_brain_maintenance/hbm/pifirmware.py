@@ -70,6 +70,7 @@ class PiFirmware:
         if self.s.dry_run:
             return None
         now = time.time()
+        decided = approval.decided("PIFW", rid)            # 0.9.0: decided on the Maintenance page: ask now
         if not mem["reviewed"].get(key):
             try:
                 self.report(self._review(rid, cur, new))
@@ -77,17 +78,18 @@ class PiFirmware:
                 return None
             mem["reviewed"][key] = now
             self._save(mem)
-            return None
-        if now - float(mem["reviewed"][key]) < self.p.lead_seconds:
+            if not decided:
+                return None
+        if now - float(mem["reviewed"][key]) < self.p.lead_seconds and not decided:
             return None
         asked = mem["asked"].get(key)
-        if asked and now - float(asked) < self.p.reask_hours * 3600:
+        if asked and now - float(asked) < self.p.reask_hours * 3600 and not decided:
             return None
         mem["asked"][key] = now
         self._save(mem)
         decision = self._ask(rid, cur, new)
         if decision == approval.TIMEOUT:
-            missed_note(self.ha, self.s.notify_service, f"Pi firmware {new}", now + self.p.reask_hours * 3600)
+            missed_note(self.ha, self.s.notify_service, f"Pi firmware {new}", now + self.p.reask_hours * 3600, url=getattr(self.s, "open_url", None))
             return None
         if decision != approval.APPROVE:
             if decision == approval.REJECT:

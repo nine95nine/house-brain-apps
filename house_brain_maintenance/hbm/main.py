@@ -32,6 +32,8 @@ from .keys import FAILED_MANUAL as KEY_STUCK, JOB as KEY_JOB, SETUP_JOB as KEY_S
 from .stage import PENDING_DOC as STAGE_PENDING_DOC, StagePolicy, Stager
 from .holds import Holds
 from .aireview import AiReviews
+from .inbox import Inbox
+from . import system as system_mod, entities as entities_mod, updates as updates_mod
 from .updatequeue import UpdateQueue
 from .afterupdate import JOB as AFTER_JOB, AfterPolicy, AfterUpdate, loaded_snapshot
 from .web import INGRESS_PEER, MAX_WAITING, ApprovalBoard, IngressServer, ReaskQueue
@@ -354,6 +356,10 @@ class Service:
         self.recovery: Recovery | None = None
         self._owner_cache: str | None = None
         self.reask = ReaskQueue(self._owner_id)          # 0.7.2: the page's "Ask me again" (owner only)
+        # 0.9.0 Approve from the page: one inbox for every ask; a page decision wakes the poll loop at once.
+        self.wake = threading.Event()
+        self.inbox = Inbox(self.j.dir, self._owner_id, wake=self.wake.set)
+        approval.INBOX = self.inbox
 
     def _owner_id(self) -> str | None:
         """The owner's Home Assistant user id (for the page's "Got it"); resolved once, None on failure."""
@@ -638,6 +644,8 @@ class Service:
         if not self.poll_after_update():                # an after-update check is open: no new update starts,
             self.poll_updates()                         # but the problem watch keeps running (it skips the
         self.poll_update_queue()                        # 0.8.9: the "updates waiting" list (only when it changed)
+        if self.engine is not None:                     # 0.9.0: the page's "Needs your decision" list
+            self.inbox.set_offered(self.offered_rows())
         self.poll_issues()                              # integrations the check is handling)
 
     def poll_after_update(self) -> bool:
@@ -673,6 +681,37 @@ class Service:
         except net.NetError as err:
             LOG.warning("updates-waiting list waits: %s", net.redact(str(err))[:200])
 
+    def offered_rows(self) -> list[dict]:
+        """0.9.0: the waiting updates the page can decide (not held, rejected or quarantined), with the AI review."""
+        rows = []
+        ledger = self.j.ledger()
+        engines = (("SYSTEM", self.system), ("UPDATE", self.updater), ("UPDATE", self.entities))
+        for stage, engine in engines:
+            for row in (getattr(engine, "queue", None) or {}).values():
+                state = str(row.get("state") or "")
+                if state.startswith(("held", "you rejected", "failed here")):
+                    continue
+                kind, to = row.get("kind"), str(row.get("to"))
+                item = str(row.get("item") or "")
+                if kind in ("core", "os"):
+                    rid = system_mod.request_id_for(kind, to)
+                elif kind == "app":
+                    rid = updates_mod.request_id_for(item[4:].rsplit("@", 1)[0], to)
+                else:
+                    rid = entities_mod.request_id_for(kind, item[7:].rsplit("@", 1)[0], to)
+                if (ledger.get(self.key(rid)) or {}).get("outcome") == "DONE":
+                    continue                            # installed since the last update check
+                review = self.ai.get(item) if self.ai is not None else None
+                ai = (f"AI review: {review['verdict']}" + (f": {review['summary']}" if review.get("summary") else "")
+                      if review else ("AI review: not posted yet" if self.ai is not None else ""))
+                rows.append({"key": f"{stage}:{rid}|*", "stage": stage,
+                             "title": f"{row.get('name')} {row.get('from')} → {to}",
+                             "detail": "Status: " + (state or "checked at the next update check")
+                             + (f"\nThis App's review: {row.get('verdict')}" if row.get("verdict") else ""),
+                             "ai": ai, "ai_url": (review or {}).get("url", ""),
+                             "ai_verdict": (review or {}).get("verdict", "")})
+        return rows
+
     def report_text(self, text: str) -> None:
         if self.o.report_issue:
             self.gh.comment(self.o.report_issue, text)
@@ -706,7 +745,8 @@ class Service:
             return {}
 
     def poll_updates(self) -> None:
-        if time.monotonic() - self.last_update_check < self.o.update_check_minutes * 60 and self.last_update_check:
+        if time.monotonic() - self.last_update_check < self.o.update_check_minutes * 60 and self.last_update_check \
+                and not self.inbox.has_decisions():     # 0.9.0: a page decision runs on this poll
             return
         self.last_update_check = time.monotonic()
         self.ensure_engine()
@@ -1010,7 +1050,8 @@ def start_ingress(service: Service) -> IngressServer | None:
         port = int(os.environ.get("HBM_INGRESS_PORT", "8099"))
         peer = os.environ.get("HBM_INGRESS_PEER", INGRESS_PEER)
     server = IngressServer(service.board, port=port, allowed_peer=peer, recovery=service.recovery,
-                           connector=getattr(service, "connector", None), reask=getattr(service, "reask", None))
+                           connector=getattr(service, "connector", None), reask=getattr(service, "reask", None),
+                           inbox=getattr(service, "inbox", None))
     server.start()
     return server
 
@@ -1061,8 +1102,9 @@ def main() -> int:
         if once:
             break
         deadline = time.monotonic() + service.o.poll_seconds
-        while not service.stop and time.monotonic() < deadline:
-            time.sleep(1)
+        while not service.stop and time.monotonic() < deadline and not service.wake.is_set():
+            time.sleep(1)                       # 0.9.0: a decision on the page wakes the loop at once
+        service.wake.clear()
     service.stop = True
     if rec_thread is not None:
         rec_thread.join(timeout=10)   # writes the clean-stop heartbeat

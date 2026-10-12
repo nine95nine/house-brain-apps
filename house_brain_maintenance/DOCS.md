@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.8.9)
+## What it does (0.9.0)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -411,7 +411,35 @@ the timeout counts as No.
 
 From 0.7.2, when an update ask (App, Core or OS) ends with no answer, one more push without buttons tells you:
 "Missed: update Home Assistant Core 2026.10.1. I'll ask again at 14:05 (local), or tap Ask me again on the
-Maintenance page." It is sent once per missed ask, never after Reject and never in dry run.
+Maintenance page." It is sent once per missed ask, never after Reject and never in dry run. From 0.9.0 it reads
+"Tap to approve or decline it on the Maintenance page, or I'll ask again at 14:05 (local)." (see below).
+
+## Needs your decision: approve or decline on the page — from 0.9.0
+
+You no longer wait for a missed ask to come back. Open the Maintenance page (tap the "Missed" push, or open the App
+in Home Assistant): **Needs your decision** lists everything this App would ask you and that you have not answered:
+
+- every ask that ended without your answer (marked *missed*): App, Core, OS, firmware and HACS updates, the OS
+  reboot and roll-back, suggested fixes, the after-update reload or undo, the store move and the Broker key steps;
+- every waiting update this App offers but has not asked yet (marked *waiting*), also before its AI review is posted
+  or while a low-risk one waits for its night install. Held, rejected and failed versions are not listed.
+
+Each row shows the AI review when there is one. Tap **Approve…** or **Decline…**, then confirm on the next screen
+(it shows the AI's recommendation again, in red when it says hold or decline). Then:
+
+- **Approve**: the App wakes at once and runs the item through exactly the same path as a phone Approve: every rule
+  still applies (Core before the OS, a healthy Home Assistant, versions that failed before, never this App itself),
+  with the usual backup, health watch and automatic restore. No new push is sent, and it does not count against
+  `max_approval_requests_per_day`. A page Approve never installs a different version than the one listed.
+- **Decline**: the same as Reject on the phone; that version is not offered again.
+
+An open phone ask for the same item is answered by the page too. A decision that is not used within 24 hours (for
+example the update disappeared) lapses. Missed asks stay listed for 7 days. One-off requests filed by a chat are
+listed without buttons (they cannot be resumed; file them again). The audit records `channel: "inbox"`.
+
+Who can decide: only your Home Assistant user, only through Home Assistant (ingress), POST only, with single-use
+buttons and a single-use confirm step (10 minutes). The **Ask me again** button below is replaced by this list; its
+route stays for old pages.
 
 ## Update review queue — from 0.8.9
 
@@ -430,6 +458,8 @@ Maintenance page." It is sent once per missed ask, never after Reject and never 
   - `HOLD` or `DECLINE`: nothing installs by itself. Your phone asks, showing the AI's recommendation.
   - No review after 48 hours: your phone asks anyway ("AI review: none"), and nothing installs by itself.
 - `ai_review: false` switches the list and the gate off, and every update behaves as in 0.8.8.
+- From 0.9.0 each read takes every page of the issue's comments (at most 1,000). In 0.8.9 the first read took only the
+  oldest 100, so a review could be found hours late.
 
 ## Updates waiting and "Ask me again" — from 0.7.2
 

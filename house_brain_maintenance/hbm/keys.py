@@ -337,9 +337,10 @@ class KeyRotator:
             return None
         hour = time.localtime(now).tm_hour
         lo, hi = self.p.ask_hours
-        if not doc["queue"] and not lo <= hour < hi:
+        decided = approval.decided("KEYS", "keys-first")      # 0.9.0: decided on the Maintenance page
+        if not doc["queue"] and not lo <= hour < hi and not decided:
             return None
-        if now - float(doc.get("first_asked_at") or 0) < self.p.reask_hours * 3600:
+        if now - float(doc.get("first_asked_at") or 0) < self.p.reask_hours * 3600 and not decided:
             return None
         doc["first_asked_at"] = now
         self._save(doc)
@@ -350,6 +351,8 @@ class KeyRotator:
             "It restarts only that one App right after its key changed. If anything fails, the old key keeps "
             "working and you get one message.",
             "You will not be asked again.",
+            "",
+            "Request: keys-first",
         ]
         self.j.audit("keys-first", "APPROVAL_REQUESTED", job=JOB)
         decision = approval.ask(self.ha, self.s.notify_service, self.s.owner_user_id, stage="KEYS",

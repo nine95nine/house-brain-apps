@@ -70,13 +70,13 @@ def utc_iso(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def missed_note(ha: HomeAssistant, notify_service: str, what: str, next_at: float) -> None:
+def missed_note(ha: HomeAssistant, notify_service: str, what: str, next_at: float, url: str | None = None) -> None:
     """0.7.2: one informational push after an update ask timed out (no actions; its own tag, so the result push
-    that follows does not replace it)."""
+    that follows does not replace it). 0.9.0: it points to Approve / Decline on the Maintenance page."""
     lt = time.localtime(next_at)
     approval.inform(ha, notify_service, "Maintenance: missed update ask",
-                    f"Missed: update {what}. I'll ask again at {lt.tm_hour:02d}:{lt.tm_min:02d} (local), or tap "
-                    "Ask me again on the Maintenance page.", tag="hbm-missed")
+                    f"Missed: update {what}. Tap to approve or decline it on the Maintenance page, or I'll ask again "
+                    f"at {lt.tm_hour:02d}:{lt.tm_min:02d} (local).", tag="hbm-missed", url=url)
 
 
 def request_id_for(slug: str, version: str) -> str:
@@ -155,11 +155,17 @@ class Updater:
         if key in self.queue:
             self.queue[key]["state"] = state
 
+    def page_decided(self, slug: str, version) -> bool:
+        """0.9.0: the owner decided this exact update on the Maintenance page: ask now (answered from the page)."""
+        return approval.decided("UPDATE", request_id_for(slug, str(version)))
+
     def _due(self, app: InstalledApp, mem: dict) -> bool:
         key = f"{app.slug}@{app.version_latest}"
         if mem["declined"].get(key):
             self._note(key, "you rejected this version (final)")
             return False
+        if self.page_decided(app.slug, app.version_latest):
+            return True                                   # 0.9.0: no re-ask wait after a page decision
         if self.s.dry_run:
             # Practice mode reports each version once per practice period (a day), not every hourly check.
             practiced = mem["practiced"].get(key)
@@ -239,6 +245,7 @@ class Updater:
         mem = self._mem()
         apps = self.candidates()
         self._note_first_seen(apps, mem)
+        apps.sort(key=lambda a: not self.page_decided(a.slug, a.version_latest))   # 0.9.0: page decisions first
         for app in apps:
             if not self._due(app, mem):
                 continue
@@ -255,8 +262,9 @@ class Updater:
                 mem["blocked_noted"][key] = "|".join(rev.reasons)
                 self._save(mem)
                 return Outcome(rid, REFUSED, [f"update held: {r}" for r in rev.reasons], facts)
+            decided = self.page_decided(app.slug, rev.to_version)
             gate = self.ai.gate(f"app:{key}", mem["first_seen"].get(key)) if self.ai is not None else None
-            if gate is not None and not gate.proceed:
+            if gate is not None and not gate.proceed and not decided:
                 self._note(key, "waiting for the AI review (then asked, or installed at night if low risk; asked "
                            f"anyway from {self.ai.ask_anyway_at(mem['first_seen'].get(key))})")
                 continue
@@ -271,7 +279,10 @@ class Updater:
                 mem["practiced"][f"{app.slug}@{rev.to_version}"] = time.time()
                 self._save(mem)
                 return Outcome(rid, DRY_RUN_OK, ["dry run: reviewed, nothing asked or changed"], facts)
-            if not auto and (gate is None or gate.auto_ok) and self.waits_for_auto(rev, mem):
+            if decided:
+                auto, why = False, "decided by you on the Maintenance page"
+                facts["automatic"], facts["automatic_reason"] = auto, why
+            if not auto and not decided and (gate is None or gate.auto_ok) and self.waits_for_auto(rev, mem):
                 self._note(key, f"low risk: installs by itself in the {self.p.window[0]:02d}-{self.p.window[1]:02d} h "
                            f"window once it is {self.p.wait_days:g} days old, with a backup, health watch and "
                            "automatic restore")
@@ -301,7 +312,7 @@ class Updater:
             if decision != approval.APPROVE:
                 if decision == approval.TIMEOUT:
                     missed_note(self.ha, self.s.notify_service, f"{rev.name} {rev.to_version}",
-                                asked + self.p.reask_hours * 3600)
+                                asked + self.p.reask_hours * 3600, url=getattr(self.s, "open_url", None))
                 if decision == approval.REJECT:
                     mem = self._mem()
                     mem["declined"][key] = True

@@ -184,6 +184,58 @@ def render_waiting(items: list[dict], queued: dict | None, nonce: str, action: s
     return "".join(out)
 
 
+STAGE_LABEL = {"UPDATE": "Update", "SYSTEM": "Home Assistant update", "OSBOOT": "OS restart", "OSBACK": "OS rollback",
+               "PIFW": "Pi firmware", "FIX": "Fix", "AFTER": "After an update", "MIGRATE": "Deployer",
+               "KEYS": "Broker keys", "JOB": "Request", "STAGE": "App install"}
+
+
+def render_inbox(items: list[dict], nonce: str, action: str) -> str:
+    """0.9.0 "Needs your decision": every missed ask and waiting update, with the AI recommendation and Approve /
+    Decline (each opens a confirm screen; nothing is decided by one tap)."""
+    if not items:
+        return ""
+    e = html.escape
+    out = ['<h2>Needs your decision</h2><p class="m">Approve or Decline here; you confirm on the next screen, then '
+           "it runs at once with its usual safety steps (backup, health watch, restore). Decline is final for that "
+           "version, like Reject.</p>"]
+    for i in items:
+        tag = "missed" if i.get("missed") else "waiting"
+        head = f"{STAGE_LABEL.get(i.get('stage'), i.get('stage'))} ({tag}): {i.get('title', '')}"
+        ai = ""
+        if i.get("ai"):
+            link = f' <a href="{e(i["ai_url"])}" target="_blank" rel="noopener">review</a>' if i.get("ai_url") else ""
+            warn = ' style="color:#ff8a80"' if i.get("ai_verdict") in ("HOLD", "DECLINE") else ""
+            ai = f'<p class="m"{warn}>{e(i["ai"])}{link}</p>'
+        out.append(f'<div class="card"><b>{e(head)}</b><pre>{e(i.get("detail", ""))}</pre>{ai}')
+        if i.get("decision"):
+            out.append(f'<p><b>Decided: {e(i["decision"])}</b> — it runs on the next check (seconds).</p></div>')
+            continue
+        if not i.get("resumable"):
+            out.append('<p class="m">This one-time request cannot be resumed here; ask the AI to file it again.</p>'
+                       "</div>")
+            continue
+        out.append(f'<form method="post" action="{e(action)}"><input type="hidden" name="nonce" value="{e(nonce)}">'
+                   f'<input type="hidden" name="key" value="{e(i["key"])}">'
+                   '<button class="a" name="choice" value="approve">Approve…</button>'
+                   '<button class="r" name="choice" value="reject">Decline…</button></form></div>')
+    return "".join(out)
+
+
+def render_confirm(item: dict, choice: str, code: str, action: str) -> str:
+    e = html.escape
+    verb = "Approve" if choice == "approve" else "Decline"
+    warn = ""
+    if choice == "approve" and item.get("ai_verdict") in ("HOLD", "DECLINE"):
+        warn = f'<p style="color:#ff8a80"><b>The AI recommends {e(item["ai_verdict"].lower())}:</b> {e(item.get("ai", ""))}</p>'
+    body = (f"<h1>{verb}?</h1><p><b>{e(item.get('title', ''))}</b></p><pre>{e(item.get('detail', ''))}</pre>{warn}"
+            + ('<p class="m">It starts within seconds with its usual safety steps.</p>' if choice == "approve" else
+               '<p class="m">This version is not offered again.</p>')
+            + f'<form method="post" action="{e(action)}"><input type="hidden" name="code" value="{e(code)}">'
+            + f'<button class="{"a" if choice == "approve" else "r"}" name="go" value="1">Yes, {verb.lower()}</button>'
+            + "</form><p class=\"m\">Changed your mind? Just go back; nothing happens.</p>")
+    return PAGE.format(body=body)
+
+
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>House Brain Maintenance</title><style>
@@ -191,6 +243,7 @@ body{{font-family:-apple-system,system-ui,sans-serif;margin:0;padding:16px;backg
 h1{{font-size:20px}} pre{{white-space:pre-wrap;background:#1d1d1d;padding:12px;border-radius:8px;font-size:14px}}
 button{{width:100%;padding:18px;margin:8px 0;font-size:20px;border:0;border-radius:12px}}
 .a{{background:#2e7d32;color:#fff}} .r{{background:#8e2424;color:#fff}} .m{{color:#aaa;font-size:14px}}
+.card{{background:#1a1a1a;border-radius:12px;padding:12px;margin:12px 0}} a{{color:#8ab4f8}}
 </style></head><body>{body}</body></html>"""
 
 
@@ -290,7 +343,7 @@ def render(pending: Pending | None, last: str, action: str, note: str = "", extr
     return PAGE.format(body=body + extra)
 
 
-def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connector=None, reask=None):
+def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connector=None, reask=None, inbox=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "hbm"
         sys_version = ""
@@ -322,6 +375,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
             return f"{self._base()}/decide"
 
         def _waiting(self) -> str:
+            if inbox is not None:                       # 0.9.0: decide here instead of "Ask me again"
+                return render_inbox(inbox.items(), inbox.nonce, f"{self._base()}/inbox/confirm")
             if reask is None:
                 return ""
             items, queued, nonce = reask.snapshot()
@@ -398,8 +453,9 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
             route = urllib.parse.urlsplit(self.path).path
             if self._github_post(route):
                 return None
-            if route not in ("/decide", "/recovery/ack", "/reask") or (route == "/recovery/ack" and recovery is None) \
-                    or (route == "/reask" and reask is None):
+            if route not in ("/decide", "/recovery/ack", "/reask", "/inbox/confirm", "/inbox/decide") \
+                    or (route == "/recovery/ack" and recovery is None) or (route == "/reask" and reask is None) \
+                    or (route.startswith("/inbox/") and inbox is None):
                 return self._send(404, "not found")
             try:
                 length = int(self.headers.get("Content-Length") or "0")
@@ -413,6 +469,22 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
             nonce = (form.get("nonce") or [""])[0]
             choice = (form.get("choice") or [""])[0]
             user = self.headers.get("X-Remote-User-Id", "")
+            inbox_notes = {403: "Only the owner account can decide.", 409: "This button has expired; reload the page.",
+                           404: "That item does not need a decision any more; reload the page.", 400: "Unknown choice."}
+            if route == "/inbox/confirm":
+                status, item, code = inbox.confirm(nonce, user, (form.get("key") or [""])[0], choice)
+                if status == 200:
+                    return self._send(200, render_confirm(item, choice, code, f"{self._base()}/inbox/decide"))
+                pending, last = board.snapshot()
+                return self._send(status, render(pending, last, self._action(), inbox_notes.get(status, ""),
+                                                 extra=self._extra()))
+            if route == "/inbox/decide":
+                status, _, chosen = inbox.decide((form.get("code") or [""])[0], user)
+                pending, last = board.snapshot()
+                note = ({"approve": "Approved: it starts within seconds.",
+                         "reject": "Declined: it is not offered again."}.get(chosen, "") if status == 200
+                        else inbox_notes.get(status, ""))
+                return self._send(status, render(pending, last, self._action(), note, extra=self._extra()))
             if route == "/reask":
                 status = (reask.request(nonce, user, (form.get("kind") or [""])[0], (form.get("slug") or [""])[0],
                                         (form.get("version") or [""])[0]) if choice == "reask" else 400)
@@ -450,8 +522,9 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
 
 class IngressServer:
     def __init__(self, board: ApprovalBoard, host: str = "0.0.0.0", port: int = 8099,  # noqa: S104 - ingress
-                 allowed_peer: str = INGRESS_PEER, recovery=None, connector=None, reask=None) -> None:
-        self.httpd = ThreadingHTTPServer((host, port), make_handler(board, allowed_peer, recovery, connector, reask))
+                 allowed_peer: str = INGRESS_PEER, recovery=None, connector=None, reask=None, inbox=None) -> None:
+        self.httpd = ThreadingHTTPServer((host, port), make_handler(board, allowed_peer, recovery, connector, reask,
+                                                                    inbox))
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)

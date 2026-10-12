@@ -40,6 +40,8 @@ READ_EVERY = 600.0
 LOOKBACK = 30 * 86400.0           # first read: reviews from the last 30 days
 KEEP = 60 * 86400.0
 MAX_LINES_PER_COMMENT = 20
+PAGE = 100                        # GitHub's page size for issue comments
+MAX_PAGES = 10                    # 0.9.0: one read takes every page (up to 1,000 comments), not only the oldest 100
 
 
 def item_app(slug: str, version: str) -> str:
@@ -131,7 +133,13 @@ class AiReviews:
         if not force and now - float(doc["read_at"] or 0) < READ_EVERY:
             return
         since = doc["since"] or _iso(now - LOOKBACK)
-        comments = self.gh.issue_comments(self.issue, since)
+        comments = []
+        for page in range(1, MAX_PAGES + 1):    # 0.9.0 fix: the first read saw only the oldest 100 of #454's comments
+            chunk = self.gh.issue_comments(self.issue, since, page)   # and found a review hours late (live 2026-10-12)
+            chunk = chunk if isinstance(chunk, list) else []
+            comments += chunk
+            if len(chunk) < PAGE:
+                break
         newest = _ts(since) or now - LOOKBACK
         reviews = doc["reviews"]
         for c in comments if isinstance(comments, list) else []:

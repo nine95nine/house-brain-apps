@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.0
+
+Approve from the page (owner pop-ups 2026-10-12: "Yes, build it", scope "All updates"; "It should let me update
+everything that goes through the maintenance app that's not approved automatically"). Contains 0.8.9 unchanged
+otherwise.
+
+- **Why.** "Ask me again" could take a long time: the App sleeps `poll_seconds` (5 min) between checks, waits behind
+  any other open ask (up to 15 min), backups and health watches, the ask counted against the daily limit, and you
+  needed to catch a second push.
+- **Needs your decision.** The Maintenance page lists every missed ask (updates, OS reboot and roll-back, fixes,
+  after-update reload or undo, store move, Broker key steps) and every waiting update not asked yet, with the AI
+  review. Approve or Decline there with one confirm step. The App wakes at once and runs it through the same path
+  as a phone Approve (backup, health watch, automatic restore), with no new push and without using the daily ask
+  limit. Decline equals Reject. An open phone ask for the same item is answered by the page too.
+- **Missed push.** "Missed: ..." pushes now open the page ("Tap to approve or decline it on the Maintenance page").
+  Missed fixes and other steps get one too.
+- **Fix asks** now carry a `Request:` line so a decision names the exact fix.
+- **Fix: AI reviews found hours late.** The first read of the tracking issue took only its oldest 100 comments
+  (#454 has hundreds), so the Z-Wave JS 1.9.1 review was found about two hours late (live 2026-10-12). By then the
+  phone had been asked with "AI review: none", and that ask used the day's limit. Each read now takes every page
+  (at most 10 pages, 1,000 comments).
+- Trust unchanged: owner user id from Home Assistant, ingress only, POST only, single-use codes,
+  `CONTROL_AUTHORITY=NONE`.
+
 ## 0.8.9
 
 Update review queue (owner pop-ups 2026-10-12: "Yes, build it", "Keep auto for low-risk"). Contains 0.8.8 unchanged

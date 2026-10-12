@@ -104,7 +104,8 @@ class Migrator:
             return self._remove_cycle(old, new, mem)
         rid = f"mig-deployer-{time.strftime('%Y%m%d')}"
         facts = {"old": old, "new": new}
-        if mem["declined"] or self._recent(mem["asked"], self.p.reask_hours):
+        if mem["declined"] or (self._recent(mem["asked"], self.p.reask_hours)
+                               and not approval.decided("MIGRATE", rid)):
             return None
         if self._deployer_busy():
             return None                              # asked again on a later check
@@ -240,9 +241,9 @@ class Migrator:
             return None
         if time.time() - float(mem["done_at"]) < self.p.remove_after_days * 86400:
             return None
-        if self._recent(mem["remove_asked"], self.p.reask_hours):
-            return None
         rid = f"mig-deployer-remove-{time.strftime('%Y%m%d')}"
+        if self._recent(mem["remove_asked"], self.p.reask_hours) and not approval.decided("MIGRATE", rid):
+            return None
         mem["remove_asked"] = time.time()
         self._save(mem)
         decision = self._ask(rid, (

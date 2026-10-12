@@ -94,9 +94,9 @@ class GitHub:
         status = (data or {}).get("status")
         return status in ("ahead", "identical")
 
-    def issue_comments(self, issue: int, since: str) -> list:
-        """0.8.2: comments on one issue updated at or after ``since`` (oldest first, at most 100 per poll)."""
-        data = self._get(f"issues/{int(issue)}/comments", since=since, per_page="100")
+    def issue_comments(self, issue: int, since: str, page: int = 1) -> list:
+        """0.8.2: comments on one issue updated at or after ``since`` (oldest first, 100 per page; 0.9.0: ``page``)."""
+        data = self._get(f"issues/{int(issue)}/comments", since=since, per_page="100", page=str(int(page)))
         return data if isinstance(data, list) else []
 
     def comment(self, issue: int, body: str) -> None:

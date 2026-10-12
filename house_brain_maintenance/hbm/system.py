@@ -228,8 +228,10 @@ class SystemUpdater:
         def note(key: str, state: str) -> None:
             if key in self.queue:
                 self.queue[key]["state"] = state
+        pending.sort(key=lambda i: not approval.decided("SYSTEM", request_id_for(i.kind, str(i.version_latest))))
         for info in pending:
             key = f"{info.kind}@{info.version_latest}"
+            decided = approval.decided("SYSTEM", request_id_for(info.kind, str(info.version_latest)))   # 0.9.0
             if mem["declined"].get(key) or mem["quarantine"].get(key):
                 note(key, "you rejected this version (final)" if mem["declined"].get(key)
                      else "failed here before; not offered again")
@@ -275,15 +277,17 @@ class SystemUpdater:
                 mem["reviewed"][key] = now
                 self._save(mem)
                 self.j.audit(rid, "SYSTEM_REVIEW_POSTED", kind=info.kind, to=info.version_latest)
-                return None
-            if now - float(reviewed) < self.p.lead_seconds:
+                if not decided:
+                    return None
+                reviewed = now
+            if now - float(reviewed) < self.p.lead_seconds and not decided:
                 note(key, "review posted; the phone asks after the lead time")
                 return None
-            if self.ai is not None and not self.ai.gate(key, float(reviewed)).proceed:
+            if self.ai is not None and not decided and not self.ai.gate(key, float(reviewed)).proceed:
                 note(key, f"waiting for the AI review (asked after it, or from {self.ai.ask_anyway_at(float(reviewed))})")
                 continue
             asked = mem["asked"].get(key)
-            if asked and now - float(asked) < self.p.reask_hours * 3600:
+            if asked and now - float(asked) < self.p.reask_hours * 3600 and not decided:
                 note(key, "asked on your phone; asks again at "
                      + time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(float(asked) + self.p.reask_hours * 3600)))
                 return None
@@ -318,7 +322,7 @@ class SystemUpdater:
         if decision != approval.APPROVE:
             if decision == approval.TIMEOUT:
                 missed_note(self.ha, self.s.notify_service, f"{LABEL[info.kind]} {info.version_latest}",
-                            asked + self.p.reask_hours * 3600)
+                            asked + self.p.reask_hours * 3600, url=getattr(self.s, "open_url", None))
             if decision == approval.REJECT:
                 mem = self._mem()
                 mem["declined"][key] = True
@@ -715,7 +719,8 @@ class SystemUpdater:
     def _os_activate_ask(self, doc: dict) -> Outcome | None:
         """The one question before this App restarts the Pi (owner pop-up 2026-10-11 "Ask me, then reboot")."""
         rid, to, frm = doc["request_id"], doc["to"], doc["from"]
-        if doc.get("activation_declined") or not self._due(doc, "activate_asked_at"):
+        if doc.get("activation_declined") or not (self._due(doc, "activate_asked_at")
+                                                  or approval.decided("OSBOOT", rid)):
             return None
         doc["activate_asked_at"] = time.time()
         self._os_save(doc)
@@ -733,7 +738,8 @@ class SystemUpdater:
         self.j.audit(rid, "APPROVAL_" + decision.outcome, channel=decision.channel, job="OS_ACTIVATE")
         if decision.outcome == approval.TIMEOUT:
             missed_note(self.ha, self.s.notify_service, f"OS {to} (the restart that finishes it)",
-                        float(doc["activate_asked_at"]) + self.p.reask_hours * 3600)
+                        float(doc["activate_asked_at"]) + self.p.reask_hours * 3600,
+                        url=getattr(self.s, "open_url", None))
             return None
         if decision.outcome != approval.APPROVE:
             self._os_save({**doc, "activation_declined": True})
@@ -770,7 +776,7 @@ class SystemUpdater:
             return Outcome(rid, FAILED_MANUAL, [f"Home Assistant is not healthy on OS {to} ({doc.get('failure')}) and "
                                                 f"OS {frm} is not in the other slot, so there is no rollback",
                                                 "automation is paused"], {"backup": doc.get("backup")})
-        if not self._due(doc, "rollback_asked_at"):
+        if not (self._due(doc, "rollback_asked_at") or approval.decided("OSBACK", doc.get("request_id", ""))):
             return None
         doc["rollback_asked_at"] = time.time()
         self._os_save(doc)
