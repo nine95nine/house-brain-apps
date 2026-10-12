@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.8.3)
+## What it does (0.8.4)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -61,6 +61,22 @@ reads whether Core or the OS has an update. It never installs one by itself, als
      restart the same way, and the morning summary warns while an installed OS waits (also one installed from
      Settings).
    - An older Supervisor that restarts during the install is handled as before.
+
+**Known issues and release notes before a Core update** (new in 0.8.4, owner pop-up 2026-10-11). The Core
+review on GitHub and the phone ask now also say:
+- **Known issues for your integrations in that version**, from Home Assistant's own alerts feed
+  (`alerts.home-assistant.io`, the feed behind Settings → Repairs alerts), checked against the *new* version and
+  only for integrations you run, with a link to each alert;
+- **Release notes for your integrations**: the changes in that version that touch an integration you run, with
+  the breaking ones listed first (from the version's GitHub release notes).
+
+This is information only: it never blocks or approves anything. If a feed cannot be read, the review says so.
+Switch it off with `upgrade_checks: false`.
+
+**Configuration check before a restart** (new in 0.8.4). After a HACS integration update, and before Home
+Assistant restarts, the App runs Home Assistant's configuration check. If the check passed before the install and
+fails after it, the old version is put back, Home Assistant is **not** restarted, and that version is not offered
+again. (0.8.3 already checks the configuration before the restart that finishes an OS update.)
 
 **HACS and device-firmware updates** (new in 0.7.0, owner decisions 2026-10-08: "have the maintenance app
 handle any and all applications"). On the same hourly check it reads every Home Assistant update item that the
@@ -368,6 +384,7 @@ Assistant notification:
 | `keep_old_deployer` | From 0.8.1: keep the stopped old local Deployer and never ask to remove it (default `true`; owner decision 2026-10-11). `false` = ask once, 7 days after the switch, as before. |
 | `cf_control_issue` | From 0.8.2: the GitHub issue where the Cloudflare control posts its requests (default `454`; `0` = no Cloudflare pushes). See **Cloudflare approvals on your phone**. |
 | `cf_control_url` | From 0.8.2: the Cloudflare control address the button opens. Leave empty: the App uses the control on the same Cloudflare account as the Broker the Scout reports to. |
+| `upgrade_checks` | From 0.8.4: known issues and release notes for your integrations in Core update reviews and asks (default `true`; `false` = no reads). |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
 | `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). From 0.7.2 the same wait applies to fix asks and the Deployer switch-over ask (were fixed at 24 hours). Reject is never asked again. |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |

@@ -500,6 +500,8 @@ def entity_call_ok(target: dict, method: str, path: str, body: Any) -> bool:
         return body is None
     if kind == "hacs_integration" and method == "POST" and path == "/core/restart":
         return body is None
+    if kind == "hacs_integration" and method == "POST" and path == "/core/check":   # 0.8.4: before the restart
+        return body is None
     return False
 
 
@@ -1065,7 +1067,8 @@ class HomeAssistant:
         return OsState(running=running, pending=ver(data.get("version_pending")), boot=boot, slots=slots)
 
     def core_config_check(self) -> tuple[bool, str]:
-        """0.8.3, only inside ``os_activation_target``: Supervisor ``/core/check`` (the current Core image)."""
+        """0.8.3/0.8.4: Supervisor ``/core/check`` (the current Core image). Only inside ``os_activation_target``
+        (before the OS restart) or a HACS-integration ``entity_target`` (before the Core restart)."""
         try:
             self._supervisor("POST", "/core/check", timeout=300)
         except HAError:
@@ -1092,6 +1095,24 @@ class HomeAssistant:
         state = data.get("state")
         return {"state": state if state in CORE_STATES else "UNKNOWN",
                 "safe_mode": data.get("safe_mode") is True, "recovery_mode": data.get("recovery_mode") is True}
+
+    def loaded_components(self) -> set[str]:
+        """0.8.4: the integrations Core has loaded (``/core/api/config`` ``components``), bounded domain names only
+        (``zha``, ``sensor.zha`` -> ``zha``). Empty when Core does not answer."""
+        try:
+            data = self._call("GET", "/core/api/config", timeout=15)
+        except (net.NetError, HAError):
+            return set()
+        raw = data.get("components") if isinstance(data, dict) else None
+        out: set[str] = set()
+        for c in raw if isinstance(raw, list) else []:
+            if isinstance(c, str):
+                domain = c.rsplit(".", 1)[-1]
+                if re.fullmatch(r"[a-z0-9_]{1,64}", domain):
+                    out.add(domain)
+            if len(out) >= 3000:
+                break
+        return out
 
     def core_alive(self) -> bool:
         try:

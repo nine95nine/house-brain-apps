@@ -34,7 +34,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from . import approval, issues as I, net
+from . import approval, issues as I, net, upgradeinfo
 from .ha import ForbiddenCall, HAError, HomeAssistant, OsState, SystemInfo
 from .journal import Journal
 from .manifest import RE_UPDATE_VERSION
@@ -99,6 +99,8 @@ class SystemUpdater:
         self.snapshot = None           # 0.7.3: () -> integrations running now (afterupdate.loaded_snapshot)
         self.offered: dict[str, str] = {}   # 0.7.2: kind -> offered version, as the last check read them
         self.asking = ""                    # 0.7.2: the update whose ask is on the phone right now
+        self.upgrade_info = None            # 0.8.4: upgradeinfo.UpgradeInfo (known issues, release notes); None = off
+        self._intel: dict[str, dict] = {}   # 0.8.4: target -> facts of the last read (review and ask share it)
 
     # -- memory ------------------------------------------------------------------------
     def _mem(self) -> dict:
@@ -152,9 +154,17 @@ class SystemUpdater:
     def _facts(self, info: SystemInfo) -> dict:
         backups = self.ha.backup_list()
         disk = self.ha.disk()
-        return {"kind": info.kind.upper(), "from": info.version, "to": info.version_latest, "automatic": False,
-                "latest_backup_age_days": latest_backup_age_days(backups, time.time()),
-                "free_gb": round(disk[1], 1) if disk else None, "needed_free_gb": required_free_gb(backups)}
+        facts = {"kind": info.kind.upper(), "from": info.version, "to": info.version_latest, "automatic": False,
+                 "latest_backup_age_days": latest_backup_age_days(backups, time.time()),
+                 "free_gb": round(disk[1], 1) if disk else None, "needed_free_gb": required_free_gb(backups)}
+        if info.kind == "core" and self.upgrade_info is not None and info.version_latest:
+            intel = self.upgrade_info.for_core(str(info.version_latest), self.ha.loaded_components())
+            self._intel[str(info.version_latest)] = intel
+            issues = intel.get("known_issues")
+            notes = intel.get("notes") or {}
+            facts.update(known_issues=None if issues is None else [i["integration"] for i in issues],
+                         breaking_changes=notes.get("breaking_total") if notes.get("read") else None)
+        return facts
 
     def _lines(self, rid: str, info: SystemInfo, facts: dict) -> list[str]:
         age = facts["latest_backup_age_days"]
@@ -165,11 +175,13 @@ class SystemUpdater:
                 "Plan: full backup -> install the new OS into the spare slot (the Pi keeps running) -> your phone "
                 "asks before the Pi restarts -> health check. If the new OS cannot boot, the Pi falls back by itself "
                 "(A/B); if Home Assistant is not healthy on it, your phone offers a one-tap rollback to this OS.")
+        intel = self._intel.get(str(info.version_latest)) if info.kind == "core" else None
         return [f"Update {LABEL[info.kind]} {info.version} -> {info.version_latest}?",
                 f"Kind: {facts['kind']}",
                 "Latest backup with Home Assistant: " + (f"{age:g} days old" if age is not None else "none found"),
                 "Free disk: " + (f"{free:g} GB" if free is not None else "unknown")
                 + f" (the backup needs {facts['needed_free_gb']:g} GB)",
+                *([upgradeinfo.phone_line(intel)] if intel else []),
                 RELEASE_NOTE_LINE,
                 plan,
                 "Never automatic. The Supervisor, Apps and this App are not updated."]
@@ -180,6 +192,9 @@ class SystemUpdater:
                  f"- **Request:** `{rid}`", f"- **Kind:** `{facts['kind']}`",
                  f"- **From → to:** `{info.version}` → `{info.version_latest}`"]
         lines += [f"- {line}" for line in self._lines(rid, info, facts)[2:]]
+        intel = self._intel.get(str(info.version_latest)) if info.kind == "core" else None
+        if intel:                                       # 0.8.4: details on GitHub, the phone gets one line
+            lines += [f"- {line}" if not line.startswith("  ") else line for line in upgradeinfo.review_lines(intel)]
         lines += [f"- The phone asks for Approve in about {max(1, int(self.p.lead_seconds // 60))} minutes; "
                   "no answer or Reject changes nothing.", f"- **App:** `{VERSION}`", "",
                   "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._"]

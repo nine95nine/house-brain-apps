@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.4
+
+Safer upgrades, the first of the four feature releases the owner approved on 2026-10-11 ("All of the above based on
+your priority"). Contains 0.8.3 unchanged otherwise.
+
+- **Known issues before a Core update.** The Core review and the phone ask list Home Assistant's official alerts
+  for the integrations you run that affect the new version, each with its link.
+- **Release notes for your integrations.** The changes in the new version that touch an integration you run, with
+  breaking changes first.
+- **Configuration check before a HACS integration's restart.** If the check passed before the install and fails
+  after it, the old version is put back without a restart, and the new one is not offered again.
+- **New option `upgrade_checks`** (default on).
+- Information only: nothing is blocked or approved by these checks, and a feed that cannot be read is named as such.
+- Pi firmware updates move to 0.8.6 (Pi health).
+
 ## 0.8.3
 
 OS updates finished the way Home Assistant does them now, and a cleaner morning summary (owner pop-ups

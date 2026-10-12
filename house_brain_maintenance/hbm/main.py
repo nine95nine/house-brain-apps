@@ -25,6 +25,7 @@ from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
 from .manifest import (ASK_UPDATE_NOW, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE, RE_REQUEST_ID,
                        ROTATE_KEYS_NOW, STAGE_LOCAL_APP_SOURCE, Manifest, ManifestError, parse)
+from .upgradeinfo import UpgradeInfo
 from .cfrelay import RE_CONTROL_URL, CfRelay, control_url_from_broker, safe_cycle as cf_safe_cycle
 from .keys import FAILED_MANUAL as KEY_STUCK, JOB as KEY_JOB, SETUP_JOB as KEY_SETUP_JOB, KeyPolicy, KeyRotator
 from .stage import PENDING_DOC as STAGE_PENDING_DOC, StagePolicy, Stager
@@ -107,6 +108,7 @@ class Options:
     key_rotation: bool = True         # 0.8.0: automatic Broker key changes (owner K1-K4 2026-10-11)
     key_rotate_days: int = 90         # 0.8.0: each Broker key is changed this often (one App per night)
     keep_old_deployer: bool = True    # 0.8.1: owner 2026-10-11 "Keep old Deployer for now" (no removal ask)
+    upgrade_checks: bool = True       # 0.8.4: known issues + release notes for your integrations before Core updates
     cf_control_issue: int = 454       # 0.8.2: Cloudflare control approvals to the phone (0 = off; owner 2026-10-11)
     cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
 
@@ -197,6 +199,8 @@ def load_options(path: str) -> Options:
         keep_old_deployer=raw.get("keep_old_deployer", True) if isinstance(raw.get("keep_old_deployer", True), bool)
         else _bad("keep_old_deployer"),
         cf_control_issue=i("cf_control_issue", 0, 10**7) if "cf_control_issue" in raw else 454,
+        upgrade_checks=raw.get("upgrade_checks", True) if isinstance(raw.get("upgrade_checks", True), bool)
+        else _bad("upgrade_checks"),
         cf_control_url=_cf_url(raw.get("cf_control_url")),
     )
 
@@ -380,6 +384,8 @@ class Service:
             self.system = SystemUpdater(self.ha, self.j, settings, SystemPolicy(
                 lead_seconds=3600.0 * scale, reask_hours=float(self.o.update_reask_hours), boot_seconds=900.0 * scale,
                 settle_seconds=60.0 * scale, reboot_seconds=3600.0 * scale, poll=self.poll), self.report_text)
+            if self.o.upgrade_checks:                   # 0.8.4: Safer upgrades (read-only, cached)
+                self.system.upgrade_info = UpgradeInfo(self.j)
             # 0.7.0 HACS and device firmware: cards/themes may install by themselves (update_mode), integrations
             # and firmware always ask; firmware only after firmware_wait_days. Times scale in test mode.
             self.entities = EntityUpdater(self.ha, self.j, settings, EntityPolicy(

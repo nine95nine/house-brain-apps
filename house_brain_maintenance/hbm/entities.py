@@ -261,6 +261,7 @@ class EntityUpdater:
             repo = self.ha.hacs_repos().get(ent.unique_id or "")
             domain = getattr(repo, "domain", None)
         base_unhealthy, _ = self.ha.health_flags()
+        config_failed = ""
         txn = {"kind": "entity", "entity_kind": kind, "request_id": rid, "entity_id": ent.entity_id,
                "platform": ent.platform, "device_id": ent.device_id, "unique_id": ent.unique_id, "domain": domain,
                "from": rev.from_version, "to": rev.to_version, "automatic": automatic, "backup": None,
@@ -283,6 +284,9 @@ class EntityUpdater:
                     self.j.clear_txn()
                     return Outcome(rid, REFUSED, ["the installed or offered version changed since the review; "
                                                   "nothing was updated"], {"backup": txn.get("backup")})
+                if kind == "hacs_integration":
+                    # 0.8.4: the configuration check before the install is the baseline for the one after it
+                    txn["config_ok_before"] = self.ha.core_config_check()[0]
                 txn.update(stage="INSTALLING", started_at=time.time())
                 self.j.save_txn(txn)
                 self.j.audit(rid, "ENTITY_INSTALLING", entity=ent.entity_id, to=rev.to_version)
@@ -294,13 +298,18 @@ class EntityUpdater:
                 if kind == "hacs_integration":
                     if not self._wait_installed(txn, rev.to_version, self.p.health_seconds):
                         return self._not_installed(txn)
-                    txn["stage"] = "RESTARTING"
-                    self.j.save_txn(txn)
-                    self.j.audit(rid, "ENTITY_RESTARTING", entity=ent.entity_id)
-                    try:
-                        self.ha.restart_core()
-                    except (HAError, net.NetError) as err:
-                        self.j.audit(rid, "RESTART_CALL_ERROR", error=net.redact(str(err))[:200])
+                    if txn.get("config_ok_before"):
+                        ok, why = self.ha.core_config_check()
+                        if not ok:              # 0.8.4: never restart Home Assistant into a failing configuration
+                            config_failed = f"{why} after installing {rev.to_version}; Home Assistant was not restarted"
+                    if not config_failed:
+                        txn["stage"] = "RESTARTING"
+                        self.j.save_txn(txn)
+                        self.j.audit(rid, "ENTITY_RESTARTING", entity=ent.entity_id)
+                        try:
+                            self.ha.restart_core()
+                        except (HAError, net.NetError) as err:
+                            self.j.audit(rid, "RESTART_CALL_ERROR", error=net.redact(str(err))[:200])
         except ForbiddenCall as err:
             self.j.clear_txn()
             return Outcome(rid, REFUSED, [f"not allowed: {err}"])
@@ -311,6 +320,12 @@ class EntityUpdater:
                                              "nothing was updated"])
             return Outcome(rid, FAILED_MANUAL, [f"interrupted ({net.redact(str(err))[:200]}); it is re-checked "
                                                 "on the next poll"])
+        if config_failed:
+            mem = self._mem()
+            mem["quarantine"][txn["entity_id"]] = txn["to"]
+            self._save(mem)
+            txn["no_restart"] = True                    # Core never loaded the new code: put the old files back only
+            return self._rollback(txn, config_failed)
         return self._verify(txn)
 
     def _read(self, txn: dict) -> UpdateEntity | None:
@@ -461,7 +476,8 @@ class EntityUpdater:
                 if txn["entity_kind"] == "hacs_integration":
                     self._wait_installed(txn, txn["from"], self.p.health_seconds)
                     try:
-                        self.ha.restart_core()
+                        if not txn.get("no_restart"):
+                            self.ha.restart_core()
                     except (HAError, net.NetError) as err:
                         self.j.audit(rid, "RESTART_CALL_ERROR", error=net.redact(str(err))[:200])
         except ForbiddenCall as err:
