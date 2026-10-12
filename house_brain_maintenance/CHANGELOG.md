@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.2
+
+Who fills the history database (owner pop-up 2026-10-12: "Measure first"). Contains 0.9.1 unchanged otherwise.
+
+- **Why.** The morning summary said the database is 7.5 GB and advised "keep fewer days (default 10)". This house
+  keeps 40 days on purpose: the pool-pump analysis needs 14, the learning sensors 7. Cutting days deletes history for
+  good. Nothing said which sensors fill the database.
+- **What.** While the database is 2 GB or more, once a day the App counts the history rows each sensor wrote in the
+  last hour. Home Assistant's `history/history_during_period` is read in chunks of 200 sensors, counts only; state
+  values are dropped unread. The large-database item then lists:
+  - the 15 busiest sensors;
+  - the busiest sensor families (for example `sensor.*_power`).
+
+  Both come with an estimate per day, so an exact exclude list can be prepared for your approval.
+- **Advice text.** "Exclude" comes first and deletes nothing. Fewer days is named as a separate decision that deletes
+  history, with no default value presented as yours.
+- Nothing is changed in Home Assistant.
+
 ## 0.9.1
 
 Shared writer lock, the Maintenance half of #985 enrollment plan R1 (step E2). Owner pop-up 2026-10-12: "All of the

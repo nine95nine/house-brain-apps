@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.1)
+## What it does (0.9.2)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -564,6 +564,11 @@ Read-only checks of Home Assistant's own setup, in the morning summary like ever
 - **Error floods:** one error repeating 1,000 times a day or more.
 - **Database size:** the history database is 2 GB or more, or grows 100 MB a day. The fix (keep fewer days,
   exclude chatty sensors) is a YAML change; the House Brain AI can prepare it for your approval.
+- **Who fills the database** (from 0.9.2): while it is 2 GB or more, once a day the App counts how many history
+  rows each sensor wrote in the last hour. The item then lists the 15 busiest sensors and the busiest sensor
+  families (sensors sharing their last name word, for example `sensor.*_power`), each with an estimate per day.
+  Only counts are kept; no sensor value is read into the report. An exclude list stops new rows and deletes nothing.
+  Keeping fewer days deletes older history for good, so it is a separate decision.
 - **Monthly housekeeping report** (`housekeeping`): automations and which fail, missing entities, automations
   turned on but not run in 90 days (seasonal ones are fine), the most repeated errors and the database size.
 

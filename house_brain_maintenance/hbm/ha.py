@@ -139,7 +139,14 @@ _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/li
                        "hacs/repositories/list", "update/release_notes",
                        # 0.8.7 Housekeeping (read-only): automation run traces, what an automation refers to, and the
                        # system-health subscription (only the recorder's database size is kept).
-                       "trace/list", "search/related", "system_health/info"})
+                       "trace/list", "search/related", "system_health/info",
+                       # 0.9.2 (owner pop-up 2026-10-12 "Measure first"): how many history rows each entity wrote in
+                       # one past hour. Counted at once; every state value is dropped unread.
+                       "history/history_during_period"})
+HISTORY_KEYS = frozenset({"type", "start_time", "end_time", "entity_ids", "minimal_response", "no_attributes",
+                          "significant_changes_only", "include_start_time_state"})
+HISTORY_CHUNK = 200
+RE_ISO_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$")
 RE_AUTOMATION_ENTITY = re.compile(r"^automation\.[a-z0-9_]{1,200}$")
 RE_ENTITY_ID = re.compile(r"^[a-z0-9_]{1,40}\.[a-z0-9_]{1,200}$")
 RE_DEVICE_ID = re.compile(r"^[A-Za-z0-9]{1,64}$")
@@ -987,6 +994,15 @@ class HomeAssistant:
             raise ForbiddenCall("ws search related")
         if kind == "system_health/info" and set(msg) != {"type"}:
             raise ForbiddenCall("ws system health")
+        if kind == "history/history_during_period":
+            ids = msg.get("entity_ids")
+            if (set(msg) != HISTORY_KEYS or msg["minimal_response"] is not True or msg["no_attributes"] is not True
+                    or msg["significant_changes_only"] is not False or msg["include_start_time_state"] is not False
+                    or not all(isinstance(msg[k], str) and RE_ISO_UTC.fullmatch(msg[k])
+                               for k in ("start_time", "end_time"))
+                    or not isinstance(ids, list) or not 0 < len(ids) <= HISTORY_CHUNK
+                    or not all(isinstance(e, str) and RE_ENTITY_ID.fullmatch(e) for e in ids)):
+                raise ForbiddenCall("ws history")
 
     # -- HTTP ---------------------------------------------------------------
     def _call(self, method: str, path: str, body: Any = None, timeout: float = 30.0,
@@ -1819,6 +1835,37 @@ class HomeAssistant:
         finally:
             sock.close()
         return out
+
+    def history_row_counts(self, hours: float = 1.0, now: float | None = None) -> dict[str, int]:
+        """0.9.2: how many history rows each entity wrote in the last ``hours`` (every state change, attributes
+        excluded, no start-of-window row). Only the counts leave this function; state values are never kept."""
+        end = time.time() if now is None else now
+        fmt = "%Y-%m-%dT%H:%M:%S+00:00"
+        window = (time.strftime(fmt, time.gmtime(end - hours * 3600)), time.strftime(fmt, time.gmtime(end)))
+        lease = self.shared_ws()
+        try:
+            states = lease.command({"type": "get_states"}, timeout=60)
+        finally:
+            lease.close()
+        ids = sorted({row["entity_id"] for row in (states if isinstance(states, list) else [])[:20000]
+                      if isinstance(row, dict) and isinstance(row.get("entity_id"), str)
+                      and RE_ENTITY_ID.fullmatch(row["entity_id"])})
+        counts: dict[str, int] = {}
+        sock = self.ws(max_size=32 * 1024 * 1024)
+        try:
+            for i in range(0, len(ids), HISTORY_CHUNK):
+                part = sock.command({"type": "history/history_during_period", "start_time": window[0],
+                                     "end_time": window[1], "entity_ids": ids[i:i + HISTORY_CHUNK],
+                                     "minimal_response": True, "no_attributes": True,
+                                     "significant_changes_only": False, "include_start_time_state": False},
+                                    timeout=120)
+                for eid, rows in (part.items() if isinstance(part, dict) else ()):
+                    if isinstance(eid, str) and RE_ENTITY_ID.fullmatch(eid) and isinstance(rows, list) and rows:
+                        counts[eid] = len(rows)
+                del part
+        finally:
+            sock.close()
+        return counts
 
     def db_size_mib(self, timeout: float = 20.0) -> float | None:
         """The recorder's ``estimated_db_size`` from the system-health subscription; everything else dropped."""

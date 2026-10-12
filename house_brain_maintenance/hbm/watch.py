@@ -466,6 +466,14 @@ class Watcher:
                 K.db_sample(doc, self.ha.db_size_mib(), now)
             except Exception:  # noqa: BLE001 - size not readable this time: the report says so
                 pass
+        if K.db_top_due(doc, now):                  # 0.9.2: who fills it, once a day while it is large
+            doc["db_top_at"] = now
+            try:
+                counts = self.ha.history_row_counts(K.TOP_HOURS, now)
+                doc["db_top"], doc["db_families"] = K.top_writers(counts), K.top_families(counts)
+                del counts
+            except Exception:  # noqa: BLE001 - not readable this time: the last list stands, retried tomorrow
+                pass
         out = [I.Finding(r["key"], "housekeeping", I.WARNING, r["title"], detail=tuple(r["detail"]),
                          steps=("Open the automation, then Traces, to see the step that failed.",
                                 "A renamed or removed device or entity is the usual cause."),

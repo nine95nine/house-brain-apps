@@ -17,6 +17,10 @@ Read-only checks of Home Assistant's own configuration health, each from a docum
 * **Database size.** ``system_health/info`` (recorder ``estimated_db_size``), sampled every 6 hours: a database of
   ``DB_LARGE_MIB`` or more, or growing ``DB_GROWTH_MIB_DAY`` a day, gets advice (keep fewer days, exclude chatty
   sensors).
+* **0.9.2 Who fills the database** (owner pop-up 2026-10-12, "Measure first"). While the database is large, once a
+  day ``history/history_during_period`` counts the history rows each entity wrote in the last hour (counts only; state
+  values are dropped unread). The 15 busiest are listed with an estimate per day, so an exclude list can be proposed
+  for the owner's approval. Fewer days of history is a separate, destructive decision and is never advised blindly.
 * **Monthly housekeeping report** on GitHub plus one phone line (option ``housekeeping``).
 
 Nothing is changed: no automation is turned off, edited or run, and no history is purged.
@@ -39,6 +43,9 @@ READ_EVERY = 3600                 # automations and traces
 RELATED_EVERY = 86400             # dead references
 DB_EVERY = 6 * 3600
 DB_SAMPLES = 60
+TOP_EVERY = 86400                 # 0.9.2: who fills the database, once a day while it is large
+TOP_HOURS = 1.0
+TOP_N = 15
 RE_SIZE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(B|KiB|MiB|GiB|TiB)\s*$")
 UNITS = {"B": 1 / 1024 ** 2, "KiB": 1 / 1024, "MiB": 1.0, "GiB": 1024.0, "TiB": 1024.0 ** 2}
 AUTOMATIONS_LINK = "https://my.home-assistant.io/redirect/automations/"
@@ -173,19 +180,71 @@ def db_growth_mib_day(doc: dict) -> float | None:
     return round((last[1] - first[1]) / ((last[0] - first[0]) / 86400), 1)
 
 
+def top_writers(counts: dict, hours: float = TOP_HOURS, n: int = TOP_N) -> list[list]:
+    """0.9.2: the ``n`` entities that wrote the most history rows, as [entity id, estimated rows a day]."""
+    rows = [(e, int(c)) for e, c in (counts or {}).items() if isinstance(c, int) and c > 0]
+    rows.sort(key=lambda kv: (-kv[1], kv[0]))
+    return [[e, round(c * 24 / hours)] for e, c in rows[:n]]
+
+
+def family_of(entity_id: str) -> str:
+    """``sensor.ac_3_power`` and ``sensor.apple_tv_power_2`` -> ``sensor.*_power``: sensors that share their last name
+    word (a trailing number is dropped). Shown as a hint for a recorder ``entity_globs`` exclude, which the AI then
+    writes exactly for the owner's approval."""
+    domain, _, name = entity_id.partition(".")
+    words = [w for w in name.split("_") if w]
+    while words and words[-1].isdigit():
+        words.pop()
+    if len(words) < 2:
+        return entity_id
+    return f"{domain}.*_{words[-1]}"
+
+
+def top_families(counts: dict, hours: float = TOP_HOURS, n: int = 10) -> list[list]:
+    """0.9.2: name families (2 or more entities) by rows: [glob, entities, estimated rows a day]."""
+    fam: dict[str, list[int]] = {}
+    for e, c in (counts or {}).items():
+        if isinstance(c, int) and c > 0:
+            f = family_of(e)
+            if f != e:
+                fam.setdefault(f, []).append(c)
+    rows = [(f, len(v), sum(v)) for f, v in fam.items() if len(v) >= 2]
+    rows.sort(key=lambda r: (-r[2], r[0]))
+    return [[f, k, round(c * 24 / hours)] for f, k, c in rows[:n]]
+
+
+def db_top_due(doc: dict, now: float) -> bool:
+    samples = doc.get("db") or []
+    return bool(samples) and samples[-1][1] >= DB_LARGE_MIB and now - float(doc.get("db_top_at") or 0) >= TOP_EVERY
+
+
 def db_findings(doc: dict) -> list[I.Finding]:
     samples = doc.get("db") or []
     if not samples:
         return []
     size, growth = samples[-1][1], db_growth_mib_day(doc)
-    steps = ("Keep fewer days of history: recorder purge_keep_days (default 10).",
-             "Exclude chatty sensors (power, signal strength, uptime) from the recorder.",
-             "Both are YAML changes in configuration.yaml; ask the House Brain AI to prepare them for your approval.")
+    top = doc.get("db_top") or []
+    families = doc.get("db_families") or []
+    exclude = "Exclude the busiest sensors from the recorder (an exclude list stops new rows; nothing is deleted)."
+    fewer = ("Keeping fewer days (recorder purge_keep_days; Home Assistant's default is 10, check yours) deletes the "
+             "older history for good: decide it separately.")
+    ask = "Both are YAML changes in configuration.yaml; ask the House Brain AI to prepare them for your approval."
+    steps = [exclude, fewer, ask]
+    if top or families:                         # the summary shows 3 lines: the measurement, then the advice
+        steps = [f"{exclude} {fewer} {ask}"]
+    if top:
+        steps.insert(0, "Busiest single sensors (rows a day, estimated from one hour): "
+                     + "; ".join(f"{e} {n:,}" for e, n in top[:TOP_N]))
+    if families:
+        steps.insert(0, "Busiest sensor families (rows a day, estimated from one hour): "
+                     + "; ".join(f"{g} ({k} sensors) {n:,}" for g, k, n in families[:10]))
+    steps = tuple(steps)
     out = []
     if size >= DB_LARGE_MIB:
         out.append(I.Finding("hk:db_large", "housekeeping", I.WARNING,
                              f"The history database is large ({size / 1024:.1f} GB)", steps=steps,
-                             link=RECORDER_LINK, facts={"mib": size}))
+                             link=RECORDER_LINK, facts={"mib": size, **({"top": top[:TOP_N]} if top else {}),
+                                                                **({"families": families[:10]} if families else {})}))
     if growth is not None and growth >= DB_GROWTH_MIB_DAY:
         out.append(I.Finding("hk:db_growing", "housekeeping", I.WARNING,
                              f"The history database grows about {growth:.0f} MB a day", steps=steps,
