@@ -41,15 +41,15 @@
       "sha256": "2bb6b2ee025f3f65ffa2ece42860ccef7fab21607ef100734152ccafc8a3aa0b"
     },
     "tools/house_brain_ai_snapshot_handlers.py": {
-      "bytes": 11928,
-      "sha256": "0da01a4d030521a286faa2529fd5453551538e667013c058ede6f5298e7e6566"
+      "bytes": 12678,
+      "sha256": "d21d9ff5d445725423e0b5a9ceb62808168b2ca8dfc93633b22be2465bd07d9c"
     },
     "tools/house_brain_ai_tunnel_stdio.py": {
       "bytes": 16728,
       "sha256": "20333560eb0213712442663ac467767ab1b39e5cfb3c578ee32e5b33b74a987e"
     }
   },
-  "product_commit": "9ef40d9303ea4d65bd62d21dc3863fe3e25e687a",
+  "product_commit": "a123f0eb04d2d76bcbe49f0b4de43841b383da76",
   "runtime_source_count": 10,
   "schema": "house_brain_runtime_source_payload.v1",
   "scope": "SOURCE_ONLY_NOT_AN_INSTALLER_NOT_DEPLOYMENT_APPROVAL"

@@ -19,6 +19,10 @@ MAX_FUTURE_SKEW_SECONDS: Final = 60
 MAX_TRANSPORT_AGE_SECONDS: Final = 300
 # Broker allows 300 seconds at ingestion and retains a fresh read for 300 more.
 MAX_SOURCE_AGE_SECONDS: Final = 600
+QUALIFIED_BROKER_VERSIONS: Final = frozenset({"0.3.0", "0.4.0", "0.5.0", "0.5.1", "0.5.2", "0.6.0"})
+# Observer wire identity (source.observer_version): exactly the Broker's ACCEPTED_OBSERVER_VERSIONS.
+# Observer 0.2.3 and 0.2.4 still publish "0.2.2" (their CHANGELOG), so they need no entry here.
+QUALIFIED_OBSERVER_VERSIONS: Final = frozenset({"0.1.0", "0.2.0", "0.2.1", "0.2.2"})
 VERSION_RE: Final = re.compile(r"[A-Za-z0-9._+-]{1,64}")
 TIME_RE: Final = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)", re.ASCII)
 AUTHORITY_VALUES: Final = MappingProxyType({
@@ -103,9 +107,13 @@ def validate_envelope(envelope: Any, *, now: datetime | None = None) -> tuple[di
     if set(snapshot) != {"schema_version", "source", "generated_at", "sequence",
                          "data_quality", "platform", "maintenance", "targets", "authority"}:
         _fail("SNAPSHOT_KEYS_INVALID")
-    # 0.3.0 is the live Broker; 0.4.0 (#454, merged candidate) changes only this version
-    # string on the snapshot read path. Any other version stays unqualified.
-    if relay["version"] not in ("0.3.0", "0.4.0"):
+    # Exact Broker allowlist. From 0.3.0 to 0.6.0 (live since 2026-10-11) the Broker's
+    # core.mjs changed only BROKER_VERSION, so the GET /v1/snapshot envelope differs only
+    # in this string (0.6.0 changed the route's sign-in, not its body). Each release in
+    # between (0.4.0, 0.5.0, 0.5.1, 0.5.2) was checked the same way; see
+    # docs/validation/AI_ACCESS_VERSION_ALLOWLIST_FIX_2026-10-11.md. Any other version,
+    # including a future one, stays unqualified until its envelope is checked again.
+    if type(relay["version"]) is not str or relay["version"] not in QUALIFIED_BROKER_VERSIONS:
         _fail("BROKER_VERSION_UNQUALIFIED")
     if relay["schema_version"] != BROKER_SCHEMA or snapshot["schema_version"] != BROKER_SCHEMA:
         _fail("SCHEMA_MISMATCH")
@@ -114,8 +122,7 @@ def validate_envelope(envelope: Any, *, now: datetime | None = None) -> tuple[di
         _fail("SOURCE_INVALID")
     if source["system"] != "home_assistant" or source["instance"] != "house-brain-primary":
         _fail("SOURCE_IDENTITY_INVALID")
-    if type(source["observer_version"]) is not str or source["observer_version"] not in (
-            "0.1.0", "0.2.0", "0.2.1", "0.2.2"):
+    if type(source["observer_version"]) is not str or source["observer_version"] not in QUALIFIED_OBSERVER_VERSIONS:
         _fail("OBSERVER_VERSION_UNQUALIFIED")
     if type(source["session_id"]) is not str or re.fullmatch(r"[0-9a-f]{32}", source["session_id"]) is None:
         _fail("SOURCE_SESSION_INVALID")

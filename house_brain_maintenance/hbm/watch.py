@@ -62,6 +62,29 @@ class WatchPolicy:
     power_cycle_gap_seconds: float = 30 * 60
 
 
+def summary_lists(summary: list[dict], cleared: list, open_keys: set[str]) -> tuple[list[dict], list[str]]:
+    """0.8.3 (live summaries 2026-10-09..11): a problem that flaps (reported, gone for one check, back) was listed
+    twice and also under "Cleared" while still open. Now: one item per key (the latest text); an item that is no
+    longer open is marked "(cleared since)" instead of being listed again under Cleared; a "cleared" entry whose
+    problem is open again is dropped. Old unkeyed (text) entries from before 0.8.3 are kept, once each."""
+    latest: dict[str, dict] = {}
+    for it in summary:
+        latest[str(it.get("key") or it.get("title"))] = it        # keeps the first position, the latest text
+    items, done = [], set()
+    for key, it in latest.items():
+        if key not in open_keys and it.get("key"):
+            it = {**it, "title": f"{it['title']} (cleared since)"[:140]}
+            done.add(key)
+        items.append(it)
+    out: list[str] = []
+    for c in cleared:
+        key, title = (c.get("key"), c.get("title")) if isinstance(c, dict) else (None, c)
+        if not isinstance(title, str) or (key is not None and (key in open_keys or key in done)) or title in out:
+            continue
+        out.append(title)
+    return items, out
+
+
 class Watcher:
     def __init__(self, ha: HomeAssistant, journal: Journal, settings, policy: WatchPolicy,
                  report: Callable[[str], None], clock: Callable[[], float] = time.time) -> None:
@@ -76,6 +99,7 @@ class Watcher:
         # 0.6.3: the relay's public dispatch-key view (option relay_credential_url; "" = off)
         self.relay_url = ""
         self.key_findings: Callable[[], list] | None = None   # 0.8.0: automatic Broker keys (failures only)
+        self.os_findings: Callable[[], list] | None = None    # 0.8.3: an OS update waiting for a restart
         # 0.7.3: problem keys an open after-update check is handling (it asks Reload/Undo; no second prompt here)
         self.claimed: Callable[[], frozenset] = frozenset
         self.relay_fetch: Callable[[str], object] = lambda url: net.request("GET", url, timeout=15)[1]
@@ -192,6 +216,11 @@ class Watcher:
         findings += self._device_findings(st, now, failed)
         findings += I.from_liveness(self.j.load_doc(LIVENESS_DOC, {}), now)
         findings += self._credential_findings(failed)
+        if self.os_findings is not None:
+            try:
+                findings += self.os_findings()
+            except Exception:  # noqa: BLE001 - never a false clear: keep what is open
+                failed.append("os_pending")
         if getattr(self, "apps_now", None) is not None:
             stopped = st["stopped_since"]
             stopped_now = {slug for slug, state in self.apps_now if state == "stopped"}
@@ -239,7 +268,7 @@ class Watcher:
             if key in current or self._source_of(rec) in skipped_sources:
                 continue
             if rec.get("alerted") and rec.get("clear", True):
-                st["cleared"].append(rec.get("title", key)[:120])
+                st["cleared"].append({"key": key, "title": rec.get("title", key)[:120]})   # 0.8.3: keyed
             del st["open"][key]
             st["declined"].pop(key, None)
             st["asked"].pop(key, None)
@@ -355,9 +384,10 @@ class Watcher:
         day = time.strftime("%Y-%m-%d", local)
         if local.tm_hour < self.p.digest_hour or st["last_summary_day"] == day:
             return
-        grouped = I.group_network(st["summary"])
+        summary, cleared_all = summary_lists(st["summary"], st["cleared"], set(st["open"]))
+        grouped = I.group_network(summary)
         total = len(grouped)
-        items, cleared = grouped[:MAX_SUMMARY_ITEMS], I.unique(st["cleared"])[:MAX_SUMMARY_ITEMS]
+        items, cleared = grouped[:MAX_SUMMARY_ITEMS], cleared_all[:MAX_SUMMARY_ITEMS]
         st["last_summary_day"] = day
         st["summary"], st["cleared"] = [], []
         self.j.save_doc(DOC, st)

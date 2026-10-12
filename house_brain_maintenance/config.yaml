@@ -1,5 +1,5 @@
 name: "House Brain Maintenance"
-version: "0.8.2"
+version: "0.8.3"
 slug: "house_brain_maintenance"
 description: >-
   Reviews pending App, HACS and device-firmware updates and applies them after your iPhone approval
@@ -10,7 +10,9 @@ description: >-
   Also rotates the Inventory Scout key safely and runs the Scout once, and installs
   a new Inspector/Observer/Scout source from a pinned GitHub carrier after one tap. Pinned
   Supervisor route allowlist; Home Assistant Core/OS updates only after your
-  approval (full backup first; Core restored automatically if it fails);
+  approval (full backup first; Core restored automatically if it fails; an OS update
+  is installed first and the Pi restarts only after a second Approve, with a
+  one-tap rollback to the previous OS);
   never updates the Supervisor or itself;
   no host port (ingress only); no physical control (device firmware is
   installed only after your approval). After an outage it shows

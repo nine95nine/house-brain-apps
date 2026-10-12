@@ -359,6 +359,29 @@ class SystemInfo:
     update_available: bool
 
 
+@dataclass(frozen=True)
+class OsState:
+    """0.8.3: Home Assistant OS slot facts from ``/os/info`` (Supervisor >= 2026.07). ``running`` is the version
+    of the booted slot (falls back to ``version``); ``pending`` is an installed update that waits for a reboot."""
+
+    running: str | None
+    pending: str | None
+    boot: str | None
+    slots: dict                      # bootname -> version (str or None); A/B only
+
+
+def os_activation_call_ok(act: dict, method: str, path: str, body: Any) -> bool:
+    """0.8.3: the exact calls of one owner-approved OS activation (``os_activation_target``)."""
+    if act["action"] == "reboot":
+        if method == "POST" and path == "/core/check":       # config check before the restart
+            return body is None
+        return method == "POST" and path == "/host/reboot" and body is None
+    if act["action"] == "boot_slot":
+        return method == "POST" and path == "/os/boot-slot" and body == {"boot_slot": act["slot"]} \
+            and body["boot_slot"] in ("A", "B")
+    return False
+
+
 def system_call_ok(kind: str, version: str, method: str, path: str, body: Any, backup: str | None) -> bool:
     """True only for the exact system-update calls of one open ``system_target`` (bodies compared whole)."""
     if method == "POST" and path == "/backups/new/full":
@@ -626,6 +649,7 @@ class HomeAssistant:
         self._target: str | None = None
         self._fix: tuple[str, str] | None = None
         self._system: dict | None = None          # 0.6.0: {"kind", "version", "backup"} while open
+        self._os_act: dict | None = None          # 0.8.3: {"action", "version", "slot"} while open
         self._migrate: dict | None = None         # 0.6.6: {"old", "new", "remove"} while open
         self._entity: dict | None = None          # 0.7.0: {"entity_id", "kind", "to", "frm"} while open
         self._stage: str | None = None            # 0.7.4: the allowlisted local App whose source is being staged
@@ -671,6 +695,9 @@ class HomeAssistant:
             }[kind]
             if path in allowed:
                 return
+        act = self._os_act
+        if act is not None and os_activation_call_ok(act, method, path, body):
+            return                                # 0.8.3: only inside os_activation_target
         system = self._system
         if system is not None and system_call_ok(system["kind"], system["version"], method, path, body,
                                                  system["backup"]):
@@ -689,7 +716,8 @@ class HomeAssistant:
         raise ForbiddenCall(f"{method} {path}")
 
     def _busy(self) -> bool:
-        return any(t is not None for t in (self._target, self._fix, self._system, self._migrate, self._entity,
+        return any(t is not None for t in (self._target, self._fix, self._system, self._os_act, self._migrate,
+                                           self._entity,
                                            self._stage, self._key))
 
     @contextmanager
@@ -747,6 +775,26 @@ class HomeAssistant:
             yield
         finally:
             self._system = None
+
+    @contextmanager
+    def os_activation_target(self, action: str, version: str, slot: str | None = None):
+        """0.8.3 (owner pop-up 2026-10-11 "Ask me, then reboot"): open the host reboot (with a config check
+        first) that finishes one owner-approved OS install, or the boot-slot switch of an owner-approved OS
+        rollback. Nothing else; the caller has the owner's Approve for exactly this step."""
+        if action not in ("reboot", "boot_slot") or not isinstance(version, str) \
+                or not RE_APP_VERSION.fullmatch(version):
+            raise ForbiddenCall("os activation target")
+        if action == "boot_slot" and slot not in ("A", "B"):
+            raise ForbiddenCall("os activation slot")
+        if action == "reboot" and slot is not None:
+            raise ForbiddenCall("os activation slot")
+        if self._busy():
+            raise ForbiddenCall("nested os activation target")
+        self._os_act = {"action": action, "version": version, "slot": slot}
+        try:
+            yield
+        finally:
+            self._os_act = None
 
     @contextmanager
     def entity_target(self, entity_id: str, kind: str, to: str, frm: str | None = None):
@@ -997,6 +1045,42 @@ class HomeAssistant:
             return v if isinstance(v, str) and RE_APP_VERSION.fullmatch(v) else None
         return SystemInfo(kind=kind, version=ver("version"), version_latest=ver("version_latest"),
                           update_available=isinstance(data, dict) and data.get("update_available") is True)
+
+    def os_state(self) -> OsState:
+        """0.8.3: ``/os/info`` projected to running/pending versions and the A/B slots (bounded identifiers)."""
+        data = self._supervisor("GET", "/os/info")
+        data = data if isinstance(data, dict) else {}
+
+        def ver(v) -> str | None:
+            return v if isinstance(v, str) and RE_APP_VERSION.fullmatch(v) else None
+        boot = data.get("boot") if data.get("boot") in ("A", "B") else None
+        slots = {}
+        raw = data.get("boot_slots")
+        if isinstance(raw, dict):
+            for name in ("A", "B"):
+                row = raw.get(name)
+                if isinstance(row, dict):
+                    slots[name] = ver(row.get("version"))
+        running = slots.get(boot) if boot and slots.get(boot) else ver(data.get("version"))
+        return OsState(running=running, pending=ver(data.get("version_pending")), boot=boot, slots=slots)
+
+    def core_config_check(self) -> tuple[bool, str]:
+        """0.8.3, only inside ``os_activation_target``: Supervisor ``/core/check`` (the current Core image)."""
+        try:
+            self._supervisor("POST", "/core/check", timeout=300)
+        except HAError:
+            return False, "the configuration check failed"
+        except net.NetError as err:
+            return False, f"the configuration check failed (HTTP {err.status})"
+        return True, "the configuration check passed"
+
+    def reboot_host(self) -> None:
+        """0.8.3, only inside ``os_activation_target("reboot")``. The connection may drop as the host goes down."""
+        self._supervisor("POST", "/host/reboot", timeout=120)
+
+    def set_os_boot_slot(self, slot: str) -> None:
+        """0.8.3, only inside ``os_activation_target("boot_slot")``: mark ``slot`` active and reboot into it."""
+        self._supervisor("POST", "/os/boot-slot", body={"boot_slot": slot}, timeout=120)
 
     def core_state(self) -> dict:
         """0.6.0: Core's run state and safe/recovery-mode flags (``/core/api/config``); everything else dropped."""

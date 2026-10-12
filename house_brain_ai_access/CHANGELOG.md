@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.4-dev
+
+Live fix (2026-10-11): the snapshot read path accepts the live Maintenance Broker 0.6.0. The handler
+allowed only `relay.version` `0.3.0` and `0.4.0`, so every snapshot read through the tunnel failed with
+`BROKER_VERSION_UNQUALIFIED` once the Broker moved past 0.4.0. From 0.4.0 to 0.6.0 the Broker's
+`core.mjs` changed only its version string, and the `GET /v1/snapshot` body is unchanged (0.6.0 changed
+only how the route signs callers in). The allowlist stays exact: `0.3.0`, `0.4.0`, `0.5.0`, `0.5.1`,
+`0.5.2`, `0.6.0`. Any other or future version, and any other schema, is still refused. The Observer
+allowlist is unchanged: Observer 0.2.3 and 0.2.4 still publish `observer_version` `0.2.2`. One runtime
+file changes (`runtime/tools/house_brain_ai_snapshot_handlers.py`, byte-identical to
+`tools/house_brain_ai_snapshot_handlers.py` at product commit `a123f0eb`), so the runtime manifest,
+`MANIFEST_SHA` and the App tree change, and the heartbeat User-Agent is now
+`house-brain-ai-access/0.1.4-dev`. No option, permission, route or authority changes. The ARM64
+qualification is re-run on the new tree.
+
 ## 0.1.3-dev
 
 HA kill-switch tile bridge (owner approval 2026-10-10 "Approve design, build it";

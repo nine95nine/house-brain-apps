@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.3
+
+OS updates finished the way Home Assistant does them now, and a cleaner morning summary (owner pop-ups
+2026-10-11: "Ask me, then reboot", clean-ups "All of the above"). Contains 0.8.2 unchanged otherwise.
+
+- **OS install and restart are separate (the defect this fixes).** Supervisor 2026.07.0 and later installs an OS
+  update into the spare slot and does not restart. Before 0.8.3 this App waited 60 minutes for a restart that never
+  came, reported a failure and paused all work.
+  - Now, after the install, your phone asks **"Restart to finish the OS update?"**.
+  - Approve runs the configuration check, then restarts the Pi.
+  - After the restart the App checks the OS version and Home Assistant's health.
+- **One-tap rollback.** If Home Assistant is not healthy on the new OS, your phone offers a rollback to the
+  previous OS (still in the other slot).
+- **Never stuck.** Waiting for your answer never pauses the App, and a Reject keeps the OS installed without
+  asking again. A restart nobody asked for (power cut) is checked the same way.
+- **New permission, owner-approved.** The App may restart the Pi only to finish an OS update you approved, or to
+  roll one back, each after its own Approve. Never a shutdown.
+- **Pending-OS warning.** While an installed OS waits for a restart (also one installed from Settings), the
+  morning summary says so: on a Raspberry Pi 4 any restart, a power cut too, switches to it.
+- **Morning summary fixed** (live 2026-10-09 to 2026-10-11):
+  - a problem that came and went is listed once, not twice;
+  - nothing is listed as "cleared" while it is still open;
+  - a problem that cleared before the summary is marked "(cleared since)".
+
 ## 0.8.2
 
 Cloudflare control approvals on your phone (owner pop-up 2026-10-11: the ntfy pushes did not arrive, "link them up

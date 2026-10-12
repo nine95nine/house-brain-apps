@@ -425,6 +425,7 @@ class Service:
                 probe_wait=90.0 * scale, verify_seconds=600.0 * scale, restart_seconds=120.0 * scale, poll=self.poll,
                 ask_hours=(min(self.o.digest_hour, 20), 21)), self._key_broker_base)
             self.watcher.key_findings = self.keys.findings
+            self.watcher.os_findings = self.system.findings    # 0.8.3: an OS update waiting for a restart
         return self.engine
 
     def _key_broker_base(self) -> str:
@@ -563,6 +564,8 @@ class Service:
             previous = self.j.ledger().get(self.key(rid), {}).get("digest")
             self.finish(rid, job, str(txn.get("digest") or previous or "recovered"), txn.get("issue"), result)
             return
+        if self.poll_os_activation():                   # 0.8.3: a staged OS update (restart ask, after-boot check)
+            return
         if self.poll_stage_pending():
             return
         if self.frozen():
@@ -676,6 +679,20 @@ class Service:
         self.finish(out.request_id, ENTITY_JOBS.get(kind, "UPDATE_HACS"),
                     f"entity:{out.facts.get('entity_id')}@{out.facts.get('to')}", self.o.report_issue or None,
                     Result(out.result_outcome, out.reasons, out.facts))
+
+    def poll_os_activation(self) -> bool:
+        """0.8.3: one step of a staged OS update. True when it reported something, or while a restart this App
+        started is under way (nothing else may start then)."""
+        self.ensure_engine()
+        if self.system is None:
+            return False
+        out, blocking = self.system.os_step()
+        if out is not None:
+            self.finish_system("os", str(out.facts.get("to") or ""), out)
+            return True
+        if blocking:
+            self.status("OS_RESTARTING", {"version": VERSION})
+        return blocking
 
     def finish_system(self, kind: str, to: str, out) -> None:
         self.finish(out.request_id, SYSTEM_JOBS.get(kind, "UPDATE_SYSTEM"), f"system:{kind}@{to}",

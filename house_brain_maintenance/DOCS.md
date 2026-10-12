@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.8.2)
+## What it does (0.8.3)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -46,10 +46,21 @@ reads whether Core or the OS has an update. It never installs one by itself, als
    version, runs normally (not safe mode) and that Home Assistant did not become unhealthy. If that fails, it
    **restores Home Assistant only** from that backup by itself (not your Apps or folders), checks the old
    version is back and reports ROLLED_BACK. If even the restore fails, it pauses all work and tells you.
-5. **OS:** it updates the OS to exactly the approved version; the Pi reboots. When this App starts again it
-   reads the OS version: the new one is DONE; the old one means the new OS could not boot and the Pi fell
-   back to the previous version by itself (A/B), reported as ROLLED_BACK. Core health is checked after the
-   reboot; there is no other automatic restore for the OS, so if Core is not healthy it pauses and tells you.
+5. **OS (changed in 0.8.3).** Since Supervisor 2026.07 an OS update is *installed* into the Pi's spare slot
+   without a restart; the old OS keeps running until the next restart. So:
+   - It installs exactly the approved version. Nothing restarts yet.
+   - Your phone asks **"Restart to finish the OS update?"** (Face ID). On Approve it runs Home Assistant's
+     configuration check (a failed check means no restart; it asks again later) and then restarts the Pi.
+   - After the restart: the new OS and a healthy Home Assistant is DONE. The old OS means the new one could not
+     boot and the Pi fell back by itself (A/B): ROLLED_BACK, and that version is not offered again.
+   - New OS but Home Assistant not healthy: your phone offers **"Roll back the OS?"**. Approve restarts the Pi
+     into the previous OS (still in the other slot). Reject keeps the new OS.
+   - No answer asks again after `update_reask_hours`. **Reject** keeps the OS installed and does not ask again.
+   - Waiting never pauses this App: other updates, the problem watch and key changes go on.
+   - **On a Raspberry Pi 4 any restart, a power cut too, switches to an installed OS.** The App checks such a
+     restart the same way, and the morning summary warns while an installed OS waits (also one installed from
+     Settings).
+   - An older Supervisor that restarts during the install is handled as before.
 
 **HACS and device-firmware updates** (new in 0.7.0, owner decisions 2026-10-08: "have the maintenance app
 handle any and all applications"). On the same hourly check it reads every Home Assistant update item that the
@@ -221,7 +232,9 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 - Update Home Assistant Core or the OS without your Approve, automatically, or to another version than
   the one you approved; update Core and the OS together.
 - Update the Supervisor, or update itself.
-- Reboot or shut down the Pi; the only reboot is the one the OS update you approved does.
+- Reboot or shut down the Pi. The only exceptions (0.8.3, owner pop-up 2026-10-11 "Ask me, then reboot"): the
+  restart that finishes an OS update, after its own Approve, and the restart into the previous OS after you
+  approve a rollback. It never shuts the Pi down.
 - Update more than one App at a time, or any App without a backup of it first.
 - Uninstall, stop or rebuild Apps, change other Apps' settings (except one Broker key option of the Observer,
   Inspector, AI Access and Scout during an automatic key change, from 0.8.0), make
