@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 
-from . import VERSION, approval, diagnose, ghauth, ghpage, net, selfreport, undo
+from . import VERSION, approval, diagnose, ghauth, ghpage, net, selfreport, undo, writer_enroll
 from .engine import FAILED_MANUAL, REFUSED, Engine, Result, Settings, Stopping, Timing
 from .fsops import Packages
 from .github import REQUESTS_DIR, GitHub, RE_REPO
@@ -443,6 +443,43 @@ class Service:
                 result = Result(REFUSED, [f"HTTP_INSPECTION:{code}"])
         self.finish(request_id, digest, m.tracking_issue, result, key=request_id)
 
+    def _writer_enroll(self, request_id: str, raw: bytes, digest: str) -> None:
+        """0.3.19 (owner pop-up 2026-10-12, #985 plan R1 E3): create the shared writer lock once."""
+        from .writer import WriterError, enroll_writer
+        try:
+            rid, issue = writer_enroll.parse(raw)
+            if rid != request_id:
+                raise ManifestError("ENROLL_REQUEST_ID")
+        except ManifestError as err:
+            self.finish(request_id, digest, None, Result(REFUSED, [err.code]), key=request_id)
+            return
+        limited = self._limit_reason(request_id, lookup=True)
+        if limited:
+            self.diag.add(limited)
+            self._announce_hold(limited, issue)
+            return
+        engine = self.ensure_engine()
+        target = writer_enroll.root()
+        decision = engine._ask(request_id, "LOOKUP", "House Brain: create the shared writer lock?",
+                               f"Creates only the empty folder {target}/ (private) and its empty lock file, "
+                               "so the Deployer and Maintenance can never write at the same time. Changes "
+                               "nothing else. Anything already there in another shape is left as is.",
+                               self.timing.approval_timeout)
+        if decision != approval.APPROVE:
+            result = Result("REJECTED" if decision == approval.REJECT else "TIMED_OUT", [decision])
+        else:
+            try:
+                evidence = enroll_writer(target)
+                LOG.info("HBD-NATIVE writer_enroll created=%s dir_ino=%s lock_ino=%s dev=%s.%s",
+                         ",".join(evidence["created"]) or "none", evidence["directory"]["ino"],
+                         evidence["lock"]["ino"], os.major(evidence["lock"]["dev"]), os.minor(evidence["lock"]["dev"]))
+                result = Result("WRITER_ENROLLED", [], {"writer_enrollment": evidence})
+            except WriterError as err:
+                result = Result(REFUSED, [f"WRITER_ENROLL:{err}"])
+            except Exception as err:  # noqa: BLE001 - fixed code only; no path text leaves the house
+                result = Result(REFUSED, [f"WRITER_ENROLL:{type(err).__name__}"])
+        self.finish(request_id, digest, issue, result, key=request_id)
+
     def frozen(self) -> str | None:
         rid = self.j.frozen_by()
         if rid and self.o.clear_freeze_for == rid and not self.j.load_txn():
@@ -641,7 +678,8 @@ class Service:
                 continue
             digest = hashlib.sha256(raw).hexdigest()
             http_inspection = http_cleanup.is_inspect(raw)
-            lookup = is_lookup(raw) or http_inspection
+            enroll = writer_enroll.is_enroll(raw)   # 0.3.19: keyed and limited like a lookup
+            lookup = is_lookup(raw) or http_inspection or enroll
             key = request_id if lookup else self.key(request_id)  # lookups are read-only in both modes
             seen = ledger.get(key)
             if seen:
@@ -658,7 +696,9 @@ class Service:
                 continue
             self.diag.checked_requests += 1
             if lookup:
-                if http_inspection:
+                if enroll:
+                    self._writer_enroll(request_id, raw, digest)
+                elif http_inspection:
                     self._http_inspect(request_id, raw, digest)
                 else:
                     self._lookup(request_id, raw, digest)

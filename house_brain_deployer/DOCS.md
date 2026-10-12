@@ -124,6 +124,13 @@ and `/share`. It only reads; it writes nothing, opens no network connection and 
 lines through the Maintenance App's log window. They are the facts needed before the planned shared-writer setup,
 which still needs your separate approval. You do not need to do anything with them.
 
+## Shared writer lock — from 0.3.19
+
+The Deployer and the Maintenance App will share one empty lock file, so they can never write at the same time.
+An AI files a one-time request. You get one push: **"Create the shared writer lock?"** Approve creates only the
+empty folder `/share/house_brain_writer_v1/` and its empty lock file. Reject or no answer changes nothing. This
+release can create that one folder; the next release removes that ability again.
+
 ## GitHub connection (no token to renew) — from 0.3.6
 
 Open the Deployer page and tap **GitHub connection** at the bottom. From 0.3.7 it takes three taps, also on

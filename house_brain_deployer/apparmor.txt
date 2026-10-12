@@ -39,6 +39,14 @@ profile house_brain_deployer flags=(attach_disconnected,mediate_deleted) {
   deny /homeassistant/secrets.yaml rwlk,
   deny /homeassistant/.storage/** rwlk,
 
+  # 0.3.19 #985 layout R1 (owner pop-up 2026-10-12): only the shared writer lock, never blanket /share.
+  /share/ r,
+  /share/house_brain_writer_v1/ r,
+  /share/house_brain_writer_v1/.house_brain_writer_v1.lock rwk,
+  # TEMPORARY (enrollment plan R1 step E3): lets the one-tap enrollment create that one folder.
+  # The next release removes this line (step E5).
+  /share/house_brain_writer_v1/ w,
+
   /proc/ r,
   /proc/self/** r,
   # 0.3.18 (owner pop-up 2026-10-12): the startup self-report reads its own mounts and AppArmor label.

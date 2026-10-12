@@ -1,5 +1,5 @@
 name: "House Brain Deployer"
-version: "0.3.18"
+version: "0.3.19"
 slug: "house_brain_deployer"
 description: >-
   Pull-based, owner-approved deployment of Home Assistant package files from the
@@ -46,6 +46,10 @@ panel_title: "Deployer"
 panel_admin: true
 map:
   - type: homeassistant_config
+    read_only: false
+  # 0.3.19 (owner pop-up 2026-10-12, #985 layout R1): the shared writer lock lives in /share/house_brain_writer_v1.
+  # AppArmor limits /share to that one folder and its lock file.
+  - type: share
     read_only: false
 # R2 (owner pop-up 2026-10-07 "Allow the temporary port"): the GitHub Connect hand-off address. The App listens on
 # it only while a Connect is pending (at most about one hour) and answers only with a valid one-time state.

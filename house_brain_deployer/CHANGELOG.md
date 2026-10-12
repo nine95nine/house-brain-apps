@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.19 — 2026-10-12
+
+One-tap creation of the shared writer lock (owner pop-up 2026-10-12 "Build it now"; #985 enrollment plan R1 step
+E3). Contains everything in 0.3.18 unchanged. Draft PR #985 moves to 0.3.20.
+
+- **Why:** the Deployer and the Maintenance App must never write at the same time. They will share one lock file
+  in `/share/house_brain_writer_v1/`. Neither App could create that folder until now.
+- **Change:**
+  - `/share` is mapped. AppArmor allows only that one folder and its lock file, plus a **temporary** rule that lets
+    the folder be created. The next release removes that rule.
+  - A new request, `house_brain_writer_enroll_request.v1`, can be filed by an AI. It names no path. After your
+    Approve, the Deployer creates only the empty private folder (0700) and the empty lock file (0600). Anything
+    already there in another shape is left as it is and reported.
+  - The startup self-report then shows both paths.
+- **Unchanged:** every install, lookup, re-ask and HTTP path. Nothing else in `/share` is readable or writable.
+
 ## 0.3.18 — 2026-10-12
 
 Two read-only AppArmor rules so the startup self-report can see its own mounts and AppArmor label (owner pop-up
