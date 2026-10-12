@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.18 — 2026-10-12
+
+Two read-only AppArmor rules so the startup self-report can see its own mounts and AppArmor label (owner pop-up
+2026-10-12 "Small release now"). Contains everything in 0.3.16 unchanged; draft PR #985 moves to 0.3.19.
+
+- **Why:** on the Pi, 0.3.16 reported `apparmor=EACCES` and `mountinfo=EACCES` (#454 comment 6117189087). The
+  existing `/proc/self/** r` rule does not match, because AppArmor checks the resolved `/proc/<pid>/` path.
+- **Change:** `apparmor.txt` adds read access to `/proc/[0-9]*/mountinfo` and `/proc/[0-9]*/attr/{current,
+  apparmor/current}`. The App's code is unchanged.
+- **Unchanged:** no write, mapping, port, option or other permission. The profile compiles with
+  `apparmor_parser`.
+
 ## 0.3.16 — 2026-10-12
 
 A read-only startup self-report (owner pop-up 2026-10-12 "Self-report = 0.3.16"). Contains everything in 0.3.15

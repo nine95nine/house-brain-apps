@@ -119,7 +119,8 @@ Nothing is approved by the re-ask itself: Approve installs, Reject or no answer 
 
 At each start the Deployer writes about ten log lines beginning `HBD-NATIVE`. They list the user and group it runs
 as, its AppArmor profile, its Python version, and the folder modes and mounts for `/data`, `/homeassistant/packages`
-and `/share`. It only reads; it writes nothing, opens no network connection and asks nothing. An AI can read these
+and `/share`. It only reads; it writes nothing, opens no network connection and asks nothing. From 0.3.18 it can also read its own mounts and AppArmor label
+(read-only). An AI can read these
 lines through the Maintenance App's log window. They are the facts needed before the planned shared-writer setup,
 which still needs your separate approval. You do not need to do anything with them.
 
