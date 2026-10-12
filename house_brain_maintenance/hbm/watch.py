@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from . import backupcheck as B, approval, issues as I, net
+from . import backupcheck as B, pihealth as P, approval, issues as I, net
 from .ha import DEPLOYER_STATUS_ENTITY, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
 
@@ -61,6 +61,7 @@ class WatchPolicy:
     power_cycles_per_day: int = 3
     power_cycle_gap_seconds: float = 30 * 60
     backup_report: bool = True     # 0.8.5: the monthly backup report on GitHub (+ one phone line)
+    pi_health: bool = True         # 0.8.6: power/heat, disk errors, App outliers, weekly health score
 
 
 def summary_lists(summary: list[dict], cleared: list, open_keys: set[str]) -> tuple[list[dict], list[str]]:
@@ -101,6 +102,8 @@ class Watcher:
         self.relay_url = ""
         self.key_findings: Callable[[], list] | None = None   # 0.8.0: automatic Broker keys (failures only)
         self.os_findings: Callable[[], list] | None = None    # 0.8.3: an OS update waiting for a restart
+        self.sysfs = P.SysReader()                            # 0.8.6: Pi health reads (tests point it elsewhere)
+        self.pi_now: dict = {}                                # 0.8.6: this check's temperature/throttle/write rate
         # 0.7.3: problem keys an open after-update check is handling (it asks Reload/Undo; no second prompt here)
         self.claimed: Callable[[], frozenset] = frozenset
         self.relay_fetch: Callable[[str], object] = lambda url: net.request("GET", url, timeout=15)[1]
@@ -232,6 +235,11 @@ class Watcher:
                 findings += self.os_findings()
             except Exception:  # noqa: BLE001 - never a false clear: keep what is open
                 failed.append("os_pending")
+        if self.p.pi_health:
+            try:
+                findings += self._pi_findings(now)
+            except Exception:  # noqa: BLE001 - never a false clear: keep what is open
+                failed.append("pihealth")
         if getattr(self, "apps_now", None) is not None:
             stopped = st["stopped_since"]
             stopped_now = {slug for slug, state in self.apps_now if state == "stopped"}
@@ -291,6 +299,7 @@ class Watcher:
         outcome = self._offer_fix(st, current, now)
         self._maybe_summary(now)
         self._maybe_backup_report(now)
+        self._maybe_health_score(now)
         open_count = sum(1 for r in self._state()["open"].values() if r.get("alerted"))
         return {"open_problems": open_count, "unreadable": sorted(failed), "fix": outcome}
 
@@ -389,6 +398,58 @@ class Watcher:
                         (steps + extra + (f"\n{f.link}" if f.link else ""))[:900])
         self.j.audit(f.key[:80], "PROBLEM_ALERT", severity=f.severity, source=f.source)
         self._post(self._markdown("problem found", [item]))
+
+    def _pi_findings(self, now: float) -> list[I.Finding]:
+        """0.8.6: power/heat, disk errors and App outliers (sysfs + Supervisor stats every 15 minutes)."""
+        doc = self.j.load_doc(P.DOC, {})
+        doc = doc if isinstance(doc, dict) else {}
+        throttled, temp = self.sysfs.throttled(), self.sysfs.temperature_c()
+        out = P.throttle_findings(throttled) + P.heat_findings(temp)
+        out += P.disk_findings(doc, self.sysfs.disks(), now)
+        if self.apps_now is not None and now - float(doc.get("stats_at") or 0) >= P.STATS_EVERY:
+            stats = {}
+            for slug, state in self.apps_now:
+                if state == "started" and RE_SLUG.fullmatch(slug):
+                    try:
+                        stats[slug] = self.ha.app_stats(slug)
+                    except (HAError, net.NetError, ForbiddenCall):
+                        continue
+            doc["stats_at"] = now
+            doc["outliers"] = [f.key for f in P.outlier_findings(doc, stats, getattr(self, "app_names", {}))]
+            doc["outlier_rows"] = {s: v for s, v in stats.items()}
+        for key in doc.get("outliers") or []:            # between stats reads the last result stands
+            slug = key.split(":", 2)[2]
+            s = (doc.get("outlier_rows") or {}).get(slug) or {}
+            name = getattr(self, "app_names", {}).get(slug, slug)
+            what = "memory" if ":app_memory:" in key else "cpu"
+            pct = s.get("memory_percent" if what == "memory" else "cpu_percent") or 0
+            out.append(I.Finding(key, "pihealth", I.WARNING,
+                                 f"{name} keeps using {pct:.0f} % of its memory limit" if what == "memory"
+                                 else f"{name} keeps using {pct:.0f} % CPU",
+                                 steps=("Restart it, check its log, or look for an update.",), facts={"app": slug}))
+        self.pi_now = {"throttled": throttled, "temp": temp, "rate": P.write_rate_gb_per_day(doc)}
+        self.j.save_doc(P.DOC, doc)
+        return out
+
+    def _maybe_health_score(self, now: float) -> None:
+        """0.8.6: every Sunday after the morning summary hour, one number for the week (GitHub + one phone line)."""
+        if not self.p.pi_health:
+            return
+        doc = self.j.load_doc(P.DOC, {})
+        doc = doc if isinstance(doc, dict) else {}
+        if not P.weekly_due(doc, now, self.p.digest_hour):
+            return
+        from . import VERSION
+        score, parts = P.health_score(self._state()["open"])
+        history = doc.get("scores") or []
+        text, phone = P.weekly_text(score, parts, history, self.pi_now.get("temp"), self.pi_now.get("rate"),
+                                    self.pi_now.get("throttled"), VERSION)
+        doc["score_day"] = time.strftime("%Y-%m-%d", time.localtime(now))
+        doc["scores"] = (history + [[doc["score_day"], score]])[-12:]
+        self.j.save_doc(P.DOC, doc)
+        self.j.audit("health", "HEALTH_SCORE", score=score)
+        approval.inform(self.ha, self.s.notify_service, "Maintenance: weekly health score", phone)
+        self._post(text)
 
     def _maybe_backup_report(self, now: float) -> None:
         """0.8.5: the monthly backup report (first one right after install), from what this check already read."""

@@ -26,6 +26,7 @@ from .watch import Watcher, WatchPolicy
 from .manifest import (ASK_UPDATE_NOW, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE, RE_REQUEST_ID,
                        ROTATE_KEYS_NOW, STAGE_LOCAL_APP_SOURCE, Manifest, ManifestError, parse)
 from .upgradeinfo import UpgradeInfo
+from .pifirmware import JOB as PIFW_JOB, FirmwarePolicy, PiFirmware
 from .cfrelay import RE_CONTROL_URL, CfRelay, control_url_from_broker, safe_cycle as cf_safe_cycle
 from .keys import FAILED_MANUAL as KEY_STUCK, JOB as KEY_JOB, SETUP_JOB as KEY_SETUP_JOB, KeyPolicy, KeyRotator
 from .stage import PENDING_DOC as STAGE_PENDING_DOC, StagePolicy, Stager
@@ -110,6 +111,8 @@ class Options:
     keep_old_deployer: bool = True    # 0.8.1: owner 2026-10-11 "Keep old Deployer for now" (no removal ask)
     upgrade_checks: bool = True       # 0.8.4: known issues + release notes for your integrations before Core updates
     backup_report: bool = True        # 0.8.5: monthly backup report (findings about backups are always on)
+    pi_health: bool = True            # 0.8.6: power/heat, disk errors, App outliers, weekly health score
+    pi_firmware_updates: bool = True  # 0.8.6: Pi bootloader firmware updates in the approval flow (never automatic)
     cf_control_issue: int = 454       # 0.8.2: Cloudflare control approvals to the phone (0 = off; owner 2026-10-11)
     cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
 
@@ -204,6 +207,9 @@ def load_options(path: str) -> Options:
         else _bad("upgrade_checks"),
         backup_report=raw.get("backup_report", True) if isinstance(raw.get("backup_report", True), bool)
         else _bad("backup_report"),
+        pi_health=raw.get("pi_health", True) if isinstance(raw.get("pi_health", True), bool) else _bad("pi_health"),
+        pi_firmware_updates=raw.get("pi_firmware_updates", True)
+        if isinstance(raw.get("pi_firmware_updates", True), bool) else _bad("pi_firmware_updates"),
         cf_control_url=_cf_url(raw.get("cf_control_url")),
     )
 
@@ -325,6 +331,7 @@ class Service:
         self.stage_policy = StagePolicy()                   # 0.7.4: /addons, /share (test mode: temp folders)
         self.keys: KeyRotator | None = None                 # 0.8.0: automatic Broker keys
         self.cf_relay: CfRelay | None = None                # 0.8.2: Cloudflare approvals to the phone
+        self.pifirmware: PiFirmware | None = None          # 0.8.6: Pi firmware updates
         self.key_broker_base: str | None = None             # 0.8.0: test mode only (a local Broker)
         self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
         self.watcher: Watcher | None = None
@@ -389,6 +396,10 @@ class Service:
                 settle_seconds=60.0 * scale, reboot_seconds=3600.0 * scale, poll=self.poll), self.report_text)
             if self.o.upgrade_checks:                   # 0.8.4: Safer upgrades (read-only, cached)
                 self.system.upgrade_info = UpgradeInfo(self.j)
+            if self.o.pi_firmware_updates:              # 0.8.6: Pi firmware, asked like Core/OS, never automatic
+                self.pifirmware = PiFirmware(self.ha, self.j, settings, FirmwarePolicy(
+                    lead_seconds=3600.0 * scale, reask_hours=float(self.o.update_reask_hours),
+                    reboot_seconds=3600.0 * scale), self.report_text)
             # 0.7.0 HACS and device firmware: cards/themes may install by themselves (update_mode), integrations
             # and firmware always ask; firmware only after firmware_wait_days. Times scale in test mode.
             self.entities = EntityUpdater(self.ha, self.j, settings, EntityPolicy(
@@ -407,7 +418,7 @@ class Service:
                                 verify_seconds=60.0 * self.health_scale, poll=self.poll,
                                 power_off_seconds=10.0 * self.health_scale,
                                 power_verify_seconds=600.0 * self.health_scale,
-                                backup_report=self.o.backup_report)
+                                backup_report=self.o.backup_report, pi_health=self.o.pi_health)
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
             self.watcher.credentials = self.gh.auth.summary if hasattr(self.gh, "auth") else None
             self.watcher.relay_url = self.o.relay_credential_url
@@ -562,6 +573,17 @@ class Service:
                              "to": txn.get("to"), **out.facts}
                 self.finish_entity(out, str(txn.get("entity_kind")))
                 return
+            if txn.get("kind") == "pifw":                # 0.8.6: after the firmware restart
+                out = self.pifirmware.recover(txn) if self.pifirmware is not None else None
+                if out is None:
+                    if self.pifirmware is None:
+                        self.j.clear_txn()
+                    else:
+                        self.status("PI_FIRMWARE_UPDATING", {"version": VERSION, "to": txn.get("to")})
+                    return
+                self.finish(out.request_id, PIFW_JOB, f"pifw:{txn.get('to')}", self.o.report_issue or None,
+                            Result(out.result_outcome, out.reasons, out.facts))
+                return
             if txn.get("kind") == "system":
                 out = self.system.recover(txn)
                 if out is None:                       # OS update: waiting for the host to reboot
@@ -678,6 +700,14 @@ class Service:
             if ent_out is not None:
                 self.finish_entity(ent_out, str(ent_out.facts.get("kind", "")))
                 return
+            # 0.8.6: Pi firmware, only when nothing else ran in this cycle.
+            fw_out = self.pifirmware.cycle() if self.pifirmware is not None else None
+            if fw_out is not None:
+                self.finish(fw_out.request_id, PIFW_JOB, f"pifw:{fw_out.facts.get('to')}", self.o.report_issue or None,
+                            Result(fw_out.result_outcome, fw_out.reasons, fw_out.facts))
+                return
+            if (self.j.load_txn() or {}).get("kind") == "pifw":
+                return                                  # the firmware restart is under way
             self.status("IDLE", {"version": VERSION, "dry_run": self.o.dry_run, **self._waiting_attrs(),
                                  **self._ledger_attrs(), **self._keys_attrs()})
             return

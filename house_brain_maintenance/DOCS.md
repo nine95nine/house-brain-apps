@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.8.5)
+## What it does (0.8.6)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -250,7 +250,8 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 - Update the Supervisor, or update itself.
 - Reboot or shut down the Pi. The only exceptions (0.8.3, owner pop-up 2026-10-11 "Ask me, then reboot"): the
   restart that finishes an OS update, after its own Approve, and the restart into the previous OS after you
-  approve a rollback. It never shuts the Pi down.
+  approve a rollback; from 0.8.6 also the one restart that finishes a Pi firmware update you approved. It never
+  shuts the Pi down.
 - Update more than one App at a time, or any App without a backup of it first.
 - Uninstall, stop or rebuild Apps, change other Apps' settings (except one Broker key option of the Observer,
   Inspector, AI Access and Scout during an automatic key change, from 0.8.0), make
@@ -386,6 +387,8 @@ Assistant notification:
 | `cf_control_url` | From 0.8.2: the Cloudflare control address the button opens. Leave empty: the App uses the control on the same Cloudflare account as the Broker the Scout reports to. |
 | `upgrade_checks` | From 0.8.4: known issues and release notes for your integrations in Core update reviews and asks (default `true`; `false` = no reads). |
 | `backup_report` | From 0.8.5: the monthly backup report on GitHub plus one phone line (default `true`). The backup checks themselves are always on. |
+| `pi_health` | From 0.8.6: power/heat, disk errors, App outliers and the weekly health score (default `true`; `false` = none of these reads). |
+| `pi_firmware_updates` | From 0.8.6: Pi firmware (bootloader) updates in the approval flow (default `true`; never automatic). |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
 | `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). From 0.7.2 the same wait applies to fix asks and the Deployer switch-over ask (were fixed at 24 hours). Reject is never asked again. |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |
@@ -484,6 +487,25 @@ Every check reads the backup list it already reads; nothing is created, changed 
   after you install 0.8.5.
 - **Not checked:** whether your password opens a backup. This App never holds that password. Once a year, open
   one backup on another device to be sure.
+
+## Pi health — from 0.8.6
+
+Read-only checks of the Raspberry Pi itself, in the morning summary like every other problem:
+- **Power and heat:** the Pi's own under-voltage and throttle flags ("now" and "since the last restart") and a
+  CPU temperature of 80 °C or more. Under-voltage causes random restarts and corrupted disks: use the official
+  power supply and a short cable; an SSD on USB can need a powered hub.
+- **Disk:** new read/write errors reported by the system disk (SSD/USB disks; an SD card has no such counter and
+  shows "not checked"), and how many GB a day are written.
+- **App outliers:** an App at 90 % or more of its memory limit, or 90 % CPU, three reads in a row (at most every
+  15 minutes). The fix is yours: restart it, check its log or look for an update.
+- **Weekly health score:** every Sunday after the morning-summary hour, 100 minus points for what is open
+  (critical 15, Pi/backup 8, other warnings 5), with last week's score; on GitHub and one phone line.
+
+**Pi firmware updates.** When the Pi's bootloader firmware has an update, the App posts one review and about an
+hour later your phone asks "Update the Pi firmware?". One Approve (Face ID) covers the update and the one restart
+it needs (Home Assistant is down for about 2 to 5 minutes): configuration check, firmware update, restart, then
+the App checks the new firmware runs and reports the result. The Pi keeps a recovery copy of its bootloader.
+Reject is final for that version; no answer asks again after `update_reask_hours`.
 
 ## Backup password watch — from 0.6.6
 

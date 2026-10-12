@@ -274,6 +274,8 @@ _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/addons"),
     ("GET", r"/addons/[a-z0-9][a-z0-9_]{0,99}/info"),
     ("GET", r"/addons/[a-z0-9][a-z0-9_]{0,99}/changelog"),
+    ("GET", r"/addons/[a-z0-9][a-z0-9_]{0,99}/stats"),     # 0.8.6: App memory/CPU (read-only, projected)
+    ("GET", r"/os/boards/raspberrypi/firmware"),           # 0.8.6: Pi firmware version / update (read-only)
     ("GET", r"/store/addons/[a-z0-9][a-z0-9_]{0,99}"),
     ("GET", r"/core/info"),
     ("GET", r"/os/info"),                                   # 0.6.0: OS version / update (read-only, projected)
@@ -368,6 +370,12 @@ class OsState:
     pending: str | None
     boot: str | None
     slots: dict                      # bootname -> version (str or None); A/B only
+
+
+def pi_firmware_call_ok(method: str, path: str, body: Any) -> bool:
+    """0.8.6: the exact calls of one owner-approved Pi firmware update (``pi_firmware_target``)."""
+    return method == "POST" and body is None and path in ("/core/check", "/os/boards/raspberrypi/firmware/update",
+                                                           "/host/reboot")
 
 
 def os_activation_call_ok(act: dict, method: str, path: str, body: Any) -> bool:
@@ -652,6 +660,7 @@ class HomeAssistant:
         self._fix: tuple[str, str] | None = None
         self._system: dict | None = None          # 0.6.0: {"kind", "version", "backup"} while open
         self._os_act: dict | None = None          # 0.8.3: {"action", "version", "slot"} while open
+        self._pifw: str | None = None             # 0.8.6: the approved Pi firmware version while open
         self._migrate: dict | None = None         # 0.6.6: {"old", "new", "remove"} while open
         self._entity: dict | None = None          # 0.7.0: {"entity_id", "kind", "to", "frm"} while open
         self._stage: str | None = None            # 0.7.4: the allowlisted local App whose source is being staged
@@ -697,6 +706,8 @@ class HomeAssistant:
             }[kind]
             if path in allowed:
                 return
+        if self._pifw is not None and pi_firmware_call_ok(method, path, body):
+            return                                # 0.8.6: only inside pi_firmware_target
         act = self._os_act
         if act is not None and os_activation_call_ok(act, method, path, body):
             return                                # 0.8.3: only inside os_activation_target
@@ -718,7 +729,8 @@ class HomeAssistant:
         raise ForbiddenCall(f"{method} {path}")
 
     def _busy(self) -> bool:
-        return any(t is not None for t in (self._target, self._fix, self._system, self._os_act, self._migrate,
+        return any(t is not None for t in (self._target, self._fix, self._system, self._os_act, self._pifw,
+                                           self._migrate,
                                            self._entity,
                                            self._stage, self._key))
 
@@ -797,6 +809,19 @@ class HomeAssistant:
             yield
         finally:
             self._os_act = None
+
+    @contextmanager
+    def pi_firmware_target(self, version: str):
+        """0.8.6: open the config check, the Pi firmware update and the restart it needs, for one approved version."""
+        if not isinstance(version, str) or not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._:+-]{0,39}", version):
+            raise ForbiddenCall("pi firmware target")
+        if self._busy():
+            raise ForbiddenCall("nested pi firmware target")
+        self._pifw = version
+        try:
+            yield
+        finally:
+            self._pifw = None
 
     @contextmanager
     def entity_target(self, entity_id: str, kind: str, to: str, frm: str | None = None):
@@ -1067,8 +1092,9 @@ class HomeAssistant:
         return OsState(running=running, pending=ver(data.get("version_pending")), boot=boot, slots=slots)
 
     def core_config_check(self) -> tuple[bool, str]:
-        """0.8.3/0.8.4: Supervisor ``/core/check`` (the current Core image). Only inside ``os_activation_target``
-        (before the OS restart) or a HACS-integration ``entity_target`` (before the Core restart)."""
+        """0.8.3/0.8.4/0.8.6: Supervisor ``/core/check`` (the current Core image). Only inside
+        ``os_activation_target`` (before the OS restart), a HACS-integration ``entity_target`` (before the Core
+        restart) or ``pi_firmware_target`` (before the firmware restart)."""
         try:
             self._supervisor("POST", "/core/check", timeout=300)
         except HAError:
@@ -1076,6 +1102,40 @@ class HomeAssistant:
         except net.NetError as err:
             return False, f"the configuration check failed (HTTP {err.status})"
         return True, "the configuration check passed"
+
+    def pi_firmware(self) -> dict | None:
+        """0.8.6: ``/os/boards/raspberrypi/firmware`` projected; None when this board/OS Agent has no Pi firmware."""
+        try:
+            data = self._supervisor("GET", "/os/boards/raspberrypi/firmware", timeout=30)
+        except HAError:
+            return None
+        except net.NetError as err:
+            if 400 <= err.status < 500:
+                return None
+            raise
+
+        def ver(v) -> str | None:
+            return v if isinstance(v, str) and re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._:+-]{0,39}", v) else \
+                (str(v) if isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 10 ** 12 else None)
+        data = data if isinstance(data, dict) else {}
+        return {"current": ver(data.get("current_version")), "latest": ver(data.get("latest_version")),
+                "available": data.get("update_available") is True, "blocked": data.get("update_blocked") is True,
+                "pending": data.get("update_pending") is True}
+
+    def update_pi_firmware(self) -> None:
+        """0.8.6, only inside ``pi_firmware_target``."""
+        self._supervisor("POST", "/os/boards/raspberrypi/firmware/update", timeout=900)
+
+    def app_stats(self, slug: str) -> dict:
+        """0.8.6: ``{"memory_percent", "cpu_percent"}`` of one App (floats or None); everything else dropped."""
+        if not isinstance(slug, str) or not RE_SLUG.fullmatch(slug):
+            raise ForbiddenCall("app stats slug")
+        data = self._supervisor("GET", f"/addons/{slug}/stats", timeout=15)
+        data = data if isinstance(data, dict) else {}
+
+        def pct(v):
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 10000 else None
+        return {"memory_percent": pct(data.get("memory_percent")), "cpu_percent": pct(data.get("cpu_percent"))}
 
     def reboot_host(self) -> None:
         """0.8.3, only inside ``os_activation_target("reboot")``. The connection may drop as the host goes down."""

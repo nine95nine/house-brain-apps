@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.6
+
+Pi health, the third of the four feature releases (owner pop-up 2026-10-11). Contains 0.8.5 unchanged otherwise.
+
+- **Power and heat.** The Pi's own under-voltage and throttle flags and its CPU temperature (80 °C and up) are
+  morning-summary problems. A weak power supply is the classic cause of random restarts and broken SD cards.
+- **Disk health.** New read/write errors on the system disk (an early sign of a failing SSD, SD card or USB
+  adapter) and the daily write volume.
+- **App outliers.** An App at 90 % or more of its memory limit, or 90 % CPU, three reads in a row (read at most
+  every 15 minutes).
+- **Weekly health score.** Every Sunday after the morning-summary hour: one number out of 100 with last week's for
+  the trend, on GitHub plus one phone line (new option `pi_health`, default on).
+- **Pi firmware (bootloader) updates in the approval flow** (new option `pi_firmware_updates`, default on). One
+  review, then one phone ask that covers the update and the one restart it needs; after the restart the App checks
+  the new firmware runs. Never automatic; Reject is final for that version.
+- Read-only otherwise: six narrow AppArmor read rules for the Pi's sysfs files. A file that cannot be read is
+  "not checked", never a problem.
+
 ## 0.8.5
 
 Backups you can trust, the second of the four feature releases (owner pop-up 2026-10-11). Contains 0.8.4 unchanged
