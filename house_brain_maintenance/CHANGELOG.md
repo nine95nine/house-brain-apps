@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.1
+
+Shared writer lock, the Maintenance half of #985 enrollment plan R1 (step E2). Owner pop-up 2026-10-12: "All of the
+above. let's get this done". Contains 0.9.0 unchanged otherwise.
+
+- **Why.** The Deployer and this App both change the Deployer App, so they must never do it at the same time. The
+  Deployer created one lock file for both, with your approval (Deployer 0.3.19, 2026-10-12).
+- **What.** Every step that changes the Deployer App holds that lock: its update, undo or restore, the local -> store
+  switch-over and the old Deployer's removal. If the Deployer is busy, this App changes nothing, says "the Deployer
+  is writing right now" and asks again later. Updates of other Apps are unchanged.
+- **Never creates the lock.** This App only uses the existing lock (the code is the Deployer's own, byte for byte).
+  While no lock exists (a new install), nothing changes.
+- **Start log.** One `HBM-NATIVE writer_lock` line names the lock's device and inode, so both Apps can be shown to
+  share it (plan step E6).
+- **AppArmor:** exactly two new lines (read the folder, lock the one file).
+
 ## 0.9.0
 
 Approve from the page (owner pop-ups 2026-10-12: "Yes, build it", scope "All updates"; "It should let me update

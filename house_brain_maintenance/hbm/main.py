@@ -37,6 +37,7 @@ from . import system as system_mod, entities as entities_mod, updates as updates
 from .updatequeue import UpdateQueue
 from .afterupdate import JOB as AFTER_JOB, AfterPolicy, AfterUpdate, loaded_snapshot
 from .web import INGRESS_PEER, MAX_WAITING, ApprovalBoard, IngressServer, ReaskQueue
+from .writer import SharedWriter
 
 LOG = logging.getLogger("hbm")
 RE_NOTIFY = re.compile(r"^mobile_app_[a-z0-9_]{1,80}$")
@@ -346,6 +347,7 @@ class Service:
         self.rate_noted: set[str] = set()                  # 0.8.9: requests waiting for the ask limit (audited once)
         self.key_broker_base: str | None = None             # 0.8.0: test mode only (a local Broker)
         self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
+        self.writer = SharedWriter()                       # 0.9.1: shared writer lock with the Deployer (never created)
         self.watcher: Watcher | None = None
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
         self.health_scale = health_scale
@@ -428,6 +430,7 @@ class Service:
             self.migrator = Migrator(self.ha, self.j, settings, MigratePolicy(
                 watch_seconds=1200.0 * scale, poll=self.poll, reask_hours=float(self.o.update_reask_hours),
                 keep_old=self.o.keep_old_deployer))
+            self.updater.writer = self.migrator.writer = self.writer     # 0.9.1: the shared writer lock
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
                                 max_fix_asks_per_day=self.o.max_approval_requests_per_day,
                                 reask_hours=float(self.o.update_reask_hours),
@@ -1084,6 +1087,7 @@ def main() -> int:
     except OSError as err:
         LOG.warning("approval page unavailable: %s", err)
     LOG.info("House Brain Maintenance %s started (dry_run=%s)", VERSION, service.o.dry_run)
+    LOG.info("HBM-NATIVE writer_lock %s", " ".join(f"{k}={v}" for k, v in service.writer.identity().items()))
     service.status("STARTED", {"version": VERSION, "dry_run": service.o.dry_run})
 
     def _term(signum, frame):  # noqa: ARG001

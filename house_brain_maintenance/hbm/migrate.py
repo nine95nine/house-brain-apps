@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from . import approval, net
 from .ha import DEPLOYER_STATUS_ENTITY, MIGRATE_OLD, ForbiddenCall, HAError, HomeAssistant
 from .journal import Journal
+from .writer import WriterError
 
 JOB = "MIGRATE_DEPLOYER"
 DONE = "DONE"
@@ -144,7 +145,27 @@ class Migrator:
         return decision.outcome
 
     # -- the switch-over ---------------------------------------------------------------------
+    def _locked(self, rid: str, step) -> Outcome:
+        """0.9.1: the switch-over and the removal change the Deployer, so they run only while this App holds the
+        shared writer lock (``writer.py``); a busy or faulty lock refuses before anything changes."""
+        writer = getattr(self, "writer", None)
+        if writer is None:
+            return step()
+        try:
+            with writer.hold() as lease:
+                if lease is not None:
+                    self.j.audit(rid, "WRITER_HELD")
+                return step()
+        except WriterError as err:
+            self.j.audit(rid, "WRITER_REFUSED", code=str(err))
+            why = ("the Deployer is writing right now (shared writer lock busy)" if str(err) == "WRITER_BUSY"
+                   else f"the shared writer lock is not usable ({err})")
+            return Outcome(rid, REFUSED, [f"{why}; nothing changed; it is asked again later"], {"writer": str(err)})
+
     def apply(self, rid: str, old: str, new: str) -> Outcome:
+        return self._locked(rid, lambda: self._apply(rid, old, new))
+
+    def _apply(self, rid: str, old: str, new: str) -> Outcome:
         if self._deployer_busy():
             return Outcome(rid, REFUSED, ["the Deployer has an install waiting for your approval; nothing changed"])
         txn = {"kind": "migrate", "request_id": rid, "old": old, "new": new, "stage": "COPYING",
@@ -260,6 +281,9 @@ class Migrator:
         detail = self.ha.app_detail(old)
         if detail.state == "started":
             return Outcome(rid, REFUSED, ["the old Deployer is running again; nothing removed"], {"old": old})
+        return self._locked(rid, lambda: self._remove(rid, old, new))
+
+    def _remove(self, rid: str, old: str, new: str) -> Outcome:
         try:
             with self.ha.migrate_target(old, new, remove=True):
                 self.ha.uninstall_app(old)

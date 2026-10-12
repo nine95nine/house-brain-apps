@@ -30,6 +30,7 @@ from .ha import ForbiddenCall, HAError, HomeAssistant, InstalledApp
 from .journal import Journal
 from .manifest import RE_APP_SLUG, RE_UPDATE_VERSION
 from .review import BLOCKED, LOW, Review, dependents_of, review
+from .writer import WriterError, is_deployer
 
 DONE = "DONE"
 DRY_RUN_OK = "DRY_RUN_OK"
@@ -376,7 +377,29 @@ class Updater:
         return decision.outcome
 
     # -- the transaction ---------------------------------------------------------------
+    def _locked(self, rid: str, slug: str, step):
+        """0.9.1: a step that changes the Deployer App runs only while this App holds the shared writer lock
+        (``writer.py``); WRITER_BUSY and every other lock fault refuse before anything is written."""
+        writer = getattr(self, "writer", None)
+        if writer is None or not is_deployer(slug):
+            return step(None)
+        try:
+            with writer.hold() as lease:
+                if lease is not None:
+                    self.j.audit(rid, "WRITER_HELD", slug=slug)
+                return step(lease)
+        except WriterError as err:
+            code = str(err)
+            self.j.audit(rid, "WRITER_REFUSED", slug=slug, code=code)
+            why = ("the Deployer is writing right now (shared writer lock busy)" if code == "WRITER_BUSY"
+                   else f"the shared writer lock is not usable ({code})")
+            return Outcome(rid, REFUSED, [f"{why}; nothing changed; it is asked again later"], {"writer": code})
+
     def apply(self, rid: str, rev: Review, *, prior_state: str, automatic: bool) -> Outcome:
+        return self._locked(rid, rev.slug, lambda lease: self._apply(rid, rev, prior_state=prior_state,
+                                                                      automatic=automatic, lease=lease))
+
+    def _apply(self, rid: str, rev: Review, *, prior_state: str, automatic: bool, lease=None) -> Outcome:
         slug = rev.slug
         base_unhealthy, _ = self.ha.health_flags()
         deps_started = [d for d in rev.dependents if self.ha.app_detail(d).state == "started"]
@@ -391,6 +414,8 @@ class Updater:
         self.j.audit(rid, "UPDATE_BACKING_UP", slug=slug, automatic=automatic)
         try:
             with self.ha.update_target(slug):
+                if lease is not None:
+                    lease.check()                          # 0.9.1: the lock is still ours before each change
                 name = f"hbm {slug} {rev.from_version} before {rev.to_version}"
                 bslug = self.ha.backup_app(slug, name)
                 if self.ha.backup_app_version(bslug, slug) != rev.from_version:
@@ -404,6 +429,8 @@ class Updater:
                     self.j.clear_txn()
                     return Outcome(rid, REFUSED, ["the App or its offered version changed since the review; "
                                                   "nothing was updated"], {"backup": bslug})
+                if lease is not None:
+                    lease.check()                          # 0.9.1: still ours, before the update starts
                 txn["stage"] = "UPDATING"
                 self.j.save_txn(txn)
                 self.j.audit(rid, "UPDATE_UPDATING", slug=slug, backup=bslug)
@@ -414,6 +441,8 @@ class Updater:
         except ForbiddenCall as err:
             self.j.clear_txn()
             return Outcome(rid, REFUSED, [f"not allowed: {err}"])
+        except WriterError as err:                         # 0.9.1: the lock changed under us before the update
+            return self._interrupted(txn, f"shared writer lock: {err}")
         except (HAError, net.NetError) as err:
             return self._interrupted(txn, net.redact(str(err))[:200])
         return self._verify(txn)
@@ -485,6 +514,9 @@ class Updater:
 
     def undo(self, rid: str, slug: str, frm: str, to: str, backup: str, why: str) -> Outcome:
         """0.7.3 owner-approved Undo (after-update check): restore the App backup the update to ``to`` took."""
+        return self._locked(rid, slug, lambda lease: self._undo(rid, slug, frm, to, backup, why))
+
+    def _undo(self, rid: str, slug: str, frm: str, to: str, backup: str, why: str) -> Outcome:
         detail = self.ha.app_detail(slug)
         if detail.version != to:
             return Outcome(rid, FAILED, [f"undo: {slug} runs {detail.version}, not {to}; nothing changed"],

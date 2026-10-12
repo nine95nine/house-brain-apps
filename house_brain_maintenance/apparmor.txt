@@ -52,6 +52,10 @@ profile house_brain_maintenance flags=(attach_disconnected,mediate_deleted) {
   /share/ r,
   /share/hb91-app-update/ rw,
   /share/hb91-app-update/** rwk,
+  # 0.9.1 #985 layout R1 (step E2): the shared writer lock with the Deployer. Read the folder, lock the one file;
+  # never create, rename or remove either (the Deployer enrolled them once, with the owner's approval).
+  /share/house_brain_writer_v1/ r,
+  /share/house_brain_writer_v1/.house_brain_writer_v1.lock rwk,
 
   /proc/ r,
   /proc/self/** r,

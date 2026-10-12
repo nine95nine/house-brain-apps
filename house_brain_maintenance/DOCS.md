@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.0)
+## What it does (0.9.1)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -413,6 +413,20 @@ From 0.7.2, when an update ask (App, Core or OS) ends with no answer, one more p
 "Missed: update Home Assistant Core 2026.10.1. I'll ask again at 14:05 (local), or tap Ask me again on the
 Maintenance page." It is sent once per missed ask, never after Reject and never in dry run. From 0.9.0 it reads
 "Tap to approve or decline it on the Maintenance page, or I'll ask again at 14:05 (local)." (see below).
+
+## Shared writer lock with the Deployer — from 0.9.1
+
+The Deployer and this App share one lock file (`/share/house_brain_writer_v1/.house_brain_writer_v1.lock`; the
+Deployer created it once, with your approval). This App holds it during every step that changes the Deployer App:
+
+- an update of the Deployer;
+- an undo or restore of the Deployer;
+- the switch-over to the store Deployer;
+- removing the old Deployer.
+
+If the Deployer is busy, nothing is changed. The result says "the Deployer is writing right now", and the update is
+asked again later. This App never creates, repairs or removes the lock. While it does not exist, everything works as
+in 0.9.0. At start the App logs one line, `HBM-NATIVE writer_lock state=enrolled dev=… ino=…`.
 
 ## Needs your decision: approve or decline on the page — from 0.9.0
 
