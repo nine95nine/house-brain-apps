@@ -1169,6 +1169,7 @@ class HomeAssistant:
         data = self._supervisor("GET", "/backups")
         out = []
         protection = []
+        inventory = []                    # 0.8.5: per backup, which Apps it holds (slugs only) and its flags
         for row in ((data.get("backups") or []) if isinstance(data, dict) else [])[:500]:
             if isinstance(row, dict) and isinstance(row.get("date"), str):
                 content = row.get("content") if isinstance(row.get("content"), dict) else {}
@@ -1183,7 +1184,13 @@ class HomeAssistant:
                       else size_mb / 1024 if isinstance(size_mb, (int, float)) and not isinstance(size_mb, bool)
                       and size_mb > 0 else None)
                 out.append((kind, row["date"][:40], round(gb, 3) if gb else None, backup_content_kind(row)))
+                apps = content.get("addons") if isinstance(content.get("addons"), list) else content.get("apps")
+                inventory.append({"date": row["date"][:40], "ha": kind == "full", "ours": name.startswith("hbm-pre-"),
+                                  "protected": protected, "size_gb": round(gb, 3) if gb else None,
+                                  "apps": tuple(sorted({a for a in (apps if isinstance(apps, list) else [])
+                                                        if isinstance(a, str) and RE_SLUG.fullmatch(a)}))[:200]})
         self.backup_protection = protection
+        self.backup_inventory = inventory
         return out
 
     def host_boots(self) -> list[int]:
@@ -1607,6 +1614,18 @@ class HomeAssistant:
             ha_included = row.get("homeassistant_included")
             out.append({"date": row["date"][:40], "agents": sorted(set(ids))[:20],
                         "ha": ha_included is not False})
+        # 0.8.5: Home Assistant's automatic-backup bookkeeping from the same answer (times, state, agent ids only)
+        if isinstance(info, dict):
+            def when(v):
+                return v[:40] if isinstance(v, str) else None
+            errors = info.get("agent_errors")
+            self.backup_auto = {"last_attempted": when(info.get("last_attempted_automatic_backup")),
+                                "last_completed": when(info.get("last_completed_automatic_backup")),
+                                "next": when(info.get("next_automatic_backup")),
+                                "state": info.get("state") if isinstance(info.get("state"), str)
+                                and re.fullmatch(r"[a-z_]{1,40}", info.get("state")) else None,
+                                "agent_errors": sorted(a for a in (errors if isinstance(errors, dict) else {})
+                                                       if isinstance(a, str) and RE_AGENT_ID.fullmatch(a))[:10]}
         return out
 
     def device_health(self) -> dict:

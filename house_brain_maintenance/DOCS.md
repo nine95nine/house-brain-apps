@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.8.4)
+## What it does (0.8.5)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -385,6 +385,7 @@ Assistant notification:
 | `cf_control_issue` | From 0.8.2: the GitHub issue where the Cloudflare control posts its requests (default `454`; `0` = no Cloudflare pushes). See **Cloudflare approvals on your phone**. |
 | `cf_control_url` | From 0.8.2: the Cloudflare control address the button opens. Leave empty: the App uses the control on the same Cloudflare account as the Broker the Scout reports to. |
 | `upgrade_checks` | From 0.8.4: known issues and release notes for your integrations in Core update reviews and asks (default `true`; `false` = no reads). |
+| `backup_report` | From 0.8.5: the monthly backup report on GitHub plus one phone line (default `true`). The backup checks themselves are always on. |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
 | `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). From 0.7.2 the same wait applies to fix asks and the Deployer switch-over ask (were fixed at 24 hours). Reject is never asked again. |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |
@@ -467,6 +468,22 @@ are warned too. Once the GitHub App works, nothing is said about the old token a
 It also reads the relay Worker's weekly self-test of its GitHub dispatch key (option `relay_credential_url`: leave it
 empty and it is derived from `liveness_url`; `off` turns it off) and uses the same ladder; a failing key or a stopped self-test is a warning
 with the exact fix path.
+
+## Backups you can trust — from 0.8.5
+
+Every check reads the backup list it already reads; nothing is created, changed or deleted:
+- **Complete:** your newest full backup contains every App that is running now, this App included (it holds
+  the automatic-key state). Missing Apps are named in the morning summary.
+- **Radio networks:** Zigbee2MQTT, Z-Wave JS, Matter, OpenThread and multiprotocol Apps were in a backup within
+  7 days. Without one, a dead stick or SD card means re-pairing every device. (ZHA and Z-Wave in Home Assistant
+  itself are part of every backup that includes Home Assistant.)
+- **Automatic backups work:** if Home Assistant's last automatic backup did not finish, or a backup location
+  reports an error, the morning summary says so.
+- **Monthly backup report** (`backup_report`): newest full backup, its age, size, password protection, where
+  its copies are, Apps included and missing, radio Apps and the automatic schedule. The first one comes right
+  after you install 0.8.5.
+- **Not checked:** whether your password opens a backup. This App never holds that password. Once a year, open
+  one backup on another device to be sure.
 
 ## Backup password watch — from 0.6.6
 

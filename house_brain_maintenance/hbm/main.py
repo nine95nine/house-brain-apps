@@ -109,6 +109,7 @@ class Options:
     key_rotate_days: int = 90         # 0.8.0: each Broker key is changed this often (one App per night)
     keep_old_deployer: bool = True    # 0.8.1: owner 2026-10-11 "Keep old Deployer for now" (no removal ask)
     upgrade_checks: bool = True       # 0.8.4: known issues + release notes for your integrations before Core updates
+    backup_report: bool = True        # 0.8.5: monthly backup report (findings about backups are always on)
     cf_control_issue: int = 454       # 0.8.2: Cloudflare control approvals to the phone (0 = off; owner 2026-10-11)
     cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
 
@@ -201,6 +202,8 @@ def load_options(path: str) -> Options:
         cf_control_issue=i("cf_control_issue", 0, 10**7) if "cf_control_issue" in raw else 454,
         upgrade_checks=raw.get("upgrade_checks", True) if isinstance(raw.get("upgrade_checks", True), bool)
         else _bad("upgrade_checks"),
+        backup_report=raw.get("backup_report", True) if isinstance(raw.get("backup_report", True), bool)
+        else _bad("backup_report"),
         cf_control_url=_cf_url(raw.get("cf_control_url")),
     )
 
@@ -403,7 +406,8 @@ class Service:
                                 reask_hours=float(self.o.update_reask_hours),
                                 verify_seconds=60.0 * self.health_scale, poll=self.poll,
                                 power_off_seconds=10.0 * self.health_scale,
-                                power_verify_seconds=600.0 * self.health_scale)
+                                power_verify_seconds=600.0 * self.health_scale,
+                                backup_report=self.o.backup_report)
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
             self.watcher.credentials = self.gh.auth.summary if hasattr(self.gh, "auth") else None
             self.watcher.relay_url = self.o.relay_credential_url

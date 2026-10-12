@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.5
+
+Backups you can trust, the second of the four feature releases (owner pop-up 2026-10-11). Contains 0.8.4 unchanged
+otherwise.
+
+- **Complete backups.** The newest full backup must contain every running App, this App included; missing ones
+  are named in the morning summary.
+- **Radio networks.** The Zigbee/Z-Wave/Matter/Thread Apps must be in a backup from the last 7 days.
+- **Automatic backups.** A failed automatic backup and a backup location with an error are reported.
+- **Monthly backup report** on GitHub plus one phone line (new option `backup_report`, default on); the first one
+  comes right after the update.
+- Not checked, and said so: whether the password opens a backup (this App never holds it).
+
 ## 0.8.4
 
 Safer upgrades, the first of the four feature releases the owner approved on 2026-10-11 ("All of the above based on

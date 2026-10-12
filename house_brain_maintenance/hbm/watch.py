@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from . import approval, issues as I, net
+from . import backupcheck as B, approval, issues as I, net
 from .ha import DEPLOYER_STATUS_ENTITY, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
 
@@ -60,6 +60,7 @@ class WatchPolicy:
     power_verify_seconds: float = 600.0
     power_cycles_per_day: int = 3
     power_cycle_gap_seconds: float = 30 * 60
+    backup_report: bool = True     # 0.8.5: the monthly backup report on GitHub (+ one phone line)
 
 
 def summary_lists(summary: list[dict], cleared: list, open_keys: set[str]) -> tuple[list[dict], list[str]]:
@@ -125,6 +126,7 @@ class Watcher:
         findings: list[I.Finding] = []
         failed: list[str] = []
         self.apps_now = None              # set below only when the App list was read this time
+        self.locations_now = None         # 0.8.5: backup locations as read this time (monthly report)
         names: dict[str, str] = {}
         own = self.ha.self_slug()
         try:
@@ -147,8 +149,15 @@ class Watcher:
 
         def backups() -> list[I.Finding]:
             rows = self.ha.backup_list()
-            return (I.from_backups(rows, now) + I.from_backup_size(rows, now)
-                    + I.from_backup_protection(getattr(self.ha, "backup_protection", [])))
+            out = (I.from_backups(rows, now) + I.from_backup_size(rows, now)
+                   + I.from_backup_protection(getattr(self.ha, "backup_protection", [])))
+            inventory = getattr(self.ha, "backup_inventory", None)
+            if self.apps_now is not None and inventory is not None:     # 0.8.5: Backups you can trust
+                running = sorted({s for s, st in self.apps_now if st == "started"} | {own})
+                installed = [s for s, _ in self.apps_now]
+                out += B.completeness(inventory, running, names)
+                out += B.radio_freshness(inventory, installed, names, now)
+            return out
 
         def disk() -> list[I.Finding]:
             self.disk_now = self.ha.disk()
@@ -179,7 +188,9 @@ class Watcher:
                 drive = self.ha.drive_backup_state()
             except Exception:  # noqa: BLE001 - unreadable: judged on Home Assistant's own locations only
                 drive = None
-            findings += I.from_offsite(self.ha.backup_locations(), now, drive)
+            self.locations_now = self.ha.backup_locations()
+            findings += I.from_offsite(self.locations_now, now, drive)
+            findings += B.automatic_health(getattr(self.ha, "backup_auto", None), now)   # 0.8.5
         except Exception:  # noqa: BLE001 - older Core without backup/info, or Core restarting
             failed.append("offsite")
         return findings, failed
@@ -279,6 +290,7 @@ class Watcher:
         self.j.save_doc(DOC, st)
         outcome = self._offer_fix(st, current, now)
         self._maybe_summary(now)
+        self._maybe_backup_report(now)
         open_count = sum(1 for r in self._state()["open"].values() if r.get("alerted"))
         return {"open_problems": open_count, "unreadable": sorted(failed), "fix": outcome}
 
@@ -377,6 +389,26 @@ class Watcher:
                         (steps + extra + (f"\n{f.link}" if f.link else ""))[:900])
         self.j.audit(f.key[:80], "PROBLEM_ALERT", severity=f.severity, source=f.source)
         self._post(self._markdown("problem found", [item]))
+
+    def _maybe_backup_report(self, now: float) -> None:
+        """0.8.5: the monthly backup report (first one right after install), from what this check already read."""
+        inventory = getattr(self.ha, "backup_inventory", None)
+        if not self.p.backup_report or inventory is None or self.apps_now is None or self.locations_now is None:
+            return
+        doc = self.j.load_doc(B.REPORT_DOC, {})
+        if not B.report_due(doc if isinstance(doc, dict) else {}, now, self.p.digest_hour, time.localtime):
+            return
+        from . import VERSION
+        own = self.ha.self_slug()
+        running = sorted({s for s, st in self.apps_now if st == "started"} | {own})
+        names = getattr(self, "app_names", {})
+        text, phone = B.report_text(inventory, self.locations_now, running, [s for s, _ in self.apps_now], names,
+                                    getattr(self.ha, "backup_auto", None), now, VERSION)
+        lt = time.localtime(now)
+        self.j.save_doc(B.REPORT_DOC, {"month": f"{lt.tm_year:04d}-{lt.tm_mon:02d}", "at": now})
+        self.j.audit("backups", "BACKUP_REPORT")
+        approval.inform(self.ha, self.s.notify_service, "Maintenance: monthly backup report", phone)
+        self._post(text)
 
     def _maybe_summary(self, now: float) -> None:
         st = self._state()
