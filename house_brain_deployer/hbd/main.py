@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 
-from . import VERSION, approval, diagnose, ghauth, ghpage, net, undo
+from . import VERSION, approval, diagnose, ghauth, ghpage, net, selfreport, undo
 from .engine import FAILED_MANUAL, REFUSED, Engine, Result, Settings, Stopping, Timing
 from .fsops import Packages
 from .github import REQUESTS_DIR, GitHub, RE_REPO
@@ -806,6 +806,7 @@ def main() -> int:
     except OSError as err:  # the push buttons still work without the page
         LOG.warning("approval page unavailable: %s", err)
     LOG.info("House Brain Deployer %s started (dry_run=%s)", VERSION, service.o.dry_run)
+    selfreport.log_report(LOG)  # 0.3.16: read-only native facts for the shared-writer layout; never raises
     o = service.o
     LOG.info("settings: repo=%s branch=%s sources=%s notify=%s owner=%s check every %ss; daily limit: "
              "%s of %s installs asked in the last 24 h", o.github_repo, o.requests_branch,

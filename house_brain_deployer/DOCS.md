@@ -115,6 +115,14 @@ Nothing is approved by the re-ask itself: Approve installs, Reject or no answer 
 - From 0.3.15, if the App stopped right after your restart Approve but before Home Assistant restarted, you are
   asked to approve the restart again. Nothing is recorded as installed until Home Assistant has really restarted.
 
+## Startup self-report — from 0.3.16
+
+At each start the Deployer writes about ten log lines beginning `HBD-NATIVE`. They list the user and group it runs
+as, its AppArmor profile, its Python version, and the folder modes and mounts for `/data`, `/homeassistant/packages`
+and `/share`. It only reads; it writes nothing, opens no network connection and asks nothing. An AI can read these
+lines through the Maintenance App's log window. They are the facts needed before the planned shared-writer setup,
+which still needs your separate approval. You do not need to do anything with them.
+
 ## GitHub connection (no token to renew) — from 0.3.6
 
 Open the Deployer page and tap **GitHub connection** at the bottom. From 0.3.7 it takes three taps, also on

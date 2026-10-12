@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.16 — 2026-10-12
+
+A read-only startup self-report (owner pop-up 2026-10-12 "Self-report = 0.3.16"). Contains everything in 0.3.15
+unchanged; draft PR #985 moves to 0.3.17.
+
+- **Why:** the shared-writer layout proposal for the expanded Deployer needs facts only the running App can see:
+  effective user/group, umask and capabilities, AppArmor label, Python/arch, and mode/owner/inode/mount facts for
+  `/data`, `/homeassistant/packages`, `/share` and `/share/house_brain_writer_v1`.
+- **Change:** after the "started" line, about ten `HBD-NATIVE` lines are logged once (each under 300 characters,
+  readable through the Maintenance `APP_LOG_WINDOW` job).
+- **Unchanged:** no write, chmod, directory creation, lock, network call, option or permission. A refused or failing
+  probe logs its reason (for example `st=EACCES`), and the report can never stop the App from starting.
+
 ## 0.3.15 — 2026-10-11
 
 Recovery never records an install as done when Home Assistant was not restarted (owner pop-up 2026-10-11 "Ask
