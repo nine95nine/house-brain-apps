@@ -11,6 +11,7 @@ import errno
 import hashlib
 import os
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .policy import basename
@@ -49,13 +50,18 @@ class Packages:
     """Maps owner-visible ``/config/packages/x`` paths into the container mount."""
 
     root: str  # e.g. /homeassistant/packages inside the App container
+    mutation_guard: Callable[[], None] | None = None
+
+    def check_writer(self) -> None:
+        if self.mutation_guard is not None:
+            self.mutation_guard()
 
     def check_root(self) -> None:
         if os.path.islink(self.root) or not os.path.isdir(self.root):
             raise FsError("PACKAGES_ROOT")
 
     def local(self, owner_path: str) -> str:
-        from .http_cleanup import TARGET, RE_BACKUP
+        from .http_cleanup import RE_BACKUP, TARGET
         if owner_path == TARGET or RE_BACKUP.fullmatch(owner_path):
             config_root = os.path.dirname(self.root)
             if os.path.islink(config_root) or os.path.realpath(config_root) != os.path.abspath(config_root):
@@ -81,12 +87,25 @@ class Packages:
     def snapshot(self, owner_paths: list[str]) -> dict[str, str | None]:
         return {p: file_sha(self.local(p)) for p in owner_paths}
 
+    def file_sha(self, path: str) -> str | None:
+        return file_sha(path)
+
+    def read_bytes(self, path: str) -> bytes:
+        # The bound implementation overrides this with retained-descriptor I/O.
+        from .policy import MAX_FILE_BYTES
+        with open(path, 'rb') as source:
+            data = source.read(MAX_FILE_BYTES + 1)
+        if len(data) > MAX_FILE_BYTES:
+            raise FsError('FILE_TOO_LARGE')
+        return data
+
     def space_named_files(self) -> list[str]:
         return sorted(n for n in os.listdir(self.root) if " " in n)
 
     # -- primitive steps (each idempotent for recovery) ----------------------
     def write_stage(self, stage: str, data: bytes, sha: str) -> None:
         tmp = stage
+        self.check_writer()
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         try:
             os.write(fd, data)
@@ -94,15 +113,17 @@ class Packages:
         finally:
             os.close(fd)
         if file_sha(tmp) != sha:
+            self.check_writer()
             os.unlink(tmp)
             raise FsError("STAGE_HASH")
 
-    def link_noclobber(self, src: str, dst: str) -> None:
+    def link_noclobber(self, src: str, dst: str, *, expected_sha: str | None = None) -> None:
         from .http_cleanup import TARGET, read_configuration
         if src == os.path.join(os.path.dirname(self.root), basename(TARGET)):
             # Root-config backups must not share an inode with an editor's live file.
             # An in-place edit otherwise destroys both the live baseline and its .bak.
             info = os.stat(src, follow_symlinks=False)
+            self.check_writer()
             fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, stat.S_IMODE(info.st_mode))
             try:
                 data = read_configuration(self)
@@ -116,6 +137,7 @@ class Packages:
             _fsync_dir(os.path.dirname(dst))
             return
         try:
+            self.check_writer()
             os.link(src, dst)
         except FileExistsError:
             raise FsError("EXISTS", basename(dst)) from None
@@ -126,6 +148,7 @@ class Packages:
             with open(src, "rb") as fh:
                 data = fh.read()
             try:
+                self.check_writer()
                 fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
             except FileExistsError:
                 raise FsError("EXISTS", basename(dst)) from None
@@ -142,10 +165,13 @@ class Packages:
             return
         if expected_sha is not None and current != expected_sha:
             raise FsError("UNEXPECTED_CONTENT", basename(path))
+        self.check_writer()
         os.unlink(path)
         _fsync_dir(os.path.dirname(path))
 
-    def replace_with(self, stage: str, target: str) -> None:
+    def replace_with(self, stage: str, target: str, *, expected_stage: str | None = None,
+                     expected_target: str | None = None) -> None:
+        self.check_writer()
         os.replace(stage, target)
         _fsync_dir(os.path.dirname(target))
         if os.path.dirname(stage) != os.path.dirname(target):

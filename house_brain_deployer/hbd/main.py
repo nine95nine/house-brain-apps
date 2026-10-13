@@ -11,21 +11,49 @@ import signal
 import sys
 import time
 import uuid
+from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+from functools import wraps
 
-from . import VERSION, approval, diagnose, ghauth, ghpage, net, selfreport, undo, writer_enroll, writer_probe
+from . import (
+    VERSION,
+    approval,
+    diagnose,
+    ghauth,
+    ghpage,
+    http_cleanup,
+    legacy_migrate,
+    net,
+    release_status,
+    selfreport,
+    undo,
+    writer_enroll,
+    writer_probe,
+)
+from . import ha as ha_mod
 from .engine import FAILED_MANUAL, REFUSED, Engine, Result, Settings, Stopping, Timing
 from .fsops import Packages
-from .github import REQUESTS_DIR, GitHub, RE_REPO
-from . import ha as ha_mod
+from .github import RE_REPO, REQUESTS_DIR, GitHub
 from .ha import HomeAssistant
 from .journal import INSTALL_STAGES, LOOKUP_STAGES, Journal
 from .lookup import is_lookup, parse_lookup, run_lookup
-from . import http_cleanup
-from .manifest import ManifestError, RE_REQUEST_ID, Manifest, parse
+from .manifest import RE_REQUEST_ID, Manifest, ManifestError, parse
+from .migration.deployer_startup_service import startup_hold
 from .reask import check_ledger, is_reask, parse_reask
 from .web import INGRESS_PEER, ApprovalBoard, IngressServer
+from .migration.deployer_working_journal import WorkingError
+from .writer import WriterError, WriterLease
+
+
+def _writer_guarded(method):
+    @wraps(method)
+    def guarded(self, *args, **kwargs):
+        with self._writer_operation():
+            return method(self, *args, **kwargs)
+    return guarded
+
 
 LOG = logging.getLogger("hbd")
 RE_NOTIFY = re.compile(r"^mobile_app_[a-z0-9_]{1,80}$")
@@ -52,6 +80,7 @@ def panel_url(instance: str) -> str | None:
     if not isinstance(instance, str) or not RE_DEPLOYER_HOSTNAME.fullmatch(instance):
         return None
     return f"homeassistant://navigate/{instance.replace('-', '_')}?server=default"
+
 
 MAX_REQUESTS_PER_POLL = 10
 BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
@@ -106,6 +135,7 @@ class Options:
     clear_freeze_for: str
     github_auth: str = "auto"         # Credential Autopilot (0.3.6): auto | github_app | pat
     retire_old_token: bool = True     # R2: retire the old hand-made token after 24 h of GitHub App sign-ins
+    return_to_previous_history: bool = False  # 0.3.23 (#985): emergency return from the moved history
 
 
 def load_options(path: str) -> Options:
@@ -137,6 +167,9 @@ def load_options(path: str) -> Options:
     retire_old_token = raw.get("retire_old_token", True)
     if not isinstance(retire_old_token, bool):
         raise OptionsError("retire_old_token")
+    return_previous = raw.get("return_to_previous_history", False)
+    if not isinstance(return_previous, bool):
+        raise OptionsError("return_to_previous_history")
     allow = raw.get("source_ref_allowlist")
     if not isinstance(allow, list) or not 1 <= len(allow) <= 10 or not all(
             isinstance(a, str) and RE_BRANCH_GLOB.fullmatch(a) for a in allow):
@@ -160,6 +193,7 @@ def load_options(path: str) -> Options:
         restart_approval_timeout_minutes=i("restart_approval_timeout_minutes", 2, 30),
         require_phone_unlock=raw["require_phone_unlock"],
         clear_freeze_for=_clear(raw.get("clear_freeze_for", "")),
+        return_to_previous_history=return_previous,
     )
 
 
@@ -207,7 +241,9 @@ def _iso_epoch(text: str) -> float | None:
 class Service:
     def __init__(self, opts: Options, ha: HomeAssistant, gh: GitHub, packages: Packages,
                  journal: Journal, timing: Timing, board: ApprovalBoard | None = None,
-                 open_url: str | None = None) -> None:
+                 open_url: str | None = None,
+                 writer_factory: Callable[[], WriterLease] | None = None,
+                 expected_owner_id: str | None = None) -> None:
         self.o = opts
         self.ha = ha
         self.gh = gh
@@ -216,6 +252,16 @@ class Service:
         self.timing = timing
         self.board = board
         self.open_url = open_url
+        # Staged binding only: normal build_service does not enable this until
+        # both Apps' shared-mount/UID/confinement contract is qualified.
+        self.writer_factory = writer_factory
+        self.expected_owner_id = expected_owner_id
+        self.writer_lease: WriterLease | None = None
+        self.writer_busy = False
+        self.contained: str | None = None   # D6(a): set once the migrated runtime refuses; this run stays held
+        self.pending_undo: str | None = None
+        if writer_factory is not None:
+            self.pk.mutation_guard = self._check_writer
         self.engine: Engine | None = None
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
         self.stop = False
@@ -229,10 +275,15 @@ class Service:
         self.started_at = time.time()
         if self.board is not None:
             self.board.busy_probe = lambda: bool(self.j.load_txn())   # 0.3.5 (P4): page warning
+            manifest_digest = release_status.manifest_identity()
+            self.board.release_probe = lambda: release_status.observations(
+                self.j, manifest_digest, self.in_standby)
 
     def ensure_engine(self) -> Engine:
         if self.engine is None:
             owner_id = approval.resolve_owner(self.ha, self.o.owner_username)
+            if self.expected_owner_id is not None and owner_id != self.expected_owner_id:
+                raise WriterError("WRITER_OWNER_CHANGED")
             settings = Settings(notify_service=self.o.notify_service, owner_user_id=owner_id,
                                 dry_run=self.o.dry_run, require_auth=self.o.require_phone_unlock,
                                 timing=self.timing, board=self.board, open_url=self.open_url,
@@ -240,6 +291,37 @@ class Service:
                                 started_at=self.started_at)
             self.engine = Engine(self.ha, self.gh, self.pk, self.j, settings)
         return self.engine
+
+    def _check_writer(self) -> None:
+        if self.writer_lease is None:
+            raise WriterError("WRITER_NOT_HELD")
+        self.writer_lease.check()
+
+    @contextmanager
+    def _writer_operation(self):
+        if self.writer_factory is None:
+            yield
+            return
+        try:
+            with self.writer_factory() as lease:
+                self.writer_lease = lease
+                yield
+                lease.check()
+        except WriterError as err:
+            self.writer_busy = str(err) == "WRITER_BUSY"
+            if not self.writer_busy:
+                # A lost writer cannot read or freeze through a migrated Journal.
+                # Retain pending bytes and contain this process in memory.
+                self.contained = str(err)[:120] or "WRITER_UNSAFE"
+            raise
+        except WorkingError as err:
+            # D6(a): the migrated runtime refused or was revoked. Contain in memory for the rest of this run.
+            # Never freeze or write through the selected shared Journal without a fresh permit: that would
+            # bypass the writer. A durable containment marker needs the separate private-state boundary.
+            self.contained = str(err)[:120] or "FORWARD_HELD"
+            raise
+        finally:
+            self.writer_lease = None
 
     def _manifest_at(self, request_id: str, ref: str):
         raw = self.gh.read_file(f"{REQUESTS_DIR}/{request_id}/manifest.json", ref)
@@ -268,10 +350,28 @@ class Service:
         """
         if self.j.load_txn():
             return
-        self.ha.publish_status(state, attributes)
+        if self.writer_factory is None:
+            self.ha.publish_status(state, attributes)
+        elif self.writer_lease is not None:
+            self._check_writer()
+            self.ha.publish_status(state, attributes)
+        else:
+            # Reads do not hold the writer lease. Only the shared status update
+            # takes a short lease, so it cannot erase another writer's marker.
+            try:
+                with self._writer_operation():
+                    self._check_writer()
+                    self.ha.publish_status(state, attributes)
+            except WriterError as err:
+                self.writer_busy = True
+                self.diag.add(diagnose.classify(err, branch=self.o.requests_branch,
+                                                repo=self.o.github_repo,
+                                                notify_service=self.o.notify_service))
 
     def finish(self, request_id: str, digest: str, issue: int | None, result: Result,
-               key: str | None = None) -> None:
+               key: str | None = None, writer_result: bool = False) -> None:
+        if self.writer_factory is not None and (writer_result or self.writer_lease is not None):
+            self._check_writer()
         if self.engine is not None and self.engine.notes:
             # Plain-English explanations first, so they survive the push's length limit.
             result.reasons = list(self.engine.notes) + list(result.reasons)
@@ -291,6 +391,7 @@ class Service:
             except net.NetError as err:
                 self.j.audit(request_id, "REPORT_FAILED", error=str(err)[:200])
 
+    @_writer_guarded
     def recover(self, head: str) -> None:
         engine = self.ensure_engine()
 
@@ -308,9 +409,11 @@ class Service:
             rid, result = recovered
             m = manifest_for(rid)
             if m is not None and m.reask_of:
-                self._finish_reask(rid, self._raw_digest(rid, head), m.tracking_issue, result, m.reask_of)
+                self._finish_reask(rid, self._raw_digest(rid, head), m.tracking_issue, result, m.reask_of,
+                                   writer_result=True)
             else:
-                self.finish(rid, m.digest if m else "unknown", m.tracking_issue if m else None, result)
+                self.finish(rid, m.digest if m else "unknown", m.tracking_issue if m else None, result,
+                            writer_result=True)
             if result.outcome == FAILED_MANUAL:
                 self.j.freeze(rid)
 
@@ -321,10 +424,11 @@ class Service:
             return "unknown"
 
     # ------------------------------------------------------------------ re-ask (0.3.8)
-    def _finish_reask(self, request_id: str, digest: str, issue: int | None, result: Result, reask_of: str) -> None:
+    def _finish_reask(self, request_id: str, digest: str, issue: int | None, result: Result, reask_of: str,
+                      writer_result: bool = False) -> None:
         result.facts = dict(result.facts or {})
         result.facts["reask_of"] = reask_of
-        self.finish(request_id, digest, issue, result)
+        self.finish(request_id, digest, issue, result, writer_result=writer_result)
         self.j.annotate(self.key(request_id), reask_of=reask_of)
 
     def _reask_refused(self, request_id: str, digest: str, reask_of: str, code: str, detail: str,
@@ -334,6 +438,7 @@ class Service:
         text = f"{code}: {reason.text}" + (f" What to do: {reason.fix}" if reason.fix else "")
         self._finish_reask(request_id, digest, issue, Result(REFUSED, [text]), reask_of)
 
+    @_writer_guarded
     def _reask(self, request_id: str, raw: bytes, digest: str, head: str) -> bool:
         """0.3.8 (owner pop-up 2026-10-08): ask a TIMED_OUT request again, by reference. Returns True when the
         poll must end (an approval was asked or the daily limit holds it). Never approves anything itself."""
@@ -389,7 +494,7 @@ class Service:
             self.j.link_reask(rq.reask_of, request_id)
         self.j.audit(request_id, "REASK", reask_of=rq.reask_of, requested_by=rq.requested_by)
         result = self.ensure_engine().run(self._reask_run(original, request_id, issue, rq.reask_of))
-        self._finish_reask(request_id, digest, issue, result, rq.reask_of)
+        self._finish_reask(request_id, digest, issue, result, rq.reask_of, writer_result=True)
         if result.outcome == FAILED_MANUAL:
             self.j.freeze(request_id)
         return True
@@ -523,6 +628,100 @@ class Service:
                 result = Result(REFUSED, [f"WRITER_PROBE:{type(err).__name__}"])
         self.finish(request_id, digest, issue, result, key=request_id)
 
+    def _legacy(self, request_id: str, raw: bytes, digest: str) -> None:
+        """0.3.23 (#985 plan M4/M5; owner pop-ups 2026-10-13): Prepare, Select or Unselect the moved history."""
+        from .writer import WriterError
+        try:
+            schema, rid, issue, fields = legacy_migrate.parse(raw)
+            if rid != request_id:
+                raise ManifestError("LEGACY_REQUEST_ID")
+        except ManifestError as err:
+            self.finish(request_id, digest, None, Result(REFUSED, [err.code]), key=request_id)
+            return
+        limited = self._limit_reason(request_id, lookup=True)
+        if limited:
+            self.diag.add(limited)
+            self._announce_hold(limited, issue)
+            return
+        engine = self.ensure_engine()
+        data_dir, now = self.j.dir, time.time()
+        runtime = getattr(self, "migrated_runtime", None)
+        if (runtime is not None and schema == legacy_migrate.SELECT
+                and runtime.scope.operation_id == legacy_migrate.make_scope(
+                    fields["prepared_request_id"], runtime.scope.owner_id, 0).operation_id):
+            # Review finding 2: the Select's own result was written after the merge, so the moved history does
+            # not hold it. It is this run's selection: record it as applied instead of refusing it again.
+            self.finish(request_id, digest, issue, Result("LEGACY_SELECTED", ["applied at this start"]),
+                        key=request_id)
+            return
+        try:
+            if runtime is not None:
+                raise legacy_migrate.LegacyError("LEGACY_ALREADY_RUNNING_MOVED_HISTORY")
+            if schema == legacy_migrate.PREPARE:
+                shown = legacy_migrate.inspect_prepare(data_dir, fields["stage"], fields["snapshot_sha256"], now)
+                c = shown["counts"]
+                title = "House Brain: prepare the old Deployer's history?"
+                message = (f"Copies the old Deployer's history from Maintenance's stage into the Deployer's private "
+                           f"folder, merged with today's: {c['installs']} installs ({c['undone']} undone), "
+                           f"{c['ledger']} results, {c['audit']} log lines, freeze {'yes' if c['frozen'] else 'no'}. "
+                           f"Fingerprint {shown['planned'].result_sha256[:12]}. Nothing is selected yet; the old "
+                           "Deployer and your packages are not changed.")
+            elif schema == legacy_migrate.SELECT:
+                if self.o.return_to_previous_history:
+                    raise legacy_migrate.LegacyError("LEGACY_RETURN_OPTION_ON")
+                shown = legacy_migrate.inspect_select(data_dir, fields["prepared_request_id"], fields["result_sha256"],
+                                                      now)
+                c, since = shown["counts"], shown["since"]
+                title = "House Brain: use the moved history from the next start?"
+                message = (f"From the next Deployer restart it runs on the moved history: {c['installs']} installs, "
+                           f"{c['ledger']} results, {c['audit']} log lines (including {since['ledger']} results "
+                           f"recorded since Prepare). Fingerprint {shown['planned'].result_sha256[:12]}. Until the "
+                           "restart other requests wait. To undo before the restart, send Unselect; after it, turn "
+                           "on return_to_previous_history.")
+            else:
+                if not legacy_migrate.selection_present(data_dir):
+                    raise legacy_migrate.LegacyError("LEGACY_NOT_SELECTED")
+                shown = None
+                title = "House Brain: cancel the moved-history selection?"
+                message = ("The selection file is renamed aside (kept). The next start keeps using the current "
+                           "history. Nothing else changes.")
+        except legacy_migrate.LegacyError as err:
+            self.finish(request_id, digest, issue, Result(REFUSED, [str(err)]), key=request_id)
+            return
+        except Exception as err:  # noqa: BLE001 - fixed code only; no path text leaves the house
+            self.finish(request_id, digest, issue, Result(REFUSED, [f"LEGACY:{type(err).__name__}"]), key=request_id)
+            return
+        decision = engine._ask(request_id, "LOOKUP", title, message, self.timing.approval_timeout)
+        if decision != approval.APPROVE:
+            result = Result("REJECTED" if decision == approval.REJECT else "TIMED_OUT", [decision])
+        else:
+            owner = engine.s.owner_user_id
+            try:
+                if schema == legacy_migrate.PREPARE:
+                    facts = legacy_migrate.run_prepare(data_dir=data_dir, packages_root=self.pk.root,
+                                                       request_id=request_id, stage=fields["stage"],
+                                                       snapshot_sha256=fields["snapshot_sha256"], shown=shown,
+                                                       owner_id=owner, should_stop=lambda: self.stop)
+                    result = Result("LEGACY_PREPARED", [], {"legacy_prepare": facts})
+                elif schema == legacy_migrate.SELECT:
+                    facts = legacy_migrate.run_select(data_dir=data_dir, packages_root=self.pk.root,
+                                                      request_id=request_id,
+                                                      prepared_request_id=fields["prepared_request_id"],
+                                                      result_sha256=fields["result_sha256"], shown=shown,
+                                                      owner_id=owner, should_stop=lambda: self.stop)
+                    result = Result("LEGACY_SELECTED", [], {"legacy_select": facts})
+                else:
+                    facts = legacy_migrate.run_unselect(data_dir=data_dir, marker_sha256=fields["marker_sha256"])
+                    result = Result("LEGACY_UNSELECTED", [], {"legacy_unselect": facts})
+                LOG.info("HBD-NATIVE legacy %s result=%s", schema.split("_")[3], result.outcome)
+            except (legacy_migrate.LegacyError, WriterError) as err:
+                result = Result("LEGACY_FAILED", [f"LEGACY:{err}"])
+            except ValueError as err:   # StoreError / CutoverError / WorkingError: fixed codes
+                result = Result("LEGACY_FAILED", [f"LEGACY:{type(err).__name__}:{str(err)[:60]}"])
+            except Exception as err:  # noqa: BLE001 - fixed code only
+                result = Result("LEGACY_FAILED", [f"LEGACY:{type(err).__name__}"])
+        self.finish(request_id, digest, issue, result, key=request_id)
+
     def frozen(self) -> str | None:
         rid = self.j.frozen_by()
         if rid and self.o.clear_freeze_for == rid and not self.j.load_txn():
@@ -555,9 +754,17 @@ class Service:
 
     def _run_requested_undo(self) -> bool:
         """0.3.3: run an owner-tapped Undo (one per poll). Returns True if one ran."""
-        rid = self.board.take_undo() if self.board is not None else None
+        rid = self.pending_undo or (self.board.take_undo() if self.board is not None else None)
         if not rid:
             return False
+        self.pending_undo = rid
+        with self._writer_operation():
+            # Consume only after admission. Contention retains the owner's tap
+            # for a later poll; restart persistence remains the existing board limit.
+            self.pending_undo = None
+            return self._execute_undo(rid)
+
+    def _execute_undo(self, rid: str) -> bool:
         record = self.j.install(rid)
         undo_id = rid + undo.SUFFIX
         if record is None:
@@ -566,7 +773,7 @@ class Service:
         LOG.info("owner requested undo of %s", rid)
         result = self.ensure_engine().run_undo(record)
         self.finish(undo_id, "undo:" + str(record.get("at")), record.get("tracking_issue") or None, result,
-                    key=undo_id)
+                    key=undo_id, writer_result=True)
         if result.outcome == FAILED_MANUAL:
             self.j.freeze(undo_id)
         return True
@@ -628,6 +835,12 @@ class Service:
     def _close_poll(self) -> None:
         due = self.diag.end(time.time())
         h = self.health()
+        if self.writer_busy:
+            # The other instance may own the shared status marker. A contended
+            # poll must not overwrite it, offer Undo or send a second push.
+            if self.board is not None:
+                self.board.set_health(h["last_check"], self.diag.lines(), h["last_result"])
+            return
         self.status(self.diag.state(), h)
         if self.board is not None:
             self.board.set_health(h["last_check"], self.diag.lines(), h["last_result"])
@@ -666,6 +879,12 @@ class Service:
                 "minutes after that one stops (the Maintenance App's switch-over does that).")
 
     def poll_once(self) -> None:
+        if self.contained:
+            # D6(a): nothing more runs in this App run; no Journal, status or GitHub effect.
+            if self.board is not None:
+                self.board.set_health(diagnose.local_time(time.time()),
+                                      [diagnose.contained(self.contained)], self.last_result or "held")
+            return
         reason = self.standby_reason()
         if reason:
             if not self.in_standby:
@@ -677,6 +896,7 @@ class Service:
         if self.in_standby:
             LOG.info("standby ended: this Deployer is in charge now")
         self.in_standby = False
+        self.writer_busy = False
         self.diag.begin()
         try:
             self._poll()
@@ -705,7 +925,10 @@ class Service:
             self.diag.add(reason)
             self._announce_hold(reason, None)
             return
-        if self._run_requested_undo():
+        # 0.3.23: while a moved-history selection waits for the restart, nothing may change the live history it
+        # left behind (review finding 1): a tapped Undo stays pending and runs after the restart.
+        selected = getattr(self, "migrated_runtime", None) is None and legacy_migrate.selection_present(self.j.dir)
+        if not selected and self._run_requested_undo():
             return  # at most one change per poll
         ledger = self.j.ledger()
         ids = [r for r in self.gh.list_request_ids(head) if RE_REQUEST_ID.fullmatch(r)]
@@ -723,7 +946,15 @@ class Service:
             http_inspection = http_cleanup.is_inspect(raw)
             enroll = writer_enroll.is_enroll(raw)   # 0.3.19: keyed and limited like a lookup
             probe = writer_probe.is_probe(raw)      # 0.3.21: likewise
-            lookup = is_lookup(raw) or http_inspection or enroll or probe
+            legacy = legacy_migrate.kind(raw)       # 0.3.23 (#985 M4/M5): likewise
+            if selected and legacy != legacy_migrate.UNSELECT:
+                # A selection waits for the next start; new results would not be in the moved history.
+                self.diag.add(diagnose.Reason("LEGACY_SELECTED_WAITING", diagnose.HOLD,
+                                              "The moved history is selected and takes effect at the next "
+                                              "Deployer restart. Other requests wait until then.",
+                                              "Restart the Deployer, or send an Unselect request first."))
+                continue   # skipped, not recorded: an Unselect later in the list must still run
+            lookup = is_lookup(raw) or http_inspection or enroll or probe or legacy is not None
             key = request_id if lookup else self.key(request_id)  # lookups are read-only in both modes
             seen = ledger.get(key)
             if seen:
@@ -744,6 +975,8 @@ class Service:
                     self._writer_enroll(request_id, raw, digest)
                 elif probe:
                     self._writer_probe(request_id, raw, digest)
+                elif legacy is not None:
+                    self._legacy(request_id, raw, digest)
                 elif http_inspection:
                     self._http_inspect(request_id, raw, digest)
                 else:
@@ -773,11 +1006,12 @@ class Service:
                 self._announce_hold(limited, manifest.tracking_issue)
                 self._offer_lift()
                 return  # try again on a later poll; not recorded in the ledger
-            engine = self.ensure_engine()
-            result = engine.run(manifest)
-            self.finish(request_id, manifest.digest, manifest.tracking_issue, result)
-            if result.outcome == FAILED_MANUAL:
-                self.j.freeze(request_id)  # persists across restarts until the owner clears it
+            with self._writer_operation():
+                engine = self.ensure_engine()
+                result = engine.run(manifest)
+                self.finish(request_id, manifest.digest, manifest.tracking_issue, result, writer_result=True)
+                if result.outcome == FAILED_MANUAL:
+                    self.j.freeze(request_id)  # persists across restarts until the owner clears it
             return  # at most one request per poll
 
 
@@ -798,7 +1032,7 @@ def handoff_port() -> int:
     return HANDOFF_PORT
 
 
-def build_service(options_path: str, data_dir: str) -> Service:
+def build_service(options_path: str, data_dir: str, *, startup_provider=None) -> Service:
     opts = load_options(options_path)
     token = os.environ.get("SUPERVISOR_TOKEN", "")
     if not token:
@@ -808,13 +1042,70 @@ def build_service(options_path: str, data_dir: str) -> Service:
     api = os.environ.get("HBD_GITHUB_API", "https://api.github.com")
     packages = os.environ.get("HBD_PACKAGES_ROOT", "/homeassistant/packages")
     ha = HomeAssistant(sup, token, ws)
+    timing = Timing(approval_timeout=opts.approval_timeout_minutes * 60.0,
+                    restart_approval_timeout=opts.restart_approval_timeout_minutes * 60.0)
+    # A selected migration never silently falls back to an empty legacy Journal.
+    def settings_for():
+        return Settings(opts.notify_service, approval.resolve_owner(ha, opts.owner_username),
+                        dry_run=opts.dry_run, require_auth=opts.require_phone_unlock, timing=timing)
+    if opts.return_to_previous_history:
+        # 0.3.23 (#985, owner pop-up "Build both"): emergency return; works even when a selected start is held.
+        withdrawn = legacy_migrate.withdraw_at_startup(data_dir)
+        if withdrawn:
+            LOG.warning("return_to_previous_history: the moved-history selection was renamed to %s; this start "
+                        "uses the previous history. Turn the option off again.", withdrawn)
+    owner_context = None
+    if startup_provider is not None:
+        runtime = startup_hold(data_dir, provider=startup_provider, ha=ha, settings_for=settings_for)
+    else:
+        # #985 (owner pop-up 2026-10-12): with a v2 selection marker and an enrolled writer lock, one
+        # owner tap may recover the selected interrupted install. No marker: nothing new runs. Anything
+        # missing: the provider is None and startup_hold keeps today's hold without asking anything.
+        from .migration.deployer_owner_issuer import installed_owner_provider
+
+        def ask(*, stage: str, title: str, message: str) -> approval.Decision:
+            return approval.ask(ha, opts.notify_service, approval.resolve_owner(ha, opts.owner_username),
+                                stage=stage, title=title, message=message, timeout=timing.approval_timeout,
+                                require_auth=opts.require_phone_unlock)
+        owner_context = installed_owner_provider(data_dir, ask)
+        owner_provider = owner_context.__enter__()
+        try:
+            runtime = startup_hold(data_dir, provider=owner_provider, ha=ha, settings_for=settings_for)
+        except BaseException:
+            owner_context.__exit__(None, None, None)
+            raise
+        if runtime is None:
+            owner_context.__exit__(None, None, None)
+        else:
+            # 0.3.23: the moved history runs normally; the runtime keeps the bound folders for its life.
+            owner_context.keep_for_runtime()
+    if runtime is None:
+        return _construct_service(opts, ha, api, packages, data_dir, timing)
+    try:
+        with runtime.boundary():
+            if packages != runtime.plan['packages_root']:
+                raise ValueError('FORWARD_PACKAGES_CHANGED')
+            if approval.resolve_owner(ha, opts.owner_username) != runtime.scope.owner_id:
+                raise ValueError('FORWARD_OWNER_CHANGED')
+            service = _construct_service(opts, ha, api, packages, data_dir, timing, runtime=runtime)
+            runtime.bind_service(service)
+        service.migrated_runtime = runtime
+        return service
+    except BaseException:
+        runtime.close()
+        raise
+    finally:
+        runtime.release_initial()
+        if owner_context is not None:
+            owner_context.__exit__(None, None, None)   # releases the startup lock; Maintenance may write again
+
+
+def _construct_service(opts, ha, api, packages, data_dir, timing, *, runtime=None):
     store = ghauth.KeyStore(data_dir)
     provider = ghauth.TokenProvider(store, opts.github_repo, GITHUB_PERMISSIONS, api, f"house-brain-deployer/{VERSION}")
     auth = ghauth.Auth(opts.github_auth, opts.github_token, provider, retire=opts.retire_old_token, api=api,
                        user_agent=f"house-brain-deployer/{VERSION}")
     gh = GitHub(opts.github_repo, opts.github_token, api, auth=auth)
-    timing = Timing(approval_timeout=opts.approval_timeout_minutes * 60.0,
-                    restart_approval_timeout=opts.restart_approval_timeout_minutes * 60.0)
     if os.environ.get("HBD_TEST_MODE") == "1":
         scale = float(os.environ.get("HBD_TEST_TIME_SCALE", "1"))
         timing = Timing(approval_timeout=timing.approval_timeout * scale,
@@ -824,8 +1115,19 @@ def build_service(options_path: str, data_dir: str) -> Service:
     open_url = panel_url(ha_mod.INSTANCE)
     if open_url is None:
         LOG.warning("Deployer panel identity unavailable; use native notification actions or Open Web UI")
-    service = Service(opts, ha, gh, Packages(packages), Journal(data_dir), timing,
-                      board=ApprovalBoard(), open_url=open_url)
+    if runtime is not None and runtime._bindings is not None:
+        from .migration.deployer_bound_forward_io import BoundForwardState, BoundForwardPackages
+        journal = Journal(runtime.journal_root, file_io=BoundForwardState(runtime))
+        package_client = BoundForwardPackages(runtime)
+    else:
+        journal = Journal(runtime.journal_root if runtime is not None else data_dir)
+        package_client = Packages(packages)
+    if runtime is not None:
+        ha, gh, journal = runtime.wrap(ha), runtime.wrap(gh), runtime.wrap(journal)
+    service = Service(opts, ha, gh, package_client, journal, timing,
+                      board=ApprovalBoard(), open_url=open_url,
+                      writer_factory=runtime.writer_factory if runtime is not None else None,
+                      expected_owner_id=runtime.scope.owner_id if runtime is not None else None)
     service.connector = ghpage.Connector(
         app_title="House Brain Deployer", bot_name="House Brain Deployer Bot",
         bot_description="House Brain Deployer App on the owner's Home Assistant: reads deploy/requests and "
@@ -875,6 +1177,39 @@ def poll_safely(service: Service, last_error: list[str]) -> bool:
     return True
 
 
+STARTUP_HELD_NOTE = ("The Deployer found a migration start file it cannot use and stayed stopped. Nothing was "
+                     "installed or changed. To go back to the previous history, turn on return_to_previous_history "
+                     "in the App's Configuration and restart it. Ask the Deployer chat; see 'Startup held' in the "
+                     "App documentation.")
+
+
+def report_startup_held(code: str, options_path: str) -> None:
+    """D6(c): bounded report of a held startup. Never constructs a Journal, Service, credentials or migration.
+
+    The status entity also carries an open install's restart marker; it is never overwritten (that would hide a
+    Core restart from recovery). The same HELD reason is reported once, not on every restart."""
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if not token:
+        return
+    ha = HomeAssistant(os.environ.get("HBD_SUPERVISOR_URL", "http://supervisor"), token,
+                       os.environ.get("HBD_CORE_WS_URL", "ws://supervisor/core/websocket"))
+    try:
+        current = ha.get_state(ha_mod.STATUS_ENTITY) or {}
+        readable = True
+    except Exception:  # noqa: BLE001 - unknown status: report by push only, never overwrite it
+        current, readable = {}, False
+    attrs = current.get("attributes") or {}
+    if current.get("state") == "HELD" and attrs.get("reason") == code:
+        return
+    if readable and not attrs.get("txn_marker"):
+        ha.publish_status("HELD", {"reason": code, "version": VERSION, "recovery": STARTUP_HELD_NOTE})
+    try:
+        notify = load_options(options_path).notify_service
+    except Exception:  # noqa: BLE001 - no valid notify target: the status and the log carry it
+        return
+    approval.inform(ha, notify, "House Brain Deployer: startup held", f"{code}. {STARTUP_HELD_NOTE}")
+
+
 def main() -> int:
     handler = logging.StreamHandler(sys.stdout)
     handler.addFilter(net.RedactingFilter())
@@ -884,7 +1219,18 @@ def main() -> int:
     data_dir = os.environ.get("HBD_DATA", "/data")
     try:
         service = build_service(options_path, data_dir)
+    except WorkingError as err:
+        if str(err).startswith(("STARTUP_", "FORWARD_")):   # 0.3.23: a moved-history start that fails holds too
+            LOG.error("startup held: %s (no service, no migration; see 'Startup held' in DOCS)", err)
+            report_startup_held(str(err), options_path)
+            return 2
+        LOG.error("configuration refused: %s", err)
+        return 2
     except (OptionsError, ValueError, OSError) as err:
+        if str(err).startswith("FORWARD_"):
+            LOG.error("startup held: %s", err)
+            report_startup_held(str(err), options_path)
+            return 2
         LOG.error("configuration refused: %s", err)
         return 2
     try:
@@ -928,7 +1274,11 @@ def main() -> int:
         # 0.3.7: say STOPPED (never while a transaction is pending: status() keeps the marker), so a store
         # Deployer waiting in standby takes over at once instead of after 15 minutes.
         service.status("STOPPED", {"version": VERSION, "dry_run": service.o.dry_run})
-    if service.engine is None or not service.j.load_txn():
+    pending = service.engine is not None and bool(service.j.load_txn())
+    runtime = getattr(service, 'migrated_runtime', None)
+    if runtime is not None:
+        runtime.close()
+    if not pending:
         LOG.info("stopped")
         return 0
     LOG.warning("stopped with a transaction pending; it will be recovered on next start")

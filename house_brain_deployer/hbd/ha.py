@@ -147,6 +147,15 @@ class HomeAssistant:
                    body={"homeassistant": True, "homeassistant_exclude_database": True, "name": name},
                    timeout=1800)
 
+    def backup_legacy_app(self, name: str) -> None:
+        """#985 backup custody: a partial backup holding ONLY the stopped legacy local Deployer App.
+
+        Same allowlisted Core service as ``backup_partial``; no Home Assistant config, no folders.
+        """
+        self._call("POST", "/core/api/services/hassio/backup_partial",
+                   body={"addons": ["local_house_brain_deployer"], "homeassistant": False, "name": name},
+                   timeout=1800)
+
     def render_template(self, template: str) -> str:
         """Core ``POST /api/template``: renders read-only; templates cannot change state."""
         _guard("POST", "/core/api/template")

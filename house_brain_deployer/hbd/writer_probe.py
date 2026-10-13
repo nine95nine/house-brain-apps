@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable
 
 from .manifest import RE_REQUEST_ID, REQUESTERS, ManifestError, _obj, _str
-from .writer import WriterError, WriterLease
+from .writer import LOCK_NAME, WriterError, WriterLease
 
 SCHEMA = "house_brain_writer_probe_request.v1"
 OPERATIONS = ("try", "hold")
@@ -71,8 +71,14 @@ def run(root: str, operation: str, *, seconds: float | None = None,
         lease.__enter__()
     except WriterError as err:
         if str(err) == "WRITER_BUSY":
-            return {"schema": "hbd.writer_probe.v1", "operation": operation, "result": "WRITER_BUSY",
+            busy = {"schema": "hbd.writer_probe.v1", "operation": operation, "result": "WRITER_BUSY",
                     "held_seconds": 0}
+            # 0.3.23: name the lock found busy (E6 gap, #561 6138174545); stat only, never opened or created.
+            try:
+                st = os.stat(os.path.join(root, LOCK_NAME), follow_symlinks=False)
+            except OSError:
+                return busy
+            return {**busy, "dev": st.st_dev, "ino": st.st_ino}
         raise
     try:
         st = os.fstat(lease._file)  # noqa: SLF001 - identity of the exact inode held

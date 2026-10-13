@@ -18,17 +18,18 @@ into new changes.
 from __future__ import annotations
 
 import logging
-import secrets
 import os
+import secrets
 import stat
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import approval, diagnose, recipe, undo, http_cleanup
-from .fsops import FsError, Packages, file_sha
+from . import approval, diagnose, http_cleanup, recipe, undo
+from .fsops import FsError, Packages
 from .github import GitHub
+from .writer import WriterError
 from .ha import HomeAssistant
 from .journal import Journal
 from .manifest import Manifest, StateCheck
@@ -255,14 +256,15 @@ class Engine:
 
     # --------------------------------------------------------------- file steps
     def _do(self, step: dict, contents: dict[str, bytes]) -> None:
+        self.pk.check_writer()
         L = self.pk.local
         kind = step["op"]
         if kind == "link":
-            if file_sha(L(step["src"])) != step["sha"]:
+            if self.pk.file_sha(L(step["src"])) != step["sha"]:
                 raise FsError("UNEXPECTED_CONTENT", basename(step["src"]))
-            self.pk.link_noclobber(L(step["src"]), L(step["dst"]))
+            self.pk.link_noclobber(L(step["src"]), L(step["dst"]), expected_sha=step["sha"])
         elif kind == "retire_unlink":
-            if file_sha(L(step["keep"])) != step["sha"]:
+            if self.pk.file_sha(L(step["keep"])) != step["sha"]:
                 raise FsError("BACKUP_NOT_VERIFIED", basename(step["keep"]))
             self.pk.unlink_if(L(step["path"]), step["sha"])
         elif kind == "stage":
@@ -270,22 +272,23 @@ class Engine:
             if step["target"] == http_cleanup.TARGET:
                 fd = os.open(step["stage"], os.O_RDONLY | os.O_NOFOLLOW)
                 try:
+                    self.pk.check_writer()
                     os.fchmod(fd, stat.S_IMODE(os.stat(L(step["target"]), follow_symlinks=False).st_mode))
                     os.fsync(fd)
                 finally:
                     os.close(fd)
         elif kind == "swap":
-            if step["target"] == http_cleanup.TARGET and file_sha(L(step["target"])) != step["old"]:
+            if step["target"] == http_cleanup.TARGET and self.pk.file_sha(L(step["target"])) != step["old"]:
                 raise FsError("HTTP_TARGET_CHANGED_BEFORE_SWAP")
-            if file_sha(L(step["backup"])) != step["old"]:
+            if self.pk.file_sha(L(step["backup"])) != step["old"]:
                 raise FsError("BACKUP_NOT_VERIFIED", basename(step["backup"]))
-            if file_sha(step["stage"]) != step["sha"]:
+            if self.pk.file_sha(step["stage"]) != step["sha"]:
                 raise FsError("STAGE_HASH")
-            self.pk.replace_with(step["stage"], L(step["target"]))
+            self.pk.replace_with(step["stage"], L(step["target"]), expected_stage=step["sha"], expected_target=step["old"])
         elif kind == "create":
-            if file_sha(step["stage"]) != step["sha"]:
+            if self.pk.file_sha(step["stage"]) != step["sha"]:
                 raise FsError("STAGE_HASH")
-            self.pk.link_noclobber(step["stage"], L(step["target"]))
+            self.pk.link_noclobber(step["stage"], L(step["target"]), expected_sha=step["sha"])
         elif kind == "unstage":
             self.pk.unlink_if(step["stage"], None)
         else:  # pragma: no cover - plan is internal
@@ -293,33 +296,34 @@ class Engine:
 
     def _undo(self, step: dict) -> None:
         """Idempotent inverse. Never removes the last copy of original bytes."""
+        self.pk.check_writer()
         L = self.pk.local
         kind = step["op"]
         if kind == "link":
             src, dst = L(step["src"]), L(step["dst"])
-            if file_sha(dst) == step["sha"] and file_sha(src) == step["sha"]:
+            if self.pk.file_sha(dst) == step["sha"] and self.pk.file_sha(src) == step["sha"]:
                 self.pk.unlink_if(dst, step["sha"])
         elif kind == "retire_unlink":
             path, keep = L(step["path"]), L(step["keep"])
-            if file_sha(path) is None:
-                if file_sha(keep) != step["sha"]:
+            if self.pk.file_sha(path) is None:
+                if self.pk.file_sha(keep) != step["sha"]:
                     raise FsError("CANNOT_RESTORE", basename(step["path"]))
-                self.pk.link_noclobber(keep, path)
+                self.pk.link_noclobber(keep, path, expected_sha=step["sha"])
         elif kind == "stage":
             self.pk.unlink_if(step["stage"], None)
         elif kind == "swap":
             target, backup = L(step["target"]), L(step["backup"])
-            current = file_sha(target)
+            current = self.pk.file_sha(target)
             if current == step["old"]:
                 return
             if step["target"] == http_cleanup.TARGET and current != step["sha"]:
                 raise FsError("HTTP_EXTERNAL_EDIT_PRESERVED")
-            if file_sha(backup) != step["old"]:
+            if self.pk.file_sha(backup) != step["old"]:
                 raise FsError("CANNOT_RESTORE", basename(step["target"]))
             tmp = step["stage"] + ".restore"
             self.pk.unlink_if(tmp, None)
-            self.pk.link_noclobber(backup, tmp)
-            self.pk.replace_with(tmp, target)
+            self.pk.link_noclobber(backup, tmp, expected_sha=step["old"])
+            self.pk.replace_with(tmp, target, expected_stage=step["old"], expected_target=current)
         elif kind == "create":
             self.pk.unlink_if(L(step["target"]), step["sha"])
         elif kind == "unstage":
@@ -407,7 +411,7 @@ class Engine:
             return ["Home Assistant did not reach RUNNING"]
         if m.http_operation:
             try:
-                if file_sha(self.pk.local(http_cleanup.TARGET)) != m.files[0].sha256:
+                if self.pk.file_sha(self.pk.local(http_cleanup.TARGET)) != m.files[0].sha256:
                     return ["HTTP_CANDIDATE_CHANGED_AFTER_RESTART"]
                 if http_cleanup.fingerprint(http_cleanup.stable_configuration(self.ha)) != m.stable_http_sha256:
                     return ["HTTP_UI_SETTINGS_CHANGED_AFTER_RESTART"]
@@ -496,10 +500,9 @@ class Engine:
             self.pk.check_root()
             for target, (src, sha) in sources.items():
                 path = self.pk.local(src)
-                if file_sha(path) != sha:
+                if self.pk.file_sha(path) != sha:
                     return Result(REFUSED, [f"UNDO_SOURCE_CHANGED: {basename(src)} is no longer the saved copy"])
-                with open(path, "rb") as fh:
-                    data = fh.read()
+                data = self.pk.read_bytes(path)
                 errors, _ = scan_package(data, self.s.sensitive_patterns)
                 if errors:
                     return Result(REFUSED, [f"CONTENT_POLICY: {basename(src)}: {', '.join(errors[:5])}"])
@@ -632,6 +635,7 @@ class Engine:
         backup_name = f"HBD {m.request_id} pre-deploy"
         try:
             before = {b.get("slug") for b in self.ha.backups()}
+            self.pk.check_writer()
             self.ha.backup_partial(backup_name)
             new = [b for b in self.ha.backups()
                    if b.get("slug") not in before and b.get("name") == backup_name]
@@ -644,6 +648,7 @@ class Engine:
 
         marker = secrets.token_hex(8)
         try:
+            self.pk.check_writer()
             self.ha.set_marker(marker, m.request_id)
         except Exception as err:  # noqa: BLE001 - without the marker a Core restart could go unnoticed
             return Result(ABORTED, [f"cannot write status marker: {type(err).__name__}"], facts)
@@ -700,10 +705,12 @@ class Engine:
         return self._restart_and_verify(txn, m)
 
     def _restart_and_verify(self, txn: dict, m: Manifest) -> Result:
+        self.pk.check_writer()
         txn["phase"] = "RESTARTING"
         txn["restarted"] = True
         self.j.save_txn(txn)
         self.j.audit(m.request_id, "RESTART_REQUESTED")
+        self.pk.check_writer()
         try:
             self.ha.restart()
         except Exception as err:  # noqa: BLE001 - health decides what actually happened
@@ -715,11 +722,13 @@ class Engine:
             return self._rollback_restart(txn, m, ["health check failed"] + problems)
         txn["facts"]["post_sha256"] = {basename(k): v for k, v in self.pk.snapshot(list(txn["pre"])).items()}
         self._record_install(m, txn)
+        self.pk.check_writer()
         self.j.clear_txn()
         return Result(SUCCEEDED, [], txn["facts"])
 
     def _record_install(self, m: Manifest, txn: dict) -> None:
         """0.3.3: remember what a successful install did, so the owner can undo it from the page."""
+        self.pk.check_writer()
         if m.http_operation:
             # Generic package Undo must never reinsert ignored HTTP YAML. Crash/health rollback still works.
             self.j.audit(m.request_id, "HTTP_CLEANUP_ACCEPTED", candidate_sha256=m.files[0].sha256)
@@ -729,7 +738,26 @@ class Engine:
         except Exception as err:  # noqa: BLE001 - never turn a success into a failure; undo just won't be offered
             self.j.audit(m.request_id, "INSTALL_RECORD_FAILED", error=type(err).__name__)
 
+    def _lease_lost(self, txn: dict, reasons: list[str]) -> Result | None:
+        """D6(b), owner decision 2026-10-11 "Freeze, don't touch files": without the write lease no rollback runs.
+        The transaction is left exactly as it was (intent preserved) and the result is FAILED_MANUAL."""
+        from .migration.deployer_bound_files import BoundFileError
+        from .migration.deployer_working_journal import WorkingError
+        try:
+            self.pk.check_writer()
+        except (WriterError, WorkingError, BoundFileError) as err:
+            # The selected Journal is also a write boundary. Reporting must not
+            # audit/freeze through it after custody is lost, even on legacy I/O.
+            return Result(FAILED_MANUAL, reasons + [
+                f"write lease lost ({err}): no file was touched and nothing was rolled back; the install may be "
+                "half-applied. The open transaction is kept. Stop the other House Brain writer, then restart the "
+                "Deployer: it recovers this transaction under a fresh lease."], txn["facts"])
+        return None
+
     def _rollback_files(self, txn: dict, reasons: list[str]) -> Result:
+        lost = self._lease_lost(txn, reasons)
+        if lost is not None:
+            return lost
         txn["phase"] = "ROLLING_BACK"
         self.j.save_txn(txn)
         self.j.audit(txn["request_id"], "ROLLBACK_FILES", reasons=reasons[:3])
@@ -741,6 +769,7 @@ class Engine:
             return Result(FAILED_MANUAL, reasons + ["not restored: " + ", ".join(diff)], txn["facts"])
         if txn.get("marker") and txn.get("applied_any") and self._core_restarted(txn):
             return self._finish_rollback_restart(txn, reasons)
+        self.pk.check_writer()
         self.j.clear_txn()
         return Result(ROLLED_BACK, reasons, txn["facts"])
 
@@ -772,6 +801,7 @@ class Engine:
         txn["phase"] = "ROLLBACK_RESTARTING"
         txn["restarted"] = True
         self.j.save_txn(txn)
+        self.pk.check_writer()
         try:
             self.ha.restart()
         except Exception as err:  # noqa: BLE001
@@ -779,10 +809,14 @@ class Engine:
         if not self.ha.wait_running(self.s.timing.running_timeout, self.s.timing.poll):
             return Result(FAILED_MANUAL, reasons + ["Home Assistant not RUNNING after rollback restart"],
                           txn["facts"])
+        self.pk.check_writer()
         self.j.clear_txn()
         return Result(ROLLED_BACK_RESTARTED, reasons, txn["facts"])
 
     def _rollback_restart(self, txn: dict, m: Manifest | None, reasons: list[str]) -> Result:
+        lost = self._lease_lost(txn, reasons)
+        if lost is not None:
+            return lost
         txn["phase"] = "ROLLING_BACK"
         self.j.save_txn(txn)
         self.j.audit(txn["request_id"], "ROLLBACK_RESTART", reasons=reasons[:3])
@@ -798,6 +832,7 @@ class Engine:
                                                     detail[:200]], txn["facts"])
         txn["phase"] = "ROLLBACK_RESTARTING"
         self.j.save_txn(txn)
+        self.pk.check_writer()
         try:
             self.ha.restart()
         except Exception as err:  # noqa: BLE001
@@ -805,6 +840,7 @@ class Engine:
         if not self.ha.wait_running(self.s.timing.running_timeout, self.s.timing.poll):
             return Result(FAILED_MANUAL, reasons + ["Home Assistant not RUNNING after rollback restart"],
                           txn["facts"])
+        self.pk.check_writer()
         self.j.clear_txn()
         return Result(ROLLED_BACK_RESTARTED, reasons, txn["facts"])
 
@@ -837,6 +873,7 @@ class Engine:
             if problems:
                 return rid, self._rollback_restart(txn, m, ["recovered after crash; health failed", note] + problems)
             self._record_install(m, txn)
+            self.pk.check_writer()
             self.j.clear_txn()
             return rid, Result(SUCCEEDED, ["completed after recovery", note], txn.get("facts", {}))
         if phase in ("ROLLING_BACK", "ROLLBACK_RESTARTING") and txn.get("restarted"):
@@ -895,4 +932,3 @@ class Engine:
             if self.s.started_at else None,
         }
         return cause, details
-

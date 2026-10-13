@@ -12,8 +12,10 @@ notification also shows Approve / Reject.) One-time setup: on this App's **Info*
 2. **Approve restart?** — the new files are installed and config-checked; Home Assistant restarts
    only when you tap Approve.
 
-No answer = No. If anything fails, the old files are put back automatically (and, if Home Assistant
-was already restarted, it is restarted once more on the old files). You get a result notification.
+No answer = No. On failure, the old files are restored while the Deployer still holds its write
+lease (and, if Home Assistant was already restarted, it is restarted once more on the old files).
+If the write lease is lost, it stops touching files and keeps the recovery intent for a fresh,
+authorized recovery. You get a result notification.
 
 ## Lookups (read-only)
 
@@ -36,6 +38,12 @@ the GitHub issue. Lookups can never change anything.
 
 ## Options
 
+For a fresh install, fill in both `notify_service` and `owner_username` before saving or starting.
+They must be your actual phone notification service and Home Assistant login username; they are
+required even when using GitHub App authentication. From 0.3.10, leave `github_token` as the empty
+string when connecting through the GitHub App. Keep **Show in sidebar** enabled on the active
+Deployer so a notification tap can open its approval page. Existing saved options stay unchanged.
+
 | Option | What to enter |
 |---|---|
 | `github_repo` | Leave as `nine95nine/home-assistant-whole-home` |
@@ -53,6 +61,7 @@ the GitHub issue. Lookups can never change anything.
 | `restart_approval_timeout_minutes` | How long the restart approval waits: 2–30 min, default 10. Kept short on purpose, because the new files are already in place while it waits |
 | `require_phone_unlock` | Keep `true` (Approve needs Face ID / passcode) |
 | `clear_freeze_for` | Leave empty. Only used if the App tells you it is frozen |
+| `return_to_previous_history` | Leave `false`. Emergency switch (from 0.3.23, draft #985): when `true`, the next start sets the moved-history selection aside and uses the previous history, which was never changed. Turn it back to `false` afterwards; **Select** refuses while it is on |
 
 ## Status
 
@@ -137,6 +146,23 @@ lock once or holds it for 10 minutes (from 0.3.22; 60 seconds in 0.3.21), so the
 From 0.3.20 the log shows one `approval asked: …` line when a push goes out and one `approval answered: …` line
 when you answer or it expires (the default window is 6 hours).
 
+## Moving the old Deployer's history — from 0.3.23 (draft #985, not install-ready)
+
+Three one-time requests, each asked on your phone first. None names a file path.
+
+1. **Prepare** — "House Brain: prepare the old Deployer's history?" The Deployer reads the copy Maintenance staged
+   from the old Deployer's backup (read-only), checks it byte for byte, merges it with today's history and keeps a
+   sealed copy in its own private folder. Nothing is selected and nothing else changes.
+2. **Select** (within 7 days) — "House Brain: use the moved history from the next start?" It merges again with
+   everything recorded since Prepare, so nothing is lost, and marks that history for the next start. Until the
+   restart, other requests wait.
+3. **Unselect** — "House Brain: cancel the moved-history selection?" Before a restart, this sets the selection aside
+   (kept). After a restart, use the `return_to_previous_history` option instead.
+
+After Select and a Deployer restart, the Deployer runs on the moved history with no further taps. At every start
+it re-checks the selection, its folders and the shared writer lock, and holds and tells you if anything differs.
+The old Deployer, your packages and Maintenance's copy are never written.
+
 ## GitHub connection (no token to renew) — from 0.3.6
 
 Open the Deployer page and tap **GitHub connection** at the bottom. From 0.3.7 it takes three taps, also on
@@ -180,3 +206,33 @@ updates (no Studio Code Server, no Terminal). Moving from the old local Deployer
 **Never two Deployers at once:** while another Deployer is active (it wrote `sensor.house_brain_deployer_status` in
 the last 15 minutes and did not say `STOPPED`), this one shows "Standby" on its page and does nothing. A clean stop
 writes `STOPPED`, so the other takes over at once.
+
+## Startup held — from 0.3.16 (draft #985, not install-ready)
+
+If the Deployer finds a migration start file (`MIGRATED_STARTUP.json` in its data folder) that it cannot use, it
+**does not start** and does nothing else: no install, no restart, no migration. You see:
+
+- the status entity `sensor.house_brain_deployer_status` = `HELD` with the reason (only if no install is open; an open
+  install's marker is never overwritten, because recovery needs it), and
+- one push "House Brain Deployer: startup held" (not repeated for the same reason).
+
+What to do: tell the Deployer chat. The file belongs to the history migration and is only created by that process; do
+not delete files by hand. Nothing in Home Assistant was changed.
+
+## Install history size — from 0.3.16
+
+The Undo history keeps up to 500 installs. When full, eligible installs that were already undone
+are dropped oldest first. The newest record that prevents an older Undo from reappearing, and
+records referenced by an open recovery or freeze, are retained. If none can be dropped, the new
+install still succeeds but is not offered for Undo (recorded in the log as
+`INSTALL_RECORD_FAILED`); nothing older is lost.
+
+## Migration candidate status — 0.3.16, draft #985
+
+The directory-bound Journal, package effects, forward/recovery clients and initial selection
+are implemented and tested locally. This candidate is **not install ready**. Its genuine
+installed capture and authorization provider, backup custody, both Apps' shared writer and
+native migration/Undo/restore qualification are still required. The approval page keeps
+qualification and migration status separate from local test results. Keep the stopped legacy
+Deployer installed until migration and restore have been accepted.
+

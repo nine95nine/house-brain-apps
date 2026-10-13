@@ -63,6 +63,16 @@ class ApprovalBoard:
         self._undo_req: str | None = None
         # 0.3.5 (P4): True while an install transaction is open (set by the service)
         self.busy_probe: Callable[[], bool] | None = None
+        self.release_probe: Callable[[], tuple[tuple[str, str], ...]] | None = None
+
+    def release_status(self) -> tuple[tuple[str, str], ...]:
+        try:
+            if self.release_probe is not None:
+                return tuple((str(label)[:120], str(value)[:256])
+                             for label, value in self.release_probe()[:10])
+        except Exception:  # noqa: BLE001, S110 -- an observation failure cannot create qualification
+            pass
+        return (("Release status", "UNKNOWN — observations unavailable"),)
 
     def busy(self) -> bool:
         try:
@@ -189,6 +199,7 @@ body{{font-family:-apple-system,system-ui,sans-serif;margin:0;padding:16px;backg
 h1{{font-size:20px}} h2{{font-size:17px;margin-top:22px}} li{{margin:8px 0}} .w{{color:#ffb74d}} pre{{white-space:pre-wrap;background:#1d1d1d;padding:12px;border-radius:8px;font-size:14px}}
 button{{width:100%;padding:18px;margin:8px 0;font-size:20px;border:0;border-radius:12px}}
 .a{{background:#2e7d32;color:#fff}} .r{{background:#8e2424;color:#fff}} .m{{color:#aaa;font-size:14px}}
+dt{{font-weight:600;margin-top:12px}} dd{{margin-left:0;overflow-wrap:anywhere}}
 </style></head><body>{body}</body></html>"""
 
 
@@ -205,8 +216,17 @@ BUSY_BANNER = ('<p class="w"><b>Install in progress.</b> Updating, restarting or
 
 def render(pending: Pending | None, last: str, action: str, note: str = "",
            health: tuple[str, list[str], str] = ("", [], ""), lift: tuple[str, str] = ("", ""),
-           undo_offer: tuple[str, list[dict]] = ("", []), busy: bool = False) -> str:
+           undo_offer: tuple[str, list[dict]] = ("", []), busy: bool = False,
+           release_status: tuple[tuple[str, str], ...] = ()) -> str:
     banner = BUSY_BANNER if busy else ""
+    release = ""
+    if release_status:
+        release = ('<details><summary>Release and recovery status</summary>'
+                   '<p class="m">Local observations only. A manifest fingerprint does not prove '
+                   'source integrity, testing or compatibility. This panel grants no approval.</p><dl>')
+        release += "".join(f'<dt>{html.escape(label)}</dt><dd class="m">{html.escape(value)}</dd>'
+                           for label, value in release_status)
+        release += "</dl></details>"
     if pending is None or pending.decision is not None:
         body = banner + "<h1>House Brain Deployer</h1><p>Nothing is waiting for your approval.</p>"
         if note:
@@ -248,7 +268,7 @@ def render(pending: Pending | None, last: str, action: str, note: str = "",
             body += f'<p class="m">Last result: {html.escape(result)}</p>'
         if last:
             body += f'<p class="m">Last: {html.escape(last)}</p>'
-        return PAGE.format(body=body)
+        return PAGE.format(body=body + release)
     left = max(0, int(pending.deadline - time.monotonic()))
     body = (
         banner +
@@ -260,7 +280,7 @@ def render(pending: Pending | None, last: str, action: str, note: str = "",
         '<button class="a" name="choice" value="approve">Approve</button>'
         '<button class="r" name="choice" value="reject">Reject</button></form>'
     )
-    return PAGE.format(body=body)
+    return PAGE.format(body=body + release)
 
 
 def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
@@ -346,7 +366,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                 return self._send(404, "not found")
             pending, last = board.snapshot()
             page = render(pending, last, self._action(), health=board.health(), lift=board.lift_state(),
-                          undo_offer=board.undo_state(), busy=board.busy())
+                          undo_offer=board.undo_state(), busy=board.busy(), release_status=board.release_status())
             base = self._action().rsplit("/", 1)[0]
             self._send(200, page.replace("</body>", self._github_line(base) + "</body>", 1))
 
@@ -380,7 +400,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                          "reload the page.", 400: "Unknown choice."}
                 return self._send(status, render(pending, last, self._action(), notes.get(status, ""),
                                                  health=board.health(), lift=board.lift_state(),
-                                                 undo_offer=board.undo_state(), busy=board.busy()))
+                                                 undo_offer=board.undo_state(), busy=board.busy(),
+                                                 release_status=board.release_status()))
             if route == "/allow-more":
                 status = board.accept_lift(nonce, user) if choice == "allow" else 400
                 pending, last = board.snapshot()
@@ -390,7 +411,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                          400: "Unknown choice."}
                 return self._send(status, render(pending, last, self._action(), notes.get(status, ""),
                                                  health=board.health(), lift=board.lift_state(),
-                                                 undo_offer=board.undo_state(), busy=board.busy()))
+                                                 undo_offer=board.undo_state(), busy=board.busy(),
+                                                 release_status=board.release_status()))
             status = board.decide(nonce, user, choice)
             pending, last = board.snapshot()
             notes = {200: f"Recorded: {choice}. You can close this page.",
@@ -399,7 +421,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
             self._send(200 if status == 200 else status,
                        render(None if status == 200 else pending, last, self._action(), notes.get(status, ""),
                               health=board.health(), lift=board.lift_state(), undo_offer=board.undo_state(),
-                              busy=board.busy()))
+                              busy=board.busy(), release_status=board.release_status()))
 
         def do_PUT(self):  # noqa: N802
             self._send(405, "method not allowed")

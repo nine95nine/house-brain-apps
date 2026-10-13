@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 
 from . import ghauth, net
+from .writer import WriterError
 
 ERROR, HOLD, INFO = "error", "hold", "info"
 ERROR_NOTIFY_STREAK = 3          # consecutive failed polls before an error push (~15 min at 5-min polls)
@@ -144,7 +145,24 @@ def ha_error(err: BaseException, *, notify_service: str = "") -> Reason:
                   "If it repeats, send this message to the AI.")
 
 
+def contained(code: str) -> str:
+    """D6(a): page line while this App run is held after the migrated runtime refused."""
+    return (f"Held: the migrated runtime refused an operation ({code[:80]}). Nothing more runs until the App "
+            "restarts under a fresh authorization. Do not delete migration files.")
+
+
 def classify(err: BaseException, *, branch: str, repo: str, notify_service: str) -> Reason:
+    if type(err).__name__ == "WorkingError":   # D6(a): no import of the migration package here
+        return Reason("FORWARD_HELD", ERROR, "The migrated runtime refused this operation; this App run is held.",
+                      "Nothing more runs until the App restarts under a fresh authorization. "
+                      "Do not delete migration files.")
+    if isinstance(err, WriterError):
+        if str(err) == "WRITER_BUSY":
+            return Reason("WRITER_BUSY", HOLD, "Another participating writer holds the operation lease.",
+                          "Wait for that operation to finish; no timeout grants ownership.")
+        return Reason("WRITER_UNSAFE", ERROR, "The operation lease could not be verified.",
+                      "Keep the legacy Deployer stopped. Review the lock and pending transaction; "
+                      "do not delete the lock file to force access.")
     if getattr(err, "service", "") == "github":
         return github_error(err, branch=branch, repo=repo)
     if (getattr(err, "service", "") == "home_assistant" or type(err).__name__ == "HAError"

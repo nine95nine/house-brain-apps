@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.3.23 — expanded candidate preparation (NOT INSTALL READY; was 0.3.13, 0.3.16, 0.3.17, 0.3.19, 0.3.20, 0.3.21; renumbered above main's 0.3.22)
+
+- Composes published 0.3.19 (one-tap writer lock enrollment), 0.3.20 (temporary folder-create rule removed; approval
+  ask/answer log lines), 0.3.21 (writer lock probe; read-only legacy stage folder) and 0.3.22 (10-minute probe hold).
+  The writer lock exists on the Pi (#561 comment 6125839870), and the E6 two-way busy test passed on 2026-10-13
+  (#561 6138174545; #454 6138024149).
+- Moving the old Deployer's history (#985 plan steps M4/M5; owner pop-ups 2026-10-13 "Build both",
+  "Yes, /data only", "Re-merge at Select", "7 days", "No tap after Select"):
+  - `house_brain_legacy_prepare_request.v1` reads Maintenance's stage read-only with a pinned copy of
+    Maintenance's own reader, merges it with the live history and, after Approve and under the shared lock, writes a
+    sealed copy and export inside `/data` only. Nothing is selected.
+  - `house_brain_legacy_select_request.v1` (within 7 days) merges again with the latest live history and, after
+    Approve, prepares the working copy and publishes `MIGRATED_STARTUP.json`. Other requests wait until the restart.
+  - `house_brain_legacy_unselect_request.v1` sets the selection aside (kept) before a restart; the new option
+    `return_to_previous_history` does the same at startup.
+  - Normal startup on the moved history with no tap: the Select-approved selection is the authority, re-checked at
+    every start with its folders and the lock.
+  - Fixes found on the way: the selection reader refused the installed `/data` (0755, accepted 2026-10-12); the
+    history checker refused outcomes published since 0.3.19 (`WRITER_*`).
+- A busy writer lock probe now names the lock it found busy (`dev`/`ino` from a plain `stat`; the lock is never opened
+  or created for this). E6 showed the Deployer's busy result could not name its inode (#561 6138174545).
+
+- Explicit directory bindings now carry through selected Journal reads/writes, package staging,
+  forward Service, recovery and initial migration publication. Each effect requires the current
+  writer lease and fresh phase authority; package directory permissions are preserved.
+- Losing the writer lease leaves recovery intent untouched, including audit and freeze files.
+  History pruning preserves the newest Undo tombstones and pending/frozen provenance.
+- The installed capture/provider/issuer, selected-backup custody, actual shared-writer enrollment
+  and Maintenance's separate staging authority remain unfinished. Local mimic results do not
+  qualify native installation or genuine migration/Undo/restore.
+- The installed-instance reader accepts this candidate's own version (it still allowed only the
+  retired 0.3.13 draft label, so a renumbered candidate could not observe itself) plus published
+  0.3.14/0.3.15/0.3.16/0.3.18/0.3.19/0.3.20. 0.3.13 and 0.3.17 were never published and are refused. Compatibility only, never qualification.
+- Owner-tap recovery session (owner pop-up 2026-10-12, design R1 option A; not wired into startup yet):
+  one authenticated phone Approve opens a recovery-only session for one exact interrupted install, at most
+  2 hours. Every step re-checks the session; a changed binding, lost lock, App restart or expiry holds. The
+  old 30-second grant could not cover a real Core restart wait or the restart re-ask. Never authorizes
+  forward work, initial import or Maintenance staging.
+- Installed `/data` is 0755 (native 0.3.16 self-report, #454 6117189087); the migration root rule required
+  0700 and would have refused the real install. Owner pop-up 2026-10-12 "Accept 0755 as observed": the data
+  root may be 0700 or 0755 exactly as observed, never chmod-ed, pinned for the run; every migration folder
+  inside it stays 0700 and is checked on every open. All other private roots stay 0700.
+- Layout R1, Deployer half (owner pop-up 2026-10-12 "Approve R1 for #985"): `/share` mapped read-write, and
+  AppArmor allows only the shared writer directory and its lock file. Creating them stays a separate
+  enrollment action. The Maintenance half belongs to its own lane.
+- Startup adapter for the owner-tap session (owner "Build on #985 now"): `owner_recovery_authorize` plugs the
+  issuer into `startup_hold`'s recovery provider, and `installed_root_specs` takes every root mode exactly as
+  observed. Not yet constructed by `main`: that needs the enrolled writer lock and the pending request's
+  manifest source.
+- Selected-backup custody: one Supervisor partial backup holding only the stopped legacy App, pinned by its
+  Supervisor metadata and re-verified before use. It never deletes, restores or downloads; the archive bytes
+  are not hashed, because this App cannot read them.
+- Startup wiring (owner "all of the above", 2026-10-12): `build_service` builds the owner-tap provider only when no
+  explicit provider is given. With no selection marker nothing new runs. With a v2 marker, the installed roots
+  are opened from observed modes and the enrolled lock is taken without creating it. A missing piece keeps today's
+  `STARTUP_PROVIDER_UNAVAILABLE` hold, and nothing is asked. Migrated recovery has no manifest source, so it takes
+  the existing conservative path (old files restored).
+- Writer enrollment (plan R1, step E1):
+  - `WriterLease(create=False)` refuses a missing lock (`WRITER_NOT_ENROLLED`); the installed forward path uses it.
+  - `enroll_writer()` creates only an absent 0700 directory and an absent empty 0600 lock.
+  - It refuses foreign, partial or mismatched shapes before creating anything, and never repairs them.
+
+- D6 safety items (Claude, hand-off 6110157412; owner decisions 2026-10-11), each for joint review:
+  - a migrated-runtime refusal holds this App run in memory (no write through the shared journal; page shows "Held");
+  - a lost write lease never rolls files back: the install stays as it is, the transaction is kept, FAILED_MANUAL
+    with the exact remedy (owner: "Freeze, don't touch files");
+  - an unusable migration start file is reported once (HELD status, never over an open install's marker, plus one
+    push) and the App stays stopped: no service, no migration;
+  - install history is capped at 500 records; only Undo-resolved records are pruned, otherwise recording fails closed.
+- Composed on top of published 0.3.18 (0.3.14 approval link, 0.3.15 restart recovery, 0.3.16 read-only
+  startup self-report and 0.3.18 AppArmor read rules kept).
+
+- Three-way composition retains published0.3.11 restart-timeout re-ask behavior and draft985 approval routing, defaults, complete install history, bounded audit cache, honest qualification display and inactive writer/migration pathways.
+- Source preparation only; production provider/issuer/startup integration and native/live acceptance remain unfinished. Historical0.3.10 carrier/test seals do not qualify these changed bytes. No0.3.13 carrier or store publication. Current-main composition preserves the accepted0.3.12 request-backlog hotfix before the poll cap.
+
+- Private startup selection and recovery-only startup hold are source-tested; authentic installed publisher/provider and forward startup remain unfinished.
 ## 0.3.22 — 2026-10-13
 
 The lock test's `hold` now lasts 10 minutes instead of 60 seconds (owner pop-up 2026-10-13 "Longer hold"). In three live

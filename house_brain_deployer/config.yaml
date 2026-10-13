@@ -1,5 +1,5 @@
 name: "House Brain Deployer"
-version: "0.3.22"
+version: "0.3.23"
 slug: "house_brain_deployer"
 description: >-
   Pull-based, owner-approved deployment of Home Assistant package files from the
@@ -59,7 +59,7 @@ ports_description:
   "8096/tcp": "GitHub Connect hand-off (open only during a Connect)"
 options:
   github_repo: "nine95nine/home-assistant-whole-home"
-  github_token: null
+  github_token: ""
   github_auth: "auto"
   retire_old_token: true
   requests_branch: "deploy/requests"
@@ -76,6 +76,10 @@ options:
   restart_approval_timeout_minutes: 10
   require_phone_unlock: true
   clear_freeze_for: ""
+  # 0.3.23 (#985, owner pop-up 2026-10-13 "Build both"): emergency switch. When on, the next start renames the
+  # moved-history selection aside and runs on the previous history, which was never changed. Turn it off again
+  # afterwards; Select refuses while it is on.
+  return_to_previous_history: false
 schema:
   github_repo: "match(^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$)"
   github_token: password?
@@ -93,4 +97,4 @@ schema:
   restart_approval_timeout_minutes: "int(2,30)"
   require_phone_unlock: bool
   clear_freeze_for: "match(^([a-z0-9][a-z0-9-]{2,63})?$)?"
-
+  return_to_previous_history: "bool?"
