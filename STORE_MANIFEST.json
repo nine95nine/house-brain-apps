@@ -2,8 +2,8 @@
   "apps": {
     "house_brain_ai_access": {
       "files": 25,
-      "source_manifest_sha256": "146bb672e00d3bd0da4b8c878cded07f9de6930843f867a72be692ee4b794a25",
-      "version": "0.1.4-dev"
+      "source_manifest_sha256": "b95944eb936c5f71d0e4dfd45e9b323475d108e71f903fbe11949e96ec7c4333",
+      "version": "0.1.5-dev"
     },
     "house_brain_deployer": {
       "files": 63,

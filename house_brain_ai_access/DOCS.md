@@ -133,6 +133,19 @@ state instead of `NOT_CONNECTED`. No Home Assistant YAML change is needed.
 - If the App's own kill-switch store is unreadable, the state is `FULL_STOP`, and the tile cannot
   loosen it (`HA_BRIDGE_STORE_FAIL_CLOSED`). Restart the App, or use `kill_switch_repair`.
 - If writing the sensor fails, nothing changes on the AI side.
+
+**AI connector heads-up (0.1.5-dev, needs AI perimeter 0.4.4).**
+- **The sensor.** With `ha_bridge` on, the App also writes `sensor.house_brain_ai_connectors`, built from
+  the perimeter's reply to the App's own heartbeat:
+  - `SIGN_IN_FAILED`: a connector's refresh was refused, so sign it in again.
+  - `EXPIRING_SOON`: 14 days or less before a connector unused for 90 days signs out.
+  - `OK`.
+  - `NO_CONNECTOR`: nothing signed in yet.
+  - `UNKNOWN`: no answer from the perimeter for an hour.
+- **Attributes:** each connector's days left and its reconnect link. For Claude that is
+  https://claude.ai/customize/connectors.
+- **The phone message:** the Maintenance App sends it.
+- **What the App does not do:** call any service, and nothing it writes changes AI access.
 - During a `kill_switch_repair` start the ceiling is `FULL_STOP`: the tile can only stop.
 
 **How it works.** Every tile change is written to the same audited, hash-chained kill-switch store

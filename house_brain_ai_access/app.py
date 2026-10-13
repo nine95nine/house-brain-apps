@@ -68,7 +68,11 @@ HA_BRIDGE_ORIGIN = 'http://supervisor'
 HA_SELECTOR_PATH = '/core/api/states/input_select.house_brain_ai_kill_switch'
 HA_EFFECTIVE_PATH = '/core/api/states/sensor.house_brain_ai_kill_switch_effective'
 HA_SELECTOR_ENTITY = 'input_select.house_brain_ai_kill_switch'
-HA_BRIDGE_ALLOWED = frozenset({('GET', HA_SELECTOR_PATH), ('POST', HA_EFFECTIVE_PATH)})
+# 0.1.5-dev (owner pop-up 2026-10-13 "Approve, alerts via Maintenance"): a third pair publishes the AI connector
+# sign-in summary (expiry, refused refresh) that the perimeter returns on the heartbeat reply. Still no service
+# call and no other entity; the Maintenance App turns this sensor into the phone heads-up.
+HA_CONNECTORS_PATH = '/core/api/states/sensor.house_brain_ai_connectors'
+HA_BRIDGE_ALLOWED = frozenset({('GET', HA_SELECTOR_PATH), ('POST', HA_EFFECTIVE_PATH), ('POST', HA_CONNECTORS_PATH)})
 HA_BRIDGE_INTERVAL = 30.0
 HA_BRIDGE_TIMEOUT = 5.0
 HA_BRIDGE_MAX_BYTES = 65536
@@ -337,7 +341,83 @@ class _NoHeartbeatRedirect(urlrequest.HTTPRedirectHandler):
         return None
 
 
-HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.4-dev'
+HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.5-dev'
+
+# 0.1.5-dev connector heads-up. Perimeter 0.4.4 answers an accepted heartbeat with `X-HB-Connectors`
+# (house_brain_ai_connectors.v1): per provider the last good sign-in/refresh, its expiry (90 days idle) and the
+# last refused refresh. The newest value is kept here (bounded text, never logged) for the HA bridge to publish.
+CONNECTORS_HEADER = 'X-HB-Connectors'
+CONNECTORS_SCHEMA = 'house_brain_ai_connectors.v1'
+CONNECTORS_MAX_BYTES = 1024
+CONNECTORS_WARN_DAYS = 14
+CONNECTOR_PROVIDERS = ('claude', 'chatgpt', 'grok')
+CONNECTOR_LABELS = {'claude': 'Claude', 'chatgpt': 'ChatGPT', 'grok': 'Grok'}
+CONNECTOR_RECONNECT_URLS = {'claude': 'https://claude.ai/customize/connectors',  # owner-given link
+                            'chatgpt': 'https://chatgpt.com/', 'grok': 'https://grok.com/'}
+CONNECTORS_STALE_S = 3600     # no fresh reply for an hour: the summary is reported UNKNOWN, never OK
+_connectors_lock = threading.Lock()
+_connectors_latest: dict[str, Any] = {'raw': None, 'at': None}
+
+
+def remember_connectors(value: Any, now: float) -> None:
+    """Keep the newest X-HB-Connectors value (text, bounded). Anything else is ignored."""
+    if type(value) is not str or not 0 < len(value.encode('utf-8', 'replace')) <= CONNECTORS_MAX_BYTES:
+        return
+    with _connectors_lock:
+        _connectors_latest['raw'], _connectors_latest['at'] = value, float(now)
+
+
+def latest_connectors() -> tuple[str | None, float | None]:
+    with _connectors_lock:
+        return _connectors_latest['raw'], _connectors_latest['at']
+
+
+def _iso_day(ts: Any) -> str | None:
+    return (datetime.fromtimestamp(ts, timezone.utc).strftime('%Y-%m-%d')
+            if type(ts) is int and ts > 0 else None)
+
+
+def connectors_payload(raw: str | None, received_at: float | None, now: float) -> dict[str, Any]:
+    """The body POSTed to sensor.house_brain_ai_connectors. States, worst first: SIGN_IN_FAILED (a refresh was
+    refused after the last good one), EXPIRING_SOON (<= 14 days left), OK, NO_CONNECTOR (none signed in yet),
+    UNKNOWN (no fresh perimeter answer). Attributes change at most once a day (no per-cycle timestamps), so Home
+    Assistant does not record a new state every 30 s."""
+    attributes: dict[str, Any] = {'friendly_name': 'House Brain AI Connectors', 'schema': CONNECTORS_SCHEMA,
+                                  'warn_days': CONNECTORS_WARN_DAYS, 'providers': {}, 'needs_owner': []}
+    value = None
+    if type(raw) is str and isinstance(received_at, (int, float)) and now - received_at <= CONNECTORS_STALE_S:
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            value = None
+    if (type(value) is not dict or value.get('schema') != CONNECTORS_SCHEMA
+            or type(value.get('providers')) is not dict):
+        return {'state': 'UNKNOWN', 'attributes': attributes}
+    rank = {'NO_CONNECTOR': 0, 'OK': 1, 'EXPIRING_SOON': 2, 'SIGN_IN_FAILED': 3}
+    overall = 'NO_CONNECTOR'
+    for provider in CONNECTOR_PROVIDERS:
+        item = value['providers'].get(provider)
+        if type(item) is not dict:
+            continue
+        last_ok, expires, last_fail = item.get('last_ok_s'), item.get('expires_s'), item.get('last_fail_s')
+        last_ok = last_ok if type(last_ok) is int and last_ok > 0 else None
+        expires = expires if type(expires) is int and expires > 0 else None
+        last_fail = last_fail if type(last_fail) is int and last_fail > 0 else None
+        if last_fail is not None and item.get('fail') == 'INVALID_GRANT' and (last_ok is None or last_fail > last_ok):
+            state, days = 'SIGN_IN_FAILED', None
+        elif last_ok is not None and expires is not None:
+            days = max(0, int((expires - now) // 86400))
+            state = 'EXPIRING_SOON' if days <= CONNECTORS_WARN_DAYS else 'OK'
+        else:
+            continue
+        attributes['providers'][provider] = {'name': CONNECTOR_LABELS[provider], 'state': state, 'days_left': days,
+                                             'expires_on': _iso_day(expires), 'last_used_on': _iso_day(last_ok),
+                                             'reconnect_url': CONNECTOR_RECONNECT_URLS[provider]}
+        if state != 'OK':
+            attributes['needs_owner'].append(provider)
+        if rank[state] > rank[overall]:
+            overall = state
+    return {'state': overall, 'attributes': attributes}
 
 
 def post_heartbeat(url: str, key: str, heartbeat: dict[str, Any], *, opener: Any = None) -> int:
@@ -354,7 +434,13 @@ def post_heartbeat(url: str, key: str, heartbeat: dict[str, Any], *, opener: Any
                                          urlrequest.HTTPSHandler(context=ssl.create_default_context()))
     try:
         with opener.open(req, timeout=HEARTBEAT_TIMEOUT) as response:
-            return int(response.status)
+            status = int(response.status)
+            if status == 204:  # 0.1.5-dev: perimeter 0.4.4 connector summary (absent from older perimeters)
+                try:
+                    remember_connectors(response.headers.get(CONNECTORS_HEADER), time.time())
+                except Exception:
+                    pass  # bookkeeping only: never changes the heartbeat result
+            return status
     except urlerror.HTTPError as exc:
         return int(exc.code)
     except Exception:
@@ -590,6 +676,15 @@ def ha_bridge_cycle(ceiling: str, *, publish_view: bool = True, http: Any = None
             result['publish_status'] = ha_bridge_call(http, 'POST', HA_EFFECTIVE_PATH, payload)[0]
         except HaBridgeUnavailableError:
             result['publish_status'] = 0
+        # 0.1.5-dev: the connector sign-in summary, once the perimeter has answered at least once.
+        raw, received_at = latest_connectors()
+        if raw is not None:
+            connectors = connectors_payload(raw, received_at, clock)
+            result['connectors'] = connectors['state']
+            try:
+                result['connectors_status'] = ha_bridge_call(http, 'POST', HA_CONNECTORS_PATH, connectors)[0]
+            except HaBridgeUnavailableError:
+                result['connectors_status'] = 0
     except HaBridgeAllowlistError:
         raise
     except Exception:
@@ -599,13 +694,15 @@ def ha_bridge_cycle(ceiling: str, *, publish_view: bool = True, http: Any = None
 
 def _bridge_log_key(result: dict[str, Any]) -> tuple[Any, ...]:
     status = result.get('publish_status')
-    return (result.get('reason'), result.get('effective'), status in (200, 201))
+    return (result.get('reason'), result.get('effective'), status in (200, 201), result.get('connectors'))
 
 
 def _emit_bridge(result: dict[str, Any]) -> None:
     status = result.get('publish_status')
     emit(str(result.get('reason')), effective=str(result.get('effective')),
          published='YES' if status in (200, 201) else f'NO_{status if type(status) is int else 0}')
+    if result.get('connectors') is not None:  # 0.1.5-dev: the summary state only, never times or links
+        emit('AI_CONNECTORS', state=str(result['connectors']))
 
 
 def ha_bridge_loop(stop: threading.Event, ceiling: str, *, publish_view: bool = True, cycle: Any = None,

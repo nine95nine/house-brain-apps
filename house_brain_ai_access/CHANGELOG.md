@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.5-dev
+
+AI connector heads-up (owner pop-up 2026-10-13 "Approve, alerts via Maintenance"). The claude.ai connector
+dropped without warning on 2026-10-13. With `ha_bridge` on, this App now publishes
+`sensor.house_brain_ai_connectors`:
+- **Source.** AI perimeter 0.4.4 answers each accepted heartbeat with the header `X-HB-Connectors`. Per
+  connector (Claude, ChatGPT, Grok) it gives the last good sign-in or refresh, the expiry (90 days idle)
+  and the last refused refresh.
+- **States, worst first:**
+  - `SIGN_IN_FAILED`: a refresh was refused after the last good one.
+  - `EXPIRING_SOON`: 14 days or less left.
+  - `OK`.
+  - `NO_CONNECTOR`: none signed in yet.
+  - `UNKNOWN`: no fresh perimeter answer for an hour.
+- **Attributes:** per connector the state, days left, expiry day, last-used day and reconnect link
+  (`https://claude.ai/customize/connectors` for Claude), plus `needs_owner`. The attributes change at most
+  once a day.
+- **Phone heads-up:** the Maintenance App turns this sensor into a notification.
+- **Bridge allowlist:** one more (method, path) pair, `POST /core/api/states/sensor.house_brain_ai_connectors`,
+  for three in all. Still no service call and no other entity; nothing on the AI side changes.
+- **Unchanged:** the heartbeat body, signature, key, cadence and the 204 check. An older perimeter sends no
+  header, and then the sensor is simply not written.
+- **Version:** the User-Agent is `house-brain-ai-access/0.1.5-dev`.
+
 ## 0.1.4-dev
 
 Live fix (2026-10-11): the snapshot read path accepts the live Maintenance Broker 0.6.0. The handler
