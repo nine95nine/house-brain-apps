@@ -1,9 +1,9 @@
 {
   "schema_version": "house_brain_entity_read_policy.v1",
-  "contract_version": "1.3.0",
+  "contract_version": "1.4.0",
   "status": "REPOSITORY_CANDIDATE_NOT_COMMISSIONED",
   "initiative": "#212 G0 (with #60, #56)",
-  "owner_decisions": "Owner popups 2026-09-30 (recorded in PR #541, docs/governance/OWNER_DECISIONS_2026-09-30.md): 'Allowlisted snapshot (Recommended)'; 'Broad (non-sensitive)'; owner review of the first live dry run 2026-10-02 (Inspector 0.2.0, 1491 ids; docs/governance/OWNER_DECISIONS_2026-10-01.md): street-name and car-status sensors 'Keep them'; personal names 'Share with neutral labels' (owner_name_aliases); rest 'Approve the rest (Recommended)'; health-bridge prefix 'Reserve and block it now (Recommended)' (2026-10-02; owner_deny_prefixes sensor.hb_health_ and binary_sensor.hb_health_); Owner pop-up 2026-10-13 'Both (Recommended)' (Cooling chat): history_list adds house RH, outdoor temperature, outdoor dew point and Vent Start OK",
+  "owner_decisions": "Owner popups 2026-09-30 (recorded in PR #541, docs/governance/OWNER_DECISIONS_2026-09-30.md): 'Allowlisted snapshot (Recommended)'; 'Broad (non-sensitive)'; owner review of the first live dry run 2026-10-02 (Inspector 0.2.0, 1491 ids; docs/governance/OWNER_DECISIONS_2026-10-01.md): street-name and car-status sensors 'Keep them'; personal names 'Share with neutral labels' (owner_name_aliases); rest 'Approve the rest (Recommended)'; health-bridge prefix 'Reserve and block it now (Recommended)' (2026-10-02; owner_deny_prefixes sensor.hb_health_ and binary_sensor.hb_health_); Owner pop-up 2026-10-13 'Both (Recommended)' (Cooling chat): history_list adds house RH, outdoor temperature, outdoor dew point and Vent Start OK; Owner pop-up 2026-10-13 'Exact exception in Inspector' (AI Access chat, Work Board #942 row 56): registry_exempt_entities names the two App-written sensors sensor.house_brain_ai_connectors (AI connector heads-up, AI Access 0.1.5-dev) and sensor.house_brain_ai_kill_switch_effective (kill-switch bridge, AI Access 0.1.3-dev) as exportable without an entity-registry entry; state only (default attributes), every other rule still applies",
   "authority": "READ_POLICY_ONLY_NO_EXECUTION",
   "domains": [
     "sensor",
@@ -63,6 +63,10 @@
     "binary_sensor.cooling_arbiter_v2_pump_pulse_advised",
     "sensor.cooling_arbiter_v2_pump_pulse_advised"
   ],
+  "registry_exempt_entities": [
+    "sensor.house_brain_ai_connectors",
+    "sensor.house_brain_ai_kill_switch_effective"
+  ],
   "default_attributes": [
     "unit_of_measurement",
     "device_class",
@@ -115,7 +119,8 @@
     "Excluded entity ids are never reported; the dry-run report carries only per-reason counts and the ids that would be exported.",
     "Every change to this file is an owner-reviewed repository change; owner_deny_* always wins.",
     "owner_name_aliases: personal names are replaced by neutral labels in the exported copy only (entity ids, state and attribute text, history); an exported id that still contains a name word is excluded (NAME_ALIAS_INCOMPLETE). 'ledger' alone is not a name form (sensor.house_brain_learning_memory_ledger).",
-    "owner_deny_prefixes: sensor.hb_health_ and binary_sensor.hb_health_ are reserved for the future #56 health bridge and never exported, whatever their content (owner decision 2026-10-02). The builder refuses a policy that claims health_bridge_prefix_in_owner_deny_prefixes without both prefixes (POLICY_HEALTH_PREFIX_NOT_DENIED)."
+    "owner_deny_prefixes: sensor.hb_health_ and binary_sensor.hb_health_ are reserved for the future #56 health bridge and never exported, whatever their content (owner decision 2026-10-02). The builder refuses a policy that claims health_bridge_prefix_in_owner_deny_prefixes without both prefixes (POLICY_HEALTH_PREFIX_NOT_DENIED).",
+    "registry_exempt_entities (1.4.0): exact ids only, never a pattern; at most 8; each must be in an exported domain. These House Brain sensors are written by an App through the Core API, so Home Assistant's entity registry never lists them; without this they fail the NOT_IN_REGISTRY rule. Deny lists, blocked domains/devices, device-class and name-category rules, the attribute allowlist and the content detectors still apply."
   ],
   "token_exemptions_rationale": "Cooling Arbiter evap pump pulse advice: 'pulse' is a #60 HEALTH token, but these are pump-control advisories, not human health data. Owner-reviewable."
 }

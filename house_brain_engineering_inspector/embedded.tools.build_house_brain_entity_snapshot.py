@@ -83,6 +83,13 @@ def load_policy(policy: dict[str, Any] | None = None) -> dict[str, Any]:
         and type(a["text_words"]) is list and a["text_words"]
         and all(type(w) is str and ALIAS_WORD_RE.fullmatch(w) for w in a["text_words"])
         for a in aliases), "POLICY_NAME_ALIASES_INVALID")
+    # Policy 1.4.0 (owner pop-up 2026-10-13 "Exact exception in Inspector"): a few House Brain sensors are written
+    # by an App straight into Home Assistant's state machine, so the entity registry never vouches for them. Only
+    # these exact ids (no pattern) may be exported without a registry entry; every other rule still applies.
+    exempt = p.get("registry_exempt_entities", [])
+    _require(type(exempt) is list and len(exempt) <= MAX_REGISTRY_EXEMPT and len(set(exempt)) == len(exempt) and all(
+        type(e) is str and ENTITY_ID_RE.fullmatch(e) is not None and e.split(".", 1)[0] in p["domains"]
+        for e in exempt), "POLICY_REGISTRY_EXEMPT_INVALID")
     return p
 
 
@@ -162,6 +169,7 @@ def _registry(registry: Any) -> dict[str, tuple[str, str | None]]:
 
 
 MAX_HISTORY_CHANGES: Final = 200
+MAX_REGISTRY_EXEMPT: Final = 8
 
 
 def _history(history: Any, exported: dict[str, dict[str, Any]], history_list: list[str],
@@ -207,6 +215,7 @@ def build(states: Any, registry: Any, *, now: str, mode: str = "dry_run",
     deny = frozenset(p["owner_deny_entities"])
     deny_prefixes = tuple(p["owner_deny_prefixes"])
     exempt = frozenset(p["token_exemptions"])
+    registry_exempt = frozenset(p.get("registry_exempt_entities", []))
     aliaser = _Aliaser(p.get("owner_name_aliases", []))
     original_ids = frozenset(row.get("entity_id") for row in states if type(row) is dict)
     by_original: dict[str, dict[str, Any]] = {}
@@ -231,9 +240,12 @@ def build(states: Any, registry: Any, *, now: str, mode: str = "dry_run",
             _exclude(counts, "BLOCKED_DOMAIN"); continue
         if domain not in domains:
             _exclude(counts, "DOMAIN_NOT_EXPORTED"); continue
-        if entity_id not in reg:
+        if entity_id in reg:
+            platform, device_id = reg[entity_id]
+        elif entity_id in registry_exempt:
+            platform, device_id = None, None  # policy 1.4.0: an exact, owner-approved App-written sensor
+        else:
             _exclude(counts, "NOT_IN_REGISTRY"); continue  # fail closed: the registry must vouch for it
-        platform, device_id = reg[entity_id]
         if platform in p["excluded_platforms"]:
             _exclude(counts, "PLATFORM_EXCLUDED"); continue
         if device_id is not None and device_id in blocked_devices:
