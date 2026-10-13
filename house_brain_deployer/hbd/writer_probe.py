@@ -3,7 +3,7 @@
 A request ``house_brain_writer_probe_request.v1`` names who asks, where to report and one operation:
 
 * ``try``  - take the lock without waiting; report ``ACQUIRED`` or ``WRITER_BUSY``; release at once.
-* ``hold`` - take the lock and keep it for a fixed 60 s (no field changes that), re-checking its identity
+* ``hold`` - take the lock and keep it for a fixed 10 minutes (0.3.22; was 60 s; no field changes that), re-checking its identity
              every second; then release.
 
 Both use ``WriterLease(create=False)``: a missing lock is refused, never created. Nothing else is read or
@@ -21,7 +21,9 @@ from .writer import WriterError, WriterLease
 
 SCHEMA = "house_brain_writer_probe_request.v1"
 OPERATIONS = ("try", "hold")
-HOLD_SECONDS = 60
+# 0.3.22 (owner pop-up 2026-10-13 "Longer hold"): 60 s was too short for the other App's prompt to arrive and be
+# approved inside the hold (E6 rounds 1a-1c, #942 6136601251). Holding only makes the other App wait.
+HOLD_SECONDS = 600
 
 
 def hold_seconds() -> float:

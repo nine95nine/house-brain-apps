@@ -496,8 +496,10 @@ class Service:
             self._announce_hold(limited, issue)
             return
         engine = self.ensure_engine()
+        hold = int(writer_probe.hold_seconds())
         what = ("try the shared writer lock once and let it go at once" if operation == "try" else
-                f"hold the shared writer lock for {int(writer_probe.hold_seconds())} seconds")
+                f"hold the shared writer lock for {hold // 60} minutes" if hold >= 120 else
+                f"hold the shared writer lock for {hold} seconds")
         decision = engine._ask(request_id, "LOOKUP", "House Brain: test the shared writer lock?",
                                f"The Deployer will {what}. While it holds the lock the Maintenance App cannot "
                                "write. Nothing is created, changed or deleted.",

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.22 — 2026-10-13
+
+The lock test's `hold` now lasts 10 minutes instead of 60 seconds (owner pop-up 2026-10-13 "Longer hold"). In three live
+tries the Maintenance App's prompt arrived minutes after the Deployer's, so its `try` never fell inside a 60-second hold.
+Holding only makes the other App wait; nothing is created or changed. Everything else in 0.3.21 is unchanged; draft
+PR #985 moves to 0.3.23.
+
 ## 0.3.21 — 2026-10-13
 
 A one-tap test of the shared writer lock, and read-only access to the legacy history stage (owner pop-up 2026-10-13
