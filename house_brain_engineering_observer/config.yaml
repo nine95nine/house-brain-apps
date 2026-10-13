@@ -1,0 +1,51 @@
+name: "House Brain Engineering Observer"
+version: "0.2.5"
+slug: "house_brain_engineering_observer"
+description: >-
+  Read-only House Brain engineering telemetry and bounded default-role read worker
+  for Home Assistant OS. Publishes sanitized Supervisor/platform telemetry, explicit
+  App info reads, and specialized derived identity facts to the separate Maintenance
+  Telemetry Broker. All-App inventory is isolated in the one-shot Maintenance
+  Inventory Scout. It has no Home Assistant API, Docker API,
+  device, shell-command, entity-control, App-control, or physical authority.
+arch:
+  - aarch64
+homeassistant: "2026.8.3"
+startup: application
+boot: auto
+stage: experimental
+backup: hot
+init: false
+apparmor: true
+hassio_api: true
+hassio_role: default
+homeassistant_api: false
+docker_api: false
+auth_api: false
+full_access: false
+host_network: false
+host_ipc: false
+host_dbus: false
+host_pid: false
+host_uts: false
+stdin: false
+usb: false
+uart: false
+udev: false
+gpio: false
+devicetree: false
+kernel_modules: false
+audio: false
+video: false
+tmpfs: true
+map:
+  - type: addons
+    read_only: true
+options:
+  broker_url: null
+  broker_write_key: null
+  publish_interval_seconds: 90
+schema:
+  broker_url: url
+  broker_write_key: password
+  publish_interval_seconds: "int(60,300)"

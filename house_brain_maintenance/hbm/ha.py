@@ -553,6 +553,11 @@ LOCAL_SCOUT = "local_house_brain_maintenance_inventory_scout"
 RE_STORE_SCOUT = re.compile(r"[0-9a-f]{8}_house_brain_maintenance_inventory_scout")
 SCOUT_OPTION_NAMES = ("broker_inventory_write_key", "broker_url")
 RE_MIGRATE_NEW = re.compile(r"[0-9a-f]{8}_house_brain_deployer")
+# 0.9.8 (owner pop-ups 2026-10-13 "Observer to the store", "One Approve does it all"): the Engineering Observer moves
+# from the local folder to the House Brain store. One owner Approve opens exactly the calls of that switch.
+LOCAL_OBSERVER = "local_house_brain_engineering_observer"
+RE_STORE_OBSERVER = re.compile(r"[0-9a-f]{8}_house_brain_engineering_observer")
+OBSERVER_OPTION_NAMES = ("broker_url", "broker_write_key", "publish_interval_seconds")
 # The Deployer 0.3.7 option names; nothing else is ever copied (the store App has the same schema).
 DEPLOYER_OPTION_KEYS = ("github_repo", "github_token", "github_auth", "retire_old_token", "requests_branch",
                         "source_ref_allowlist", "notify_service", "owner_username", "dry_run", "poll_seconds",
@@ -574,6 +579,21 @@ def migrate_call_ok(old: str, new: str, remove: bool, method: str, path: str, bo
         return body in ({"boot": "manual"}, {"boot": "auto"})
     return empty and path in {f"/addons/{old}/stop", f"/addons/{old}/start", f"/addons/{new}/start",
                               f"/addons/{new}/stop"}
+
+
+def observer_move_call_ok(old: str, new: str, method: str, path: str, body: Any) -> bool:
+    """0.9.8: True only for the exact calls of one open ``observer_move_target`` (bodies compared whole)."""
+    if method == "GET":
+        return path in (f"/addons/{new}/info", f"/addons/{new}/logs/latest")
+    if method != "POST":
+        return False
+    if path == f"/addons/{new}/options":
+        opts = body.get("options") if isinstance(body, dict) and set(body) == {"options"} else None
+        return isinstance(opts, dict) and tuple(sorted(opts)) == OBSERVER_OPTION_NAMES
+    if path == f"/addons/{old}/options":
+        return body in ({"boot": "manual"}, {"boot": "auto"})
+    return body in (None, {}) and path in {f"/addons/{old}/stop", f"/addons/{old}/start", f"/addons/{new}/start",
+                                           f"/addons/{new}/stop"}
 
 
 def app_backup_body_ok(slug: str, path: str, body: Any) -> bool:
@@ -679,6 +699,7 @@ class HomeAssistant:
         self._stage: str | None = None            # 0.7.4: the allowlisted local App whose source is being staged
         self._key: dict | None = None             # 0.8.0: {"role", "slug", "names"} during one key change
         self._legacy: dict | None = None          # 0.9.5: {"bslug"} during one legacy Deployer backup/stage step
+        self._obsmove: dict | None = None         # 0.9.8: {"old", "new"} during the Observer switch to the store
         self._self_slug: str | None = None
         # 0.6.1 shared Core socket (see shared_ws)
         self._shared_lock = threading.Lock()
@@ -742,6 +763,9 @@ class HomeAssistant:
                 and set(body) == {"options"} and isinstance(body["options"], dict)
                 and tuple(sorted(body["options"])) == SCOUT_OPTION_NAMES)):
             return
+        om = self._obsmove                        # 0.9.8: the Observer switch to the store
+        if om is not None and observer_move_call_ok(om["old"], om["new"], method, path, body):
+            return
         mig = self._migrate
         if mig is not None and migrate_call_ok(mig["old"], mig["new"], mig["remove"], method, path, body):
             return
@@ -757,7 +781,7 @@ class HomeAssistant:
 
     def _busy(self) -> bool:
         return any(t is not None for t in (self._target, self._fix, self._system, self._os_act, self._pifw,
-                                           self._migrate, self._legacy,
+                                           self._migrate, self._legacy, self._obsmove,
                                            self._entity,
                                            self._stage, self._key))
 
@@ -1012,6 +1036,71 @@ class HomeAssistant:
         if not isinstance(data, bytes):
             raise HAError("BACKUP_DOWNLOAD")
         return data
+
+    # -- 0.9.8 Engineering Observer from the store ----------------------------------------------
+    def store_observer_slug(self) -> str | None:
+        """This store's Observer (``<hash>_house_brain_engineering_observer``), or None when this App is not a store
+        App itself."""
+        slug = f"{self.self_slug().split('_', 1)[0]}_house_brain_engineering_observer"
+        return slug if RE_STORE_OBSERVER.fullmatch(slug) else None
+
+    @contextmanager
+    def observer_move_target(self, old: str, new: str):
+        """0.9.8: open the Observer switch-over calls: the store Observer's info, log and three settings, the local
+        Observer's stop/start and Start-on-boot, the store Observer's start/stop. Nothing else, never an uninstall."""
+        if old != LOCAL_OBSERVER or old != self.observer or not isinstance(new, str) \
+                or not RE_STORE_OBSERVER.fullmatch(new) or new != self.store_observer_slug() or new == self.scout:
+            raise ForbiddenCall("observer move target")
+        if self._busy():
+            raise ForbiddenCall("nested observer move target")
+        self._obsmove = {"old": old, "new": new}
+        try:
+            yield
+        finally:
+            self._obsmove = None
+
+    def copy_observer_settings(self) -> tuple[str, str]:
+        """Only inside ``observer_move_target``: copy the local Observer's three settings to the store Observer. The
+        key is registered as a secret at once, held in memory only for the copy: (broker URL, key fingerprint)."""
+        om = self._obsmove
+        if om is None:
+            raise ForbiddenCall("observer copy outside the switch-over")
+        data = self._supervisor("GET", f"/addons/{om['old']}/info")
+        raw = data.get("options") if isinstance(data, dict) else None
+        if not isinstance(raw, dict) or tuple(sorted(raw)) != OBSERVER_OPTION_NAMES:
+            raise HAError("OBSERVER_OPTIONS")
+        url, key, every = raw.get("broker_url"), raw.get("broker_write_key"), raw.get("publish_interval_seconds")
+        if not isinstance(url, str) or not url or len(url) > 300 or not isinstance(key, str) or not key \
+                or not isinstance(every, int) or isinstance(every, bool) or not 60 <= every <= 300:
+            raise HAError("OBSERVER_OPTIONS")
+        net.register_secret(key)
+        self._supervisor("POST", f"/addons/{om['new']}/options",
+                         body={"options": {"broker_url": url, "broker_write_key": key,
+                                           "publish_interval_seconds": every}}, timeout=60)
+        return url, fingerprint(key)
+
+    def store_observer_view(self) -> AppView:
+        """Only inside ``observer_move_target``: the store Observer's state, version, URL and key fingerprint."""
+        om = self._obsmove
+        if om is None:
+            raise ForbiddenCall("observer view outside the switch-over")
+        return _project(om["new"], self._supervisor("GET", f"/addons/{om['new']}/info"), "broker_write_key")
+
+    def store_observer_log(self) -> str:
+        """Only inside ``observer_move_target``: the store Observer's current-run log (redacted)."""
+        om = self._obsmove
+        if om is None:
+            raise ForbiddenCall("observer log outside the switch-over")
+        data = self._call("GET", f"/addons/{om['new']}/logs/latest", timeout=60, raw=True)
+        return net.redact(bytes(data or b"")[-262144:].decode("utf-8", "replace"))
+
+    def retarget_observer(self, new: str) -> None:
+        """Make this store's Observer the Observer target (owner-approved switch, or its record after a restart)."""
+        if not isinstance(new, str) or not RE_STORE_OBSERVER.fullmatch(new) or new != self.store_observer_slug() \
+                or new == self.scout:
+            raise ForbiddenCall("observer target")
+        self.observer = new
+        self._build_routes()
 
     def deployer_options(self) -> dict:
         """0.6.6, only inside ``migrate_target``: the old Deployer's options, limited to the known names. The token

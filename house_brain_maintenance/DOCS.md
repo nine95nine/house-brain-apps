@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.7)
+## What it does (0.9.8)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -257,6 +257,9 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
   Inspector, AI Access and Scout during an automatic key change, from 0.8.0), make
   full backups except right before a Core/OS update you approved, or restore anything but the one App
   it just updated or, after a failed Core update, Home Assistant only from the backup it just made.
+  The only stops are the store switch-overs you approve, each once (the Deployer from 0.6.6, the Engineering
+  Observer from 0.9.8): the local App is stopped and set to manual start, never uninstalled by the Observer switch,
+  and started again automatically if the switch fails.
 - Keep, log or report other Apps' settings or passwords (it reads only versions and states).
 - Touch files, restart Home Assistant (except as part of the Core update or restore above), or control
   any device. The one exception (0.7.4): after your Approve of a one-tap install, the carrier's own script writes
@@ -454,6 +457,27 @@ stopped and installed throughout. An assistant files two `LEGACY_STAGE` requests
 
 A strict reader checks the backup's App archive: only plain files and folders, version 0.3.6, stopped. Anything
 unexpected stops it with a reason, and nothing is used. Nothing is ever uninstalled, restored or started here.
+
+## Engineering Observer from the store — from 0.9.8
+
+The second step of the store move (owner pop-ups 2026-10-12 "Scout first, then others" and 2026-10-13 "Observer to
+the store", "One Approve does it all").
+
+1. Install "House Brain Engineering Observer" from the House Brain store. Do not start it: this App starts it.
+2. Your phone asks once: "use the store Engineering Observer?". Approve needs Face ID.
+3. On Approve, in one go:
+   - its 3 settings (Broker address, write key, publish interval) are copied to the store Observer and checked by
+     fingerprint (the key is never logged);
+   - the local Observer is set to manual start and stopped, so two Observers never publish at once and a reboot
+     cannot bring it back (it is kept, never uninstalled);
+   - the store Observer is started, and its log must show the Broker accepted its first report (a new session from
+     sequence 1) within 10 minutes.
+4. Done: the store Observer is the Observer from then on (key changes, health checks, store updates with review,
+   backup, health watch and restore). This survives a restart.
+
+If the store Observer is not accepted in time, everything is put back automatically: the store Observer is
+stopped, and the local one is set to start at boot and started again (its data is untouched). If this App
+restarts in the middle, it finishes the check first and undoes only when no report was accepted. Reject is final.
 
 ## Inventory Scout from the store — from 0.9.3
 

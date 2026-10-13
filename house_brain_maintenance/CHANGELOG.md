@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.8
+
+Engineering Observer from the store, the second step of the store move (owner pop-ups 2026-10-13: "Observer to the
+store", "One Approve does it all"; Work Board #942 claim 6138696542). Contains 0.9.7 unchanged otherwise.
+
+- **Store.** The Engineering Observer is published in the House Brain store as 0.2.5. It is the accepted 0.2.4 with
+  only the unused `run.sh` removed, which the store's privacy gate refuses.
+- **One Approve switches it.** When the store Observer is installed, this App asks once. On Approve it:
+  - copies the 3 settings and reads them back by fingerprint;
+  - sets the local Observer to manual start and stops it (kept, never uninstalled);
+  - starts the store Observer;
+  - waits for `maintenance_publish=accepted` in its log (up to 10 minutes).
+  Any failure puts the local Observer back automatically. The switch is journalled: after a restart it finishes
+  the check, and undoes only when no report was accepted, because the Broker would refuse the old session after
+  accepting the new one.
+- **From then on** key changes and health checks use the store Observer, recorded so that it survives a restart.
+
 ## 0.9.7
 
 The writer-lock test holds long enough to overlap (Deployer lane request #942 comment 6136601251; owner pop-up
