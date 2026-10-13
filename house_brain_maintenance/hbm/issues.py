@@ -848,6 +848,59 @@ REASON_TEXT_FALLBACK = {
 }
 
 
+# -- 0.9.11: AI connector sign-ins (owner pop-ups 2026-10-13 "Build it", "You, as 0.9.11"). AI Access 0.1.5-dev
+# publishes sensor.house_brain_ai_connectors from the perimeter's own record (0.4.4; Work Board row 54): per provider
+# a state, days left and the end day. A grant ends after 90 days unused. This App turns it into the phone heads-up.
+CONNECTOR_NAMES = {"claude": "Claude", "chatgpt": "ChatGPT", "grok": "Grok"}
+# Fixed here, never taken from the entity: Claude's page is the owner-given link; the others are the providers' home
+# pages (the same values AI Access publishes).
+CONNECTOR_LINKS = {"claude": "https://claude.ai/customize/connectors", "chatgpt": "https://chatgpt.com/",
+                   "grok": "https://grok.com/"}
+CONNECTOR_STATES = ("SIGN_IN_FAILED", "EXPIRING_SOON", "OK", "NO_CONNECTOR", "UNKNOWN")
+CONNECTOR_STEPS = (14, 7, 1)              # heads-up 14, 7 and 1 day ahead (owner: "within 14 days"), then ended
+
+
+def connector_step(days_left: int) -> int | None:
+    """14, 7 or 1 ahead; 0 = ended; None = not due yet."""
+    if days_left < 1:
+        return 0
+    due = [s for s in CONNECTOR_STEPS if days_left <= s]
+    return min(due) if due else None
+
+
+def from_connectors(providers: dict | None) -> list[Finding]:
+    """``providers``: the projected attributes of sensor.house_brain_ai_connectors (``ha.project_attrs``)."""
+    out: list[Finding] = []
+    for name, row in sorted((providers or {}).items()):
+        if name not in CONNECTOR_NAMES or not isinstance(row, dict):
+            continue
+        label, link, state = CONNECTOR_NAMES[name], CONNECTOR_LINKS[name], row.get("state")
+        if state == "SIGN_IN_FAILED":
+            out.append(Finding(f"connector:{name}:failed", "credential_connector", CRITICAL,
+                               f"{label} connector: its House Brain sign-in was refused, so {label} cannot read "
+                               "the house",
+                               steps=(f"Open {link} and reconnect House Brain (read-only); sign in when asked.",),
+                               link=link, facts={"connector": name}))
+            continue
+        days = row.get("days_left")
+        if state != "EXPIRING_SOON" or not isinstance(days, int):
+            continue
+        step = connector_step(days)
+        if step is None:
+            continue
+        if step == 0:
+            title = f"{label} connector: its House Brain sign-in has ended (unused for 90 days)"
+            steps = (f"Open {link} and reconnect House Brain (read-only).",)
+        else:
+            title = f"{label} connector: its House Brain sign-in ends in {days} day{'s' if days != 1 else ''}"
+            steps = (f"Ask {label} one question that reads the house: every use keeps the sign-in another 90 days.",
+                     f"If {label} asks you to reconnect, open {link} and sign in again.")
+        out.append(Finding(f"connector:{name}:{step}", "credential_connector", CRITICAL if step <= 7 else WARNING,
+                           title, steps=steps, link=link, announce_clear=False,
+                           facts={"connector": name, "days_left": days, "expires_on": row.get("expires_on")}))
+    return out
+
+
 # -- 0.6.3: the relay's GitHub dispatch key (weekly self-test on the relay Worker, read once a day) ---------------
 RELAY_SECRETS_STEPS = ("Cloudflare dashboard -> Workers & Pages -> house-brain-live-read-relay -> Settings -> Variables "
                        "and Secrets -> GITHUB_DISPATCH_TOKEN: replace it with a new fine-grained token (this repository "

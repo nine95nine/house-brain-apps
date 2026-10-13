@@ -163,6 +163,7 @@ SHARED_WS_BACKOFF_MAX = 60.0
 # Recovery Report (0.3.0): exact entities it may read, nothing else (read-only).
 FORENSICS_ENTITY = "sensor.house_brain_connection_forensics_last_restart"
 DEPLOYER_STATUS_ENTITY = "sensor.house_brain_deployer_status"      # 0.5.2: PLANNED vs UNPLANNED_CLEAN join
+AI_CONNECTORS_ENTITY = "sensor.house_brain_ai_connectors"        # 0.9.11: AI Access 0.1.5-dev connector sign-ins
 RECOVERY_READ_ENTITIES = frozenset({
     FORENSICS_ENTITY, DEPLOYER_STATUS_ENTITY,
     "sensor.house_brain_network_outage_class", "sensor.house_brain_network_outage_summary",
@@ -170,6 +171,8 @@ RECOVERY_READ_ENTITIES = frozenset({
     "binary_sensor.any_smoke_detected", "binary_sensor.any_co_detected", "climate.ecobee_thermostat",
     "sensor.sense_51446_l1_voltage", "sensor.enphase_solar_power_now",
 })
+# 0.9.11: the one other entity it may read (credential heads-up), kept apart from the Recovery Report's own list.
+CREDENTIAL_READ_ENTITIES = frozenset({AI_CONNECTORS_ENTITY})
 RECOVERY_NOTIFICATION_ID = "hbm_recovery_report"
 # 0.5.3: the Google Drive Backup App (sabeechen/hassio-google-drive-backup) copies backups to Google Drive
 # outside Home Assistant's own backup locations and reports it on this one entity (read-only, projected).
@@ -280,7 +283,31 @@ def project_attrs(entity_id: str, attrs: Any) -> dict:
                 else None,
                 "version": ver if isinstance(ver := attrs.get("version"), str) and RE_APP_VERSION.fullmatch(ver)
                 else None}
+    if entity_id == AI_CONNECTORS_ENTITY:
+        return {"providers": project_connectors(attrs.get("providers"))}
     return {}
+
+
+CONNECTOR_PROVIDERS = ("claude", "chatgpt", "grok")
+CONNECTOR_STATES = frozenset({"SIGN_IN_FAILED", "EXPIRING_SOON", "OK", "NO_CONNECTOR", "UNKNOWN"})
+RE_CONNECTOR_DAY = re.compile(r"20[0-9]{2}-[01][0-9]-[0-3][0-9]")
+
+
+def project_connectors(raw: Any) -> dict:
+    """0.9.11: per known provider only its state, days left and end day; names, links and anything else dropped."""
+    out: dict = {}
+    if not isinstance(raw, dict):
+        return out
+    for name in CONNECTOR_PROVIDERS:
+        row = raw.get(name)
+        if not isinstance(row, dict) or row.get("state") not in CONNECTOR_STATES:
+            continue
+        days, end = row.get("days_left"), row.get("expires_on")
+        out[name] = {"state": row["state"],
+                     "days_left": days if isinstance(days, int) and not isinstance(days, bool) and -9999 < days < 99999
+                     else None,
+                     "expires_on": end if isinstance(end, str) and RE_CONNECTOR_DAY.fullmatch(end) else None}
+    return out
 
 RE_INSTANCE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
@@ -304,7 +331,8 @@ _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     # Recovery Report (0.3.0), read-only except its own persistent notification:
     ("GET", r"/core/logs"),
     ("GET", r"/core/logs/boots/-1"),
-    ("GET", r"/core/api/states/(?:" + "|".join(re.escape(e) for e in sorted(RECOVERY_READ_ENTITIES)) + r")"),
+    ("GET", r"/core/api/states/(?:" + "|".join(re.escape(e) for e in sorted(RECOVERY_READ_ENTITIES
+                                                                           | CREDENTIAL_READ_ENTITIES)) + r")"),
     ("GET", r"/core/api/states/" + re.escape(DRIVE_BACKUP_ENTITY)),
     # 0.5.4 App log window: House Brain App logs by boot, and the host boot list (ids only)
     ("GET", r"/addons/(?:local|[0-9a-f]{8})_house_brain_[a-z0-9_]{1,60}/logs/boots/(?:0|-[1-5])"),
@@ -1983,7 +2011,7 @@ class HomeAssistant:
     # -- Recovery Report (0.3.0): read-only + its own persistent notification ----------
     def entity_state(self, entity_id: str) -> dict | None:
         """``{"state", "last_changed"}`` of one pinned entity, or None when it does not exist."""
-        if entity_id not in RECOVERY_READ_ENTITIES:
+        if entity_id not in RECOVERY_READ_ENTITIES and entity_id not in CREDENTIAL_READ_ENTITIES:
             raise ForbiddenCall(f"entity {entity_id[:80]}")
         try:
             data = self._call("GET", f"/core/api/states/{entity_id}", timeout=15)

@@ -40,6 +40,19 @@ PENDING_TTL = 6 * 3600.0          # the control Worker's own deadline (PENDING_T
 LOOKBACK = PENDING_TTL + 3600.0   # first run: a request still waiting is announced, older news is not
 KEEP = 7 * 86400.0                # remembered ids are forgotten after a week
 STATE_FILE = "cfrelay.json"
+# 0.9.11 (owner pop-up 2026-10-13 "Yes, use #454"): control 0.1.5 posts its token warnings (30/14/7/1 days) with one
+# machine line; each (token, step, end day) goes to the phone once.
+EXPIRY_SCHEMA = "house_brain_cloudflare_control_expiry.v1"
+RE_EXPIRY = re.compile(r"<!-- house_brain_cloudflare_control_expiry\.v1 (\{.*?\}) -->", re.S)
+RE_DAY = re.compile(r"^20[0-9]{2}-[01][0-9]-[0-3][0-9]$")
+EXPIRY_TOKENS = {"cf_api_token": "Cloudflare token (CF_API_TOKEN)", "github_token": "GitHub token (GITHUB_CONTROL_TOKEN)"}
+EXPIRY_STEPS = (30, 14, 7, 1)
+EXPIRY_HOW = {"cf_api_token": "Cloudflare dashboard -> My Profile -> API Tokens: make a new one with the same "
+                              "permissions, then Workers & Pages -> house-brain-cloudflare-control -> Settings -> "
+                              "Variables and Secrets -> CF_API_TOKEN: paste it and Deploy.",
+              "github_token": "Make a new fine-grained token (this repository only, same access), then Workers & "
+                              "Pages -> house-brain-cloudflare-control -> Settings -> Variables and Secrets -> "
+                              "GITHUB_CONTROL_TOKEN: paste it and Deploy."}
 
 
 def control_url_from_broker(broker_base: str) -> str:
@@ -109,6 +122,35 @@ def parse(comment: dict, owner: str) -> Event | None:
     return Event(rid, state, worker, steps[:5], created, at)
 
 
+def parse_expiry(comment: dict, owner: str) -> tuple[str, int, str, int] | None:
+    """One #454 comment -> (token, days_left, expires_on, step) of a control 0.1.5 token warning, or None."""
+    if not isinstance(comment, dict):
+        return None
+    user = comment.get("user") or {}
+    if not isinstance(user, dict) or str(user.get("login", "")).lower() != owner.lower():
+        return None
+    body = comment.get("body")
+    if not isinstance(body, str) or not body.startswith("### Cloudflare control: token expires soon"):
+        return None
+    found = RE_EXPIRY.findall(body)
+    if len(found) != 1:
+        return None
+    try:
+        doc = json.loads(found[0])
+    except ValueError:
+        return None
+    if not isinstance(doc, dict) or doc.get("schema") != EXPIRY_SCHEMA:
+        return None
+    token, days, end, step = doc.get("token"), doc.get("days_left"), doc.get("expires_on"), doc.get("step")
+    if token not in EXPIRY_TOKENS or step not in EXPIRY_STEPS:
+        return None
+    if not (isinstance(days, int) and not isinstance(days, bool) and 0 <= days <= 400):
+        return None
+    if not (isinstance(end, str) and RE_DAY.fullmatch(end)):
+        return None
+    return token, days, end, step
+
+
 class CfRelay:
     def __init__(self, gh, ha, data_dir: str, notify_service: str, issue: int, control_url: str,
                  clock=time.time) -> None:
@@ -147,11 +189,16 @@ class CfRelay:
         since = doc.get("since") or _iso(now - LOOKBACK)
         comments = self.gh.issue_comments(self.issue, since)
         latest: dict[str, Event] = {}
+        expiries: list[tuple[str, int, str, int]] = []
         newest = _ts(since) or now - LOOKBACK
         for c in comments if isinstance(comments, list) else []:
             at = _ts((c or {}).get("updated_at")) if isinstance(c, dict) else None
             if at is not None:
                 newest = max(newest, at)
+            exp = parse_expiry(c, self.owner)
+            if exp is not None:
+                expiries.append(exp)
+                continue
             ev = parse(c, self.owner)
             if ev is None:
                 continue
@@ -171,6 +218,13 @@ class CfRelay:
                 self._push_final(ev)
                 ids[ev.id] = {**seen, "final": ev.state, "at": now}
                 sent.append(f"{ev.id}:{ev.state}")
+        for token, days, end, step in expiries:
+            key = f"expiry:{token}:{step}:{end}"
+            if key in ids:
+                continue
+            self._push_expiry(token, days, end, step)
+            ids[key] = {"at": now}
+            sent.append(key)
         doc["ids"] = {k: v for k, v in ids.items() if now - float(v.get("at", now)) < KEEP}
         # GitHub's ``since`` is inclusive and second-granular: step back one second; ids already handled stay quiet.
         doc["since"] = _iso(max(newest - 1, now - LOOKBACK))
@@ -202,6 +256,17 @@ class CfRelay:
             "title": f"Cloudflare: {ev.state}",
             "message": f"{ev.worker} ({ev.id}): {words[ev.state]}. The full result is on GitHub #{self.issue}."[:900],
             "data": {"tag": f"hbm-cf-{ev.id}"},
+        })
+
+
+    def _push_expiry(self, token: str, days: int, end: str, step: int) -> None:
+        when = "today" if days == 0 else f"in {days} day{'s' if days != 1 else ''}"
+        self.ha.notify(self.notify_service, {
+            "title": "Cloudflare control: token expires soon",
+            "message": (f"The Cloudflare control's {EXPIRY_TOKENS[token]} expires {when} ({end}). "
+                        f"{EXPIRY_HOW[token]} Never paste it anywhere else.")[:900],
+            "data": {"tag": f"hbm-cf-expiry-{token}",
+                     **({"push": {"interruption-level": "time-sensitive"}} if step <= 7 else {})},
         })
 
 

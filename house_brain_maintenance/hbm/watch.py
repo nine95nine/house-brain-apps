@@ -27,7 +27,7 @@ from typing import Callable
 
 from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issues as I, net
 from . import problems as PR
-from .ha import DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
+from .ha import AI_CONNECTORS_ENTITY, DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
 
 LOG = logging.getLogger("hbm")
@@ -42,7 +42,8 @@ DEVICE_SWEEP_SECONDS = 6 * 3600
 DISK_SAMPLE_SECONDS = 12 * 3600
 DISK_SAMPLES_KEPT = 40
 CREDENTIAL_SOURCES = ("credential", "credential_deployer", "credential_relay",   # 0.6.3 Credential Autopilot
-                      "credential_keys")                                         # 0.8.0 automatic Broker keys
+                      "credential_keys",                                         # 0.8.0 automatic Broker keys
+                      "credential_connector")                                    # 0.9.11 AI connector sign-ins
 RELAY_DOC = "relay_credential"
 RELAY_READ_EVERY = 20 * 3600       # the relay self-tests weekly; one read a day is plenty
 FIXED = "FIXED"
@@ -347,6 +348,12 @@ class Watcher:
         else:
             out += I.from_credentials("deployer", auth)
         out += self._relay_findings(failed)
+        try:                                            # 0.9.11: AI connector sign-ins (AI Access 0.1.5-dev sensor)
+            st = self.ha.entity_state(AI_CONNECTORS_ENTITY)
+        except (HAError, net.NetError, ForbiddenCall):
+            failed.append("credential_connector")       # unreadable: keep what is open, never a false clear
+        else:
+            out += I.from_connectors(((st or {}).get("attrs") or {}).get("providers"))
         if self.key_findings is not None:
             try:
                 out += self.key_findings()

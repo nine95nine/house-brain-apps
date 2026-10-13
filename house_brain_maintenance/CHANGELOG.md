@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.11
+
+Sign-in expiry heads-up (owner pop-ups 2026-10-13: "Build it", "You, as 0.9.11", "Yes, use #454"; Work Board #942
+claims 6150322900 and 6150967793). Contains 0.9.10 unchanged otherwise.
+
+- **AI connectors.** A Claude, ChatGPT or Grok connector's House Brain sign-in ends after 90 days unused (AI
+  perimeter 0.4.3). AI Access 0.1.5-dev publishes `sensor.house_brain_ai_connectors` from the perimeter's own record
+  (perimeter 0.4.4, #1104). This App reads that one entity (a new pinned read) and warns 14, 7 and 1 day ahead and
+  when the sign-in has ended; a refused sign-in (`SIGN_IN_FAILED`) is pushed at once. Claude's alert links to
+  https://claude.ai/customize/connectors. The links are fixed in this App, never taken from the entity. Any use of
+  the connector keeps it another 90 days.
+- **Cloudflare control tokens.** Control 0.1.5 posts its token warnings on #454 at 30, 14, 7 and 1 days with one
+  machine line (`house_brain_cloudflare_control_expiry.v1`). The Cloudflare approval relay (0.8.2) now also pushes
+  each of those steps to the phone once, time-sensitive from 7 days. Until now they went only to ntfy and #454.
+
 ## 0.9.10
 
 No false problem for the kept local Observer / Inspector (Work Board #942 claim 6148747912). Contains 0.9.9 unchanged

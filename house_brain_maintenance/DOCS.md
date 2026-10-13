@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.10)
+## What it does (0.9.11)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -156,6 +156,10 @@ New in 0.5.1, all read-only:
 - **Liveness ping failing**: when the optional outside "home reachable" ping has failed for 30 minutes.
 - **App stopped for 30+ days**: said once, so you can uninstall Apps you no longer need. Apps kept stopped on
   purpose can be ignored, and nothing is removed.
+- **Sign-ins that expire (0.9.11)**: an AI connector (Claude, ChatGPT, Grok) unused for 90 days must be
+  reconnected. From the AI Access sensor `sensor.house_brain_ai_connectors` it warns 14, 7 and 1 day ahead (Claude's
+  alert links to https://claude.ai/customize/connectors) and at once when a sign-in was refused. The Cloudflare
+  control's token warnings on #454 (30/14/7/1 days) are pushed to the phone too.
 - **Kept local Observer / Inspector (0.9.10)**: after a store switch, the local Engineering Observer or Inspector
   is stopped on purpose as the rollback. Home Assistant shows it as "error" after that stop, but it is not reported
   as a problem while the store one is in use. If an undo puts the local one back in use, it is watched again.
