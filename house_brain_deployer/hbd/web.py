@@ -61,6 +61,11 @@ class ApprovalBoard:
         self._undo_owner = ""
         self._undo_offers: list[dict] = []
         self._undo_req: str | None = None
+        # 0.3.24 (#985): which history is in use, and an owner-only "Go back" (sets the moved history aside)
+        self._history_line = ""
+        self._back_nonce = ""
+        self._back_owner = ""
+        self._back_by: str | None = None
         # 0.3.5 (P4): True while an install transaction is open (set by the service)
         self.busy_probe: Callable[[], bool] | None = None
         self.release_probe: Callable[[], tuple[tuple[str, str], ...]] | None = None
@@ -161,6 +166,39 @@ class ApprovalBoard:
             rid, self._undo_req = self._undo_req, None
             return rid
 
+    def set_history(self, line: str, owner_user_id: str, offer_back: bool) -> None:
+        with self._lock:
+            self._history_line = line[:300]
+            if not offer_back:
+                self._back_nonce, self._back_owner = "", ""
+            elif not self._back_nonce or self._back_owner != owner_user_id:
+                self._back_nonce, self._back_owner = secrets.token_hex(12), owner_user_id
+
+    def history_state(self) -> tuple[str, str]:
+        with self._lock:
+            return self._history_line, self._back_nonce
+
+    def history_owner(self) -> str:
+        """The owner id the current Go back offer was made for ("" when none), for held runs."""
+        with self._lock:
+            return self._back_owner
+
+    def accept_back(self, nonce: str, user_id: str) -> int:
+        """Owner tapped "Go back": owner id + single-use code, like a decision."""
+        with self._lock:
+            if not self._back_nonce or not nonce or nonce != self._back_nonce:
+                return 409
+            if not self._back_owner or user_id != self._back_owner:
+                return 403
+            self._back_nonce = ""
+            self._back_by = user_id
+            return 200
+
+    def take_back(self) -> str | None:
+        with self._lock:
+            by, self._back_by = self._back_by, None
+            return by
+
     def take_lift(self) -> str | None:
         """Main loop: consume an accepted lift (returns the owner's user id once)."""
         with self._lock:
@@ -217,8 +255,9 @@ BUSY_BANNER = ('<p class="w"><b>Install in progress.</b> Updating, restarting or
 def render(pending: Pending | None, last: str, action: str, note: str = "",
            health: tuple[str, list[str], str] = ("", [], ""), lift: tuple[str, str] = ("", ""),
            undo_offer: tuple[str, list[dict]] = ("", []), busy: bool = False,
-           release_status: tuple[tuple[str, str], ...] = ()) -> str:
+           release_status: tuple[tuple[str, str], ...] = (), history: tuple[str, str] = ("", "")) -> str:
     banner = BUSY_BANNER if busy else ""
+    history_line, back_nonce = history
     release = ""
     if release_status:
         release = ('<details><summary>Release and recovery status</summary>'
@@ -264,6 +303,15 @@ def render(pending: Pending | None, last: str, action: str, note: str = "",
                          f'<p>{html.escape(item.get("title") or item["request_id"])}<br>'
                          f'<span class="m">{html.escape(item["request_id"])} · {html.escape(when)}</span></p>'
                          '<button class="r" name="choice" value="undo">Undo this install</button></form>')
+        if history_line:
+            body += f'<p class="m">History in use: {html.escape(history_line)}</p>'
+        if back_nonce:
+            target = action.rsplit("/", 1)[0] + "/go-back"
+            body += (f'<form method="post" action="{html.escape(target)}">'
+                     f'<input type="hidden" name="nonce" value="{html.escape(back_nonce)}">'
+                     '<button class="r" name="choice" value="back">Go back to the previous history</button></form>'
+                     '<p class="m">Sets the moved history aside (kept, never deleted). It takes effect when the '
+                     'Deployer next restarts; your previous history was never changed.</p>')
         if result:
             body += f'<p class="m">Last result: {html.escape(result)}</p>'
         if last:
@@ -366,7 +414,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                 return self._send(404, "not found")
             pending, last = board.snapshot()
             page = render(pending, last, self._action(), health=board.health(), lift=board.lift_state(),
-                          undo_offer=board.undo_state(), busy=board.busy(), release_status=board.release_status())
+                          undo_offer=board.undo_state(), busy=board.busy(), release_status=board.release_status(),
+                          history=board.history_state())
             base = self._action().rsplit("/", 1)[0]
             self._send(200, page.replace("</body>", self._github_line(base) + "</body>", 1))
 
@@ -376,7 +425,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
             route = urllib.parse.urlsplit(self.path).path
             if self._github_post(route):
                 return None
-            if route not in ("/decide", "/allow-more", "/undo"):
+            if route not in ("/decide", "/allow-more", "/undo", "/go-back"):
                 return self._send(404, "not found")
             try:
                 length = int(self.headers.get("Content-Length") or "0")
@@ -401,7 +450,20 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                 return self._send(status, render(pending, last, self._action(), notes.get(status, ""),
                                                  health=board.health(), lift=board.lift_state(),
                                                  undo_offer=board.undo_state(), busy=board.busy(),
-                                                 release_status=board.release_status()))
+                                                 release_status=board.release_status(),
+                                                 history=board.history_state()))
+            if route == "/go-back":
+                status = board.accept_back(nonce, user) if choice == "back" else 400
+                pending, last = board.snapshot()
+                notes = {200: "Accepted. Within about 5 minutes the moved history is set aside; restart the Deployer "
+                              "to use your previous history.",
+                         403: "Only the owner account can do this.", 409: "This button has expired; reload.",
+                         400: "Unknown choice."}
+                return self._send(status, render(pending, last, self._action(), notes.get(status, ""),
+                                                 health=board.health(), lift=board.lift_state(),
+                                                 undo_offer=board.undo_state(), busy=board.busy(),
+                                                 release_status=board.release_status(),
+                                                 history=board.history_state()))
             if route == "/allow-more":
                 status = board.accept_lift(nonce, user) if choice == "allow" else 400
                 pending, last = board.snapshot()
@@ -412,7 +474,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                 return self._send(status, render(pending, last, self._action(), notes.get(status, ""),
                                                  health=board.health(), lift=board.lift_state(),
                                                  undo_offer=board.undo_state(), busy=board.busy(),
-                                                 release_status=board.release_status()))
+                                                 release_status=board.release_status(),
+                                                 history=board.history_state()))
             status = board.decide(nonce, user, choice)
             pending, last = board.snapshot()
             notes = {200: f"Recorded: {choice}. You can close this page.",
@@ -421,7 +484,8 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
             self._send(200 if status == 200 else status,
                        render(None if status == 200 else pending, last, self._action(), notes.get(status, ""),
                               health=board.health(), lift=board.lift_state(), undo_offer=board.undo_state(),
-                              busy=board.busy(), release_status=board.release_status()))
+                              busy=board.busy(), release_status=board.release_status(),
+                          history=board.history_state()))
 
         def do_PUT(self):  # noqa: N802
             self._send(405, "method not allowed")

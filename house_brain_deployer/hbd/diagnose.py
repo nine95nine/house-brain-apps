@@ -147,6 +147,9 @@ def ha_error(err: BaseException, *, notify_service: str = "") -> Reason:
 
 def contained(code: str) -> str:
     """D6(a): page line while this App run is held after the migrated runtime refused."""
+    if code == "GO_BACK_RESTART_NEEDED":   # 0.3.24: the owner's Go back
+        return ("You chose Go back: the moved history is set aside. Restart the Deployer (Settings > Apps > House "
+                "Brain Deployer > Restart) to use your previous history. Nothing else runs until then.")
     return (f"Held: the migrated runtime refused an operation ({code[:80]}). Nothing more runs until the App "
             "restarts under a fresh authorization. Do not delete migration files.")
 

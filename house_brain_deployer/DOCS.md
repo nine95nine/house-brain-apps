@@ -27,6 +27,7 @@ the GitHub issue. Lookups can never change anything.
 
 - Generic deployments write only `/config/packages/<name>.yaml` files and keep the old copy as `<name>.yaml[.tag].bak`.
 - 0.3.9 adds one fixed repair: remove an obsolete HTTP block from `configuration.yaml` after confirming the migrated Network settings already match. The AI receives hashes, never the configuration contents. You approve inspection, then separately deployment and restart. Unsupported files or mismatched settings are refused.
+- 0.3.24 adds one fixed tidy: rename `house_energy_brain_v1_1.yaml copy.bak` (the space in the name) to `house_energy_brain_v1_1.yaml.copy.bak`. Same bytes, one Approve tap, backup and checks first, no restart. A request cannot name any other file.
 - Cannot touch `secrets.yaml`, `.storage`, dashboards or other Apps. No arbitrary root configuration editor or HTTP settings mutation is provided.
 - Never turns anything on or off. It only sends you notifications, makes a partial backup, runs the
   configuration check and (after your second tap) restarts Home Assistant.
@@ -158,6 +159,13 @@ Three one-time requests, each asked on your phone first. None names a file path.
    restart, other requests wait.
 3. **Unselect** — "House Brain: cancel the moved-history selection?" Before a restart, this sets the selection aside
    (kept). After a restart, use the `return_to_previous_history` option instead.
+
+4. **Reset** (from 0.3.25) — "House Brain: set aside a half-made moved history?" Only after a Select that did not
+   finish: renames its working copy aside (kept) so Select can be sent again.
+
+From 0.3.25 the page shows **History in use** and, while a selection exists, an owner-only **Go back to the previous
+history** button (the same as Unselect or the option; it applies at the next restart). Installs made by the old
+Deployer get no Undo button.
 
 After Select and a Deployer restart, the Deployer runs on the moved history with no further taps. At every start
 it re-checks the selection, its folders and the shared writer lock, and holds and tells you if anything differs.

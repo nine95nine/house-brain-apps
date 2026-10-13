@@ -23,7 +23,7 @@ OUTCOMES = {"SUCCEEDED", "DRY_RUN_OK", "DRY_RUN_BLOCKED", "ALREADY_APPLIED", "RE
             # Owner-approved lookups recorded by published 0.3.19-0.3.22 and by 0.3.23 itself: the live store
             # history already holds them (#561 6125839870, 6138174545), so a merge must accept them.
             "WRITER_ENROLLED", "WRITER_PROBE_ACQUIRED", "WRITER_PROBE_BUSY",
-            "LEGACY_PREPARED", "LEGACY_SELECTED", "LEGACY_UNSELECTED", "LEGACY_FAILED"}
+            "LEGACY_PREPARED", "LEGACY_SELECTED", "LEGACY_UNSELECTED", "LEGACY_FAILED", "LEGACY_RESET"}
 STAGES = {"DEPLOY", "DRYRUN", "RESTART", "ROLLBACK", "LOOKUP"}
 
 

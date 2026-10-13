@@ -105,6 +105,7 @@ class Manifest:
     reask_of: str = field(default="")  # 0.3.8: set only by the Deployer when it re-asks a timed-out request
     http_operation: str = field(default="")
     stable_http_sha256: str = field(default="")
+    tidy_operation: str = field(default="")  # 0.3.24: set only by package_tidy (fixed literal paths, no restart)
 
     def touched_paths(self) -> list[str]:
         paths: list[str] = []
@@ -245,6 +246,9 @@ def parse(raw_bytes: bytes) -> Manifest:
     if isinstance(data, dict) and data.get("schema") == "house_brain_http_cleanup_request.v1":
         from .http_cleanup import request
         return request(data, hashlib.sha256(raw_bytes).hexdigest())
+    if isinstance(data, dict) and data.get("schema") == "house_brain_package_tidy_request.v1":
+        from .package_tidy import request as tidy_request
+        return tidy_request(data, hashlib.sha256(raw_bytes).hexdigest())
 
     top = _obj(
         data,

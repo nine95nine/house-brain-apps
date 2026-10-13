@@ -169,6 +169,10 @@ class Engine:
                 raise Refused("HTTP_INSPECTION_CHANGED")
             return Prepared(m, {op.target: data}, ["Only obsolete HTTP YAML removed; confirmed UI settings unchanged"],
                             self.pk.snapshot(m.touched_paths()))
+        if m.tidy_operation:
+            # 0.3.24: fixed literal rename (package_tidy). No GitHub source, no new bytes, nothing to scan.
+            self.pk.check_root()
+            return Prepared(m, {}, [], self.pk.snapshot(m.touched_paths()))
         if not self.gh.is_ancestor(m.source_commit, m.source_ref):
             raise Refused("SOURCE_NOT_ON_REF")
         contents: dict[str, bytes] = {}
@@ -603,8 +607,9 @@ class Engine:
             outcome = approval.APPROVE
             self.j.audit(m.request_id, "DEPLOY_APPROVED_BY_OWNER_TAP")
         else:
-            outcome = self._ask(m, "DEPLOY", "House Brain Deployer: approve deploy?",
-                                self._summary(p) + "\nRestart needs a 2nd tap. Auto-rollback on failure.",
+            after = ("\nOnly a rename of a .bak file: no restart. Auto-rollback on failure." if m.tidy_operation
+                     else "\nRestart needs a 2nd tap. Auto-rollback on failure.")
+            outcome = self._ask(m, "DEPLOY", "House Brain Deployer: approve deploy?", self._summary(p) + after,
                                 t.approval_timeout)
         if outcome != approval.APPROVE:
             return Result(REJECTED if outcome == approval.REJECT else TIMED_OUT, [outcome], facts)
@@ -673,6 +678,8 @@ class Engine:
         problems = self.strict_config_check(bool(m.http_operation))
         if problems:
             return self._rollback_files(txn, ["config check failed"] + problems)
+        if m.tidy_operation:
+            return self._finish_tidy(txn, m)
 
         txn["phase"] = "AWAITING_RESTART"
         self.j.save_txn(txn)
@@ -683,6 +690,19 @@ class Engine:
         if outcome != approval.APPROVE:
             return self._restart_refused(txn, outcome, [])
         return self._restart_after_approval(txn, m)
+
+    def _finish_tidy(self, txn: dict, m: Manifest) -> Result:
+        """0.3.24: a package tidy renames inert .bak files only, so it ends after the config check, with no
+        restart ask and no restart. The old name must be gone and the new name must hold the old bytes."""
+        post = self.pk.snapshot(list(txn["pre"]))
+        if any(post.get(r.path) is not None or post.get(r.rename_to) != txn["pre"].get(r.path) for r in m.retire):
+            return self._rollback_files(txn, ["TIDY_RESULT_NOT_VERIFIED"])
+        txn["facts"]["post_sha256"] = {basename(k): v for k, v in post.items()}
+        txn["facts"]["restart"] = "not needed (only a .bak file was renamed)"
+        self._record_install(m, txn)
+        self.pk.check_writer()
+        self.j.clear_txn()
+        return Result(SUCCEEDED, [], txn["facts"])
 
     def _restart_refused(self, txn: dict, outcome: str, reasons: list[str]) -> Result:
         result = self._rollback_files(txn, reasons + [f"restart not approved ({outcome})"])
@@ -732,6 +752,10 @@ class Engine:
         if m.http_operation:
             # Generic package Undo must never reinsert ignored HTTP YAML. Crash/health rollback still works.
             self.j.audit(m.request_id, "HTTP_CLEANUP_ACCEPTED", candidate_sha256=m.files[0].sha256)
+            return
+        if m.tidy_operation:
+            # The page's Undo only rebuilds <slug>.yaml installs; the renamed bytes stay in the new name.
+            self.j.audit(m.request_id, "PACKAGE_TIDY_DONE", operation=m.tidy_operation)
             return
         try:
             undo.record_success(self.j, m, txn["pre"], self.pk.snapshot(list(txn["pre"])))

@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.25 — 2026-10-13 (migration polish; owner pop-ups 2026-10-13; renumbered above the 0.3.24 package tidy)
+
+- Installs that came from the old Deployer are kept and shown, but get no Undo button after the switch (owner:
+  "Not offered by default"); Undo on such a record is also refused if asked some other way. If the list of old
+  installs cannot be read, every Undo button is hidden, never extra ones shown.
+- The status (`history` attribute) and the page show which history is in use: previous, prepared (Select within 7
+  days), selected (takes over at the next restart), moved, or moved and set aside.
+- New `house_brain_legacy_reset_request.v1`: after a Select that did not finish, one owner Approve renames the
+  half-made working copy aside (kept, never deleted) so Select can be sent again. Refused while a selection exists.
+- Owner-only "Go back to the previous history" button on the page while a selection exists (single-use code, owner
+  account only). It sets the selection aside like Unselect / `return_to_previous_history`; the change applies at the
+  next restart.
+## 0.3.24 — package tidy: rename the one space-named backup (owner pop-up 2026-10-13)
+
+- New fixed request `house_brain_package_tidy_request.v1` with one operation, `rename_space_named_backup`. It renames
+  `/config/packages/house_energy_brain_v1_1.yaml copy.bak` to `house_energy_brain_v1_1.yaml.copy.bak`. Both names are
+  literals in `hbd/package_tidy.py`; a request names neither (no path, no YAML, no files). An optional
+  `expect_current_sha256` pins the old file's bytes.
+- Same safety path as every install: one Approve tap, partial backup, configuration checks before and after, the
+  existing link → verify → unlink rename steps, automatic rollback on any failure. The bytes are kept under the new
+  name, never edited or deleted.
+- No restart: Home Assistant does not load `.bak` files, so the job ends after the configuration check (no second
+  tap). The result must show the old name gone and the new name holding the old bytes, or it rolls back
+  (`TIDY_RESULT_NOT_VERIFIED`). It is not offered to the page's Undo; the bytes stay in the new name.
+- The moved-history file layer (0.3.23) admits exactly that one space-named name, so the tidy works in both modes.
+- Tests: `test_package_tidy.py` (17), mutants PT01–PT07 killed.
+
 ## 0.3.23 — expanded candidate preparation (NOT INSTALL READY; was 0.3.13, 0.3.16, 0.3.17, 0.3.19, 0.3.20, 0.3.21; renumbered above main's 0.3.22)
 
 - Composes published 0.3.19 (one-tap writer lock enrollment), 0.3.20 (temporary folder-create rule removed; approval

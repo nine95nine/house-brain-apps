@@ -36,7 +36,7 @@ from .writer import LOCK_NAME, WriterError, WriterLease
 PREPARE = "house_brain_legacy_prepare_request.v1"
 SELECT = "house_brain_legacy_select_request.v1"
 UNSELECT = "house_brain_legacy_unselect_request.v1"
-SCHEMAS = (PREPARE, SELECT, UNSELECT)
+SCHEMAS = (PREPARE, SELECT, UNSELECT, "house_brain_legacy_reset_request.v1")
 
 STAGE_ROOT = "/share/house_brain_legacy_stage_v1"
 GENERATIONS, EXPORTS, WORKING, USES = ("hbd-generations-v1", "hbd-exports-v1", "hbd-working-v1",
@@ -96,7 +96,7 @@ def parse(raw: bytes) -> tuple[str, str, int, dict]:
         raise ManifestError("JSON") from None
     schema = data.get("schema") if isinstance(data, dict) else None
     extra = {PREPARE: {"stage", "snapshot_sha256"}, SELECT: {"prepared_request_id", "result_sha256"},
-             UNSELECT: {"marker_sha256"}}.get(schema)
+             UNSELECT: {"marker_sha256"}, "house_brain_legacy_reset_request.v1": set()}.get(schema)
     if extra is None:
         raise ManifestError("SCHEMA")
     obj = _obj(data, "legacy history", {"schema", "request_id", "requested_by", "tracking_issue"} | extra, set())
@@ -113,7 +113,7 @@ def parse(raw: bytes) -> tuple[str, str, int, dict]:
     elif schema == SELECT:
         fields["prepared_request_id"] = _str(obj["prepared_request_id"], "prepared_request_id", RE_REQUEST_ID, 64)
         fields["result_sha256"] = _str(obj["result_sha256"], "result_sha256", RE_SHA, 64)
-    else:
+    elif schema == UNSELECT:
         fields["marker_sha256"] = _str(obj["marker_sha256"], "marker_sha256", RE_SHA, 64)
     return schema, rid, issue, fields
 
@@ -178,7 +178,7 @@ def counts(files: dict) -> dict:
 
 
 def _folders_empty_or_absent(data_dir: str, names) -> None:
-    for name in names:
+    for name in sorted(names):
         try:
             st = os.lstat(os.path.join(data_dir, name))
         except FileNotFoundError:
@@ -586,3 +586,112 @@ class ForwardIssuer:
         auth = StartupAuthorization(grant, verifier=self._grant_verifier, clock=self.clock,
                                     root_bindings=self.bindings)
         return ForwardPermit(request["nonce"], request["purpose"], auth, self._permit_verifier)
+
+
+# ---------------------------------------------------------------- 0.3.24: state, legacy Undo guard, reset, Go back
+
+HISTORY_LINES = {
+    "previous": "previous history (no migration selected)",
+    "prepared": "previous history; the old Deployer's history is prepared (Select within 7 days)",
+    "selected": "previous history; the moved history is selected and takes over at the next restart",
+    "moved": "moved history (old Deployer's history merged in)",
+    "moved_set_aside": "moved history, set aside: restart the Deployer to use your previous history",
+}
+
+
+def history_state(data_dir: str, *, running_moved: bool, now: float | None = None) -> str:
+    """Read-only: which history is in use and where the migration stands (owner pop-up 2026-10-13)."""
+    if running_moved:
+        try:
+            return "moved" if selection_present(data_dir) else "moved_set_aside"
+        except OSError:
+            return "moved"
+    try:
+        if selection_present(data_dir):
+            return "selected"
+        now = time.time() if now is None else now
+        folder = os.path.join(data_dir, GENERATIONS)
+        names = os.listdir(folder) if os.path.isdir(folder) else ()
+    except OSError:
+        return "previous"
+    for name in sorted(names):
+        if not (name.startswith("PREPARED-") and name.endswith(".json")):
+            continue
+        try:   # review 2026-10-13: one bad file must not hide another valid one
+            with open(os.path.join(folder, name), "rb") as fh:
+                record = history._json(fh.read(65537))
+        except (OSError, ValueError, history.HistoryError):
+            continue
+        if isinstance(record, dict) and history._finite_number(record.get("expires_at")) \
+                and now < record["expires_at"]:
+            return "prepared"
+    return "previous"
+
+
+def legacy_install_ids(plan: dict, data_dir: str) -> frozenset:
+    """Installs that came from the old Deployer: in the moved baseline, not in this App's previous history.
+
+    Owner pop-up 2026-10-13 "Not offered by default": they are kept and shown in history, but never offered for Undo
+    (Undo on an old record was never proven). Unreadable input yields "everything in the baseline", which only hides
+    more buttons, never shows extra ones.
+    """
+    def ids(raw):
+        return {rec.get("request_id") for rec in history._json(raw) if isinstance(rec, dict)}
+    try:
+        base = os.path.join(plan["working_root"], plan["pointer"]["working"], "baseline", "installs.json")
+        with open(base, "rb") as fh:
+            moved = ids(fh.read(history.MAX_BYTES + 1))
+    except (OSError, KeyError, TypeError, ValueError, AttributeError, history.HistoryError):
+        return frozenset({"*"})
+    try:
+        with open(os.path.join(data_dir, "installs.json"), "rb") as fh:
+            previous = ids(fh.read(history.MAX_BYTES + 1))
+    except FileNotFoundError:
+        previous = set()
+    except (OSError, ValueError, TypeError, history.HistoryError):
+        return frozenset(moved) | {"*"}
+    return frozenset(moved - previous)
+
+
+RESET = "house_brain_legacy_reset_request.v1"
+
+
+def reset_needed(data_dir: str) -> bool:
+    """A failed Select left a working copy or startup-use behind, and nothing is selected."""
+    if selection_present(data_dir):
+        return False
+    for name in (WORKING, USES):
+        path = os.path.join(data_dir, name)
+        if os.path.isdir(path) and os.listdir(path):
+            return True
+    return False
+
+
+def run_reset(*, data_dir: str) -> dict:
+    """After Approve and under the lock: rename the half-made working copy aside (kept, never deleted)."""
+    with WriterLease(writer_enroll.root(), create=False) as fence:
+        _require(not selection_present(data_dir), "LEGACY_ALREADY_SELECTED")
+        _require(reset_needed(data_dir), "LEGACY_NOTHING_TO_RESET")
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        moved = []
+        for name in (WORKING, USES):
+            path = os.path.join(data_dir, name)
+            if os.path.isdir(path) and os.listdir(path):
+                aside = f"{name}.reset-{stamp}"
+                fence.check()
+                os.rename(path, os.path.join(data_dir, aside))
+                moved.append(aside)
+        parent = os.open(data_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    return {"schema": "hbd.legacy_reset.v1", "set_aside": moved, "deleted": [], "next": "Select may be sent again"}
+
+
+def go_back(data_dir: str) -> str | None:
+    """Owner's page button: set the moved-history selection aside (same as Unselect / the option)."""
+    if not selection_present(data_dir):
+        return None
+    with WriterLease(writer_enroll.root(), create=False) as fence:
+        return withdraw(data_dir, expected_sha256=None, fence=fence)

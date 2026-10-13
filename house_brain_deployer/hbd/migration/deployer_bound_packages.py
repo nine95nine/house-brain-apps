@@ -12,6 +12,7 @@ import re
 import stat
 
 from ..policy import MAX_FILE_BYTES, check_package_target, check_backup_path
+from ..package_tidy import SOURCE_NAME as _TIDY_SOURCE
 from ..fsops import Packages
 from .deployer_bound_files import BoundFileError, _BoundDirectory, _signature
 
@@ -47,6 +48,8 @@ class BoundPackageFiles(_BoundDirectory, Packages):
             raise BoundFileError('BOUND_PACKAGE_PATH')
         if _STAGE.fullmatch(name):
             return
+        if name == _TIDY_SOURCE:
+            return  # 0.3.24: the one fixed space-named backup the package tidy renames (literal, never a pattern)
         try:
             check_package_target('/config/packages/' + name)
         except ValueError:

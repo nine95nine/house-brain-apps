@@ -260,6 +260,7 @@ class Service:
         self.writer_busy = False
         self.contained: str | None = None   # D6(a): set once the migrated runtime refuses; this run stays held
         self.pending_undo: str | None = None
+        self.data_dir: str | None = None   # 0.3.24: the App's /data (the Journal may live elsewhere when migrated)
         if writer_factory is not None:
             self.pk.mutation_guard = self._check_writer
         self.engine: Engine | None = None
@@ -678,6 +679,13 @@ class Service:
                            f"recorded since Prepare). Fingerprint {shown['planned'].result_sha256[:12]}. Until the "
                            "restart other requests wait. To undo before the restart, send Unselect; after it, turn "
                            "on return_to_previous_history.")
+            elif schema == legacy_migrate.RESET:
+                if not legacy_migrate.reset_needed(data_dir):
+                    raise legacy_migrate.LegacyError("LEGACY_NOTHING_TO_RESET")
+                shown = None
+                title = "House Brain: set aside a half-made moved history?"
+                message = ("A Select did not finish. Its working copy is renamed aside (kept, never deleted) so Select "
+                           "can be sent again. The history in use and your packages do not change.")
             else:
                 if not legacy_migrate.selection_present(data_dir):
                     raise legacy_migrate.LegacyError("LEGACY_NOT_SELECTED")
@@ -710,6 +718,9 @@ class Service:
                                                       result_sha256=fields["result_sha256"], shown=shown,
                                                       owner_id=owner, should_stop=lambda: self.stop)
                     result = Result("LEGACY_SELECTED", [], {"legacy_select": facts})
+                elif schema == legacy_migrate.RESET:
+                    facts = legacy_migrate.run_reset(data_dir=data_dir)
+                    result = Result("LEGACY_RESET", [], {"legacy_reset": facts})
                 else:
                     facts = legacy_migrate.run_unselect(data_dir=data_dir, marker_sha256=fields["marker_sha256"])
                     result = Result("LEGACY_UNSELECTED", [], {"legacy_unselect": facts})
@@ -764,7 +775,72 @@ class Service:
             self.pending_undo = None
             return self._execute_undo(rid)
 
+    def _legacy_installs(self) -> frozenset:
+        runtime = getattr(self, "migrated_runtime", None)
+        if runtime is None:
+            return frozenset()
+        return legacy_migrate.legacy_install_ids(runtime.plan, self._data_dir())
+
+    def _data_dir(self) -> str:
+        return self.data_dir or self.j.dir
+
+    def _install_open(self) -> bool:
+        """Read-only: an install transaction is open in the Journal in use (no wrapped call; works when held)."""
+        runtime = getattr(self, "migrated_runtime", None)
+        folder = runtime.journal_root if runtime is not None and runtime.journal_root else self.j.dir
+        return os.path.lexists(os.path.join(folder, "txn.json"))
+
+    def _offer_back(self, owner: str | None = None) -> None:
+        """0.3.24: show which history is in use; offer the owner-only Go back while a selection exists and no
+        install is open (review 2026-10-13: never strand an interrupted install's files). Never raises."""
+        if self.board is None:
+            return
+        try:
+            data_dir = self._data_dir()
+            state = legacy_migrate.history_state(data_dir,
+                                                 running_moved=getattr(self, "migrated_runtime", None) is not None)
+            offer = (state in ("selected", "moved") and legacy_migrate.selection_present(data_dir)
+                     and not self._install_open())
+            if offer and owner is None:
+                owner = self.ensure_engine().s.owner_user_id
+            self.board.set_history(legacy_migrate.HISTORY_LINES[state], owner or "", bool(offer and owner))
+        except Exception:  # noqa: BLE001 - no button, unknown line
+            self.board.set_history("", "", False)
+
+    def _apply_back(self) -> bool:
+        """Owner's Go back, before anything else in the poll and even when this run is held (it uses only /data
+        and the lock, never the moved runtime's wrapped objects). True when the selection was set aside."""
+        by = self.board.take_back() if self.board is not None else None
+        if not by:
+            return False
+        if self._install_open():
+            LOG.warning("Go back refused: an install is still open; it is recovered first.")
+            return False
+        try:
+            name = legacy_migrate.go_back(self._data_dir())
+        except Exception as err:  # noqa: BLE001 - fixed reason only; the button comes back on the next poll
+            LOG.warning("Go back failed: %s", type(err).__name__)
+            return False
+        LOG.warning("Go back (owner): the moved-history selection was renamed to %s; restart the Deployer to use the "
+                    "previous history.", name)
+        if getattr(self, "migrated_runtime", None) is not None:
+            # Review 2026-10-13 (HIGH): the moved runtime now refuses every wrapped call; hold this run cleanly
+            # instead of letting the next call fail the loop. The restart then uses the previous history.
+            self.contained = "GO_BACK_RESTART_NEEDED"
+        else:
+            try:
+                self.j.audit("", "LEGACY_GO_BACK", by=by, renamed_to=name or "")
+            except Exception:  # noqa: BLE001,S110 - the log line above remains
+                pass
+        return True
+
     def _execute_undo(self, rid: str) -> bool:
+        if rid in self._legacy_installs() or "*" in self._legacy_installs():
+            # 0.3.24: defence in depth; such a record is never offered.
+            self.diag.add(diagnose.Reason("LEGACY_UNDO_REFUSED", diagnose.HOLD,
+                                          "Undo is not offered for installs made by the old Deployer.",
+                                          request_id=rid))
+            return False
         record = self.j.install(rid)
         undo_id = rid + undo.SUFFIX
         if record is None:
@@ -783,7 +859,12 @@ class Service:
             return
         try:
             owner = self.ensure_engine().s.owner_user_id
-            self.board.set_undo_offers(owner, undo.offers(self.j, self.pk))
+            offers = undo.offers(self.j, self.pk)
+            legacy = self._legacy_installs()
+            if legacy:
+                # 0.3.24 (owner pop-up "Not offered by default"): old-Deployer installs get no Undo button.
+                offers = [o for o in offers if "*" not in legacy and o["request_id"] not in legacy]
+            self.board.set_undo_offers(owner, offers)
         except Exception:  # noqa: BLE001 - no owner/unreadable files -> no Undo buttons this time
             self.board.set_undo_offers("", [])
 
@@ -830,6 +911,9 @@ class Service:
             # Credential Autopilot (0.3.6): dates and reason codes only; read by the Maintenance App's
             # daily credential check (sensor.house_brain_deployer_status), never a token or the key.
             "github_auth": self.gh.auth.summary() if hasattr(self.gh, "auth") else {},
+            # 0.3.24 (#985): previous | prepared | selected | moved
+            "history": legacy_migrate.history_state(self._data_dir(),
+                                                    running_moved=getattr(self, "migrated_runtime", None) is not None),
         }
 
     def _close_poll(self) -> None:
@@ -846,6 +930,7 @@ class Service:
             self.board.set_health(h["last_check"], self.diag.lines(), h["last_result"])
             if not self.j.load_txn():
                 self._offer_undo()
+            self._offer_back()
             if not any(r.code == "DAILY_APPROVAL_LIMIT" for r in self.diag.reasons):
                 lifted = self.j.limit_lifted_until()
                 self.board.withdraw_lift(f"Daily limit lifted until {diagnose.local_time(lifted)}."
@@ -879,11 +964,13 @@ class Service:
                 "minutes after that one stops (the Maintenance App's switch-over does that).")
 
     def poll_once(self) -> None:
+        self._apply_back()
         if self.contained:
             # D6(a): nothing more runs in this App run; no Journal, status or GitHub effect.
             if self.board is not None:
                 self.board.set_health(diagnose.local_time(time.time()),
                                       [diagnose.contained(self.contained)], self.last_result or "held")
+                self._offer_back(owner=self.board.history_owner())
             return
         reason = self.standby_reason()
         if reason:
@@ -892,6 +979,7 @@ class Service:
             self.in_standby = True
             if self.board is not None:
                 self.board.set_health(diagnose.local_time(time.time()), [reason], self.last_result or "standby")
+                self._offer_back(owner=self.board.history_owner())
             return
         if self.in_standby:
             LOG.info("standby ended: this Deployer is in charge now")
@@ -1080,7 +1168,9 @@ def build_service(options_path: str, data_dir: str, *, startup_provider=None) ->
             # 0.3.23: the moved history runs normally; the runtime keeps the bound folders for its life.
             owner_context.keep_for_runtime()
     if runtime is None:
-        return _construct_service(opts, ha, api, packages, data_dir, timing)
+        service = _construct_service(opts, ha, api, packages, data_dir, timing)
+        service.data_dir = data_dir
+        return service
     try:
         with runtime.boundary():
             if packages != runtime.plan['packages_root']:
@@ -1090,6 +1180,7 @@ def build_service(options_path: str, data_dir: str, *, startup_provider=None) ->
             service = _construct_service(opts, ha, api, packages, data_dir, timing, runtime=runtime)
             runtime.bind_service(service)
         service.migrated_runtime = runtime
+        service.data_dir = data_dir
         return service
     except BaseException:
         runtime.close()
