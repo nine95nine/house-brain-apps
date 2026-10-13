@@ -27,7 +27,7 @@ from typing import Callable
 
 from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issues as I, net
 from . import problems as PR
-from .ha import DEPLOYER_STATUS_ENTITY, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
+from .ha import DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
 
 LOG = logging.getLogger("hbm")
@@ -128,6 +128,17 @@ class Watcher:
         return st
 
     # -- collection --------------------------------------------------------------------
+    def kept_rollbacks(self) -> set[str]:
+        """0.9.10: the local Observer / Inspector that a finished store switch stopped on purpose and keeps as the
+        rollback. Supervisor shows them as ``error`` after the stop, which is not a problem to report. Only while the
+        store one is in use (the switch retargets ``ha.observer`` / ``ha.inspector``)."""
+        kept = set()
+        if self.ha.observer != LOCAL_OBSERVER:
+            kept.add(LOCAL_OBSERVER)
+        if self.ha.inspector != INSPECTOR_SLUG:
+            kept.add(INSPECTOR_SLUG)
+        return kept
+
     def collect(self, first_seen: dict[str, float], now: float) -> tuple[list[I.Finding], list[str]]:
         """All current findings, plus the names of sources that could not be read this time."""
         findings: list[I.Finding] = []
@@ -142,8 +153,9 @@ class Watcher:
             self.apps_now = [(a.slug, a.state) for a in apps if a.slug not in (own, self.ha.scout)]
             self.app_names = names
             rows = []
+            kept = self.kept_rollbacks()
             for a in apps:
-                if a.slug in (own, self.ha.scout) or not RE_SLUG.fullmatch(a.slug):
+                if a.slug in (own, self.ha.scout) or a.slug in kept or not RE_SLUG.fullmatch(a.slug):
                     continue
                 if a.state in ("error", "stopped"):
                     # Always read the real boot setting: a manual-start App (for example a commissioning

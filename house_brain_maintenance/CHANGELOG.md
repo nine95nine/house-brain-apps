@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.10
+
+No false problem for the kept local Observer / Inspector (Work Board #942 claim 6148747912). Contains 0.9.9 unchanged
+otherwise.
+
+- **Fix.** After the store switches (0.9.8, 0.9.9) the local Engineering Observer and Inspector are stopped on purpose
+  and kept as the rollback. Supervisor shows them as `error` after that stop, so every check reported "App stopped
+  with an error: House Brain Engineering Observer" (morning summary 2026-10-13, #454 6148534927) and the problem
+  reviewer queued it. While the store one is in use, the local one is no longer reported. If an undo or a restart
+  puts the local one back in use, it is watched again as before.
+
 ## 0.9.9
 
 Engineering Inspector from the store, the last step of the store move (owner pop-ups 2026-10-13: "Inspector 0.2.6
