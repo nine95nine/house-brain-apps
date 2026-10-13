@@ -128,7 +128,7 @@ def broker_accepts(inventory_url: str, key: str, timeout: float = 20.0) -> tuple
     return False, "unexpected: the Broker accepted an empty inventory"
 
 
-PROBE_HOLD_SECONDS = 60.0          # 0.9.4 WRITER_PROBE hold: fixed, like the Deployer's half
+PROBE_HOLD_SECONDS = 600.0         # 0.9.7 WRITER_PROBE hold: fixed 10 minutes, like the Deployer's half (0.3.22)
 PROBE_CHECK_EVERY = 5.0
 
 
@@ -338,16 +338,18 @@ class Engine:
 
     def _writer_probe(self, m: Manifest) -> Result:
         """0.9.4 E6, Maintenance half: ``try`` takes the shared writer lock without waiting and lets it go at once;
-        ``hold`` keeps it for PROBE_HOLD_SECONDS, re-checking its identity. Owner-approved; the lock is never
-        created (``create=False``) and nothing else is written."""
+        ``hold`` keeps it for PROBE_HOLD_SECONDS (10 minutes from 0.9.7), re-checking its identity, and lets it go at
+        once when the App is stopping. Owner-approved; the lock is never created (``create=False``) and nothing else
+        is written."""
         op = m.probe_operation
         facts = {"operation": op, **(self.writer.identity() if self.writer is not None else {"state": "none"})}
         if facts.get("state") != "enrolled":
             return Result(REFUSED, [f"the shared writer lock is not usable here ({facts.get('state')}); nothing "
                                     "was asked or changed"], facts)
         hold = int(self.probe_hold_seconds)
+        span = f"{hold // 60} minutes" if hold >= 120 and hold % 60 == 0 else f"{hold} s"
         lines = ["Test the shared writer lock with the Deployer (two-way busy test, step E6)?",
-                 (f"Plan: take the lock, keep it {hold} s while checking it is still the same file, then let it go."
+                 (f"Plan: take the lock, keep it {span} while checking it is still the same file, then let it go."
                   if op == "hold" else "Plan: try to take the lock once without waiting, then let it go at once."),
                  f"Lock: device {facts.get('dev')}, inode {facts.get('ino')}. Nothing else is read or written; "
                  "the Deployer is not stopped."]
@@ -367,14 +369,21 @@ class Engine:
                 if op == "try":
                     return Result(DONE, [f"ACQUIRED: the lock (device {facts['held_dev']}, inode {st.st_ino}) was "
                                          "free; taken and let go at once"], facts)
-                checks, deadline = 0, time.monotonic() + self.probe_hold_seconds
+                checks, start = 0, time.monotonic()
+                deadline = start + self.probe_hold_seconds
+                stop = self.s.should_stop if callable(self.s.should_stop) else (lambda: False)
                 while (left := deadline - time.monotonic()) > 0:
+                    if stop():                     # 0.9.7: an App stop or update lets the lock go at once
+                        held = int(time.monotonic() - start)
+                        facts.update(probe="RELEASED_EARLY", held_seconds=held, checks=checks)
+                        return Result(DONE, [f"released early after {held} s: the App is stopping; the lock "
+                                             f"(device {facts['held_dev']}, inode {st.st_ino}) was let go"], facts)
                     time.sleep(min(PROBE_CHECK_EVERY, left))
                     lease.check()
                     checks += 1
                 facts.update(probe="HELD", held_seconds=hold, checks=checks)
                 return Result(DONE, [f"HELD: the lock (device {facts['held_dev']}, inode {st.st_ino}) was kept "
-                                     f"{hold} s, identity checked {checks} times, then let go"], facts)
+                                     f"{span}, identity checked {checks} times, then let go"], facts)
         except WriterError as err:
             code = str(err)
             facts["probe"] = code

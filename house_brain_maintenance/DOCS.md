@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.6)
+## What it does (0.9.7)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -493,8 +493,8 @@ asked again later.
 - **Two-way busy test (step E6).** An assistant may file a `WRITER_PROBE` request, and your phone asks once:
   - `operation: try` takes the lock once without waiting and lets it go at once. The result is `ACQUIRED` with the
     device and inode, or `WRITER_BUSY` when the Deployer holds it.
-  - `operation: hold` keeps the lock 60 seconds, checking every 5 seconds that it is still the same file, then lets
-    it go.
+  - `operation: hold` keeps the lock 10 minutes (60 seconds until 0.9.7), checking every 5 seconds that it is still
+    the same file, then lets it go. If the App is stopped or updated meanwhile, it lets the lock go at once.
 
   Neither touches anything else, and neither ever creates the lock. It counts toward `max_approval_requests_per_day`. This App never creates, repairs or removes the lock. While it does not exist, everything works as
 in 0.9.0. At start the App logs one line, `HBM-NATIVE writer_lock state=enrolled dev=… ino=…`.

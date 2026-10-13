@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.7
+
+The writer-lock test holds long enough to overlap (Deployer lane request #942 comment 6136601251; owner pop-up
+2026-10-13 "Longer hold"). Contains 0.9.6 unchanged otherwise.
+
+- **`WRITER_PROBE` `hold`: 10 minutes** instead of 60 s. In three live E6 rounds the other App's ask arrived minutes
+  after the hold started, so 60 s never overlapped. The Deployer makes the same change in 0.3.22.
+- The identity is still re-checked every 5 s; `try` is unchanged. The ask now says "keep it 10 minutes".
+- **New:** while holding, an App stop or update lets the lock go at once (result `RELEASED_EARLY`), so a restart
+  never waits up to 10 minutes.
+
 ## 0.9.6
 
 Problem handling: every problem is followed until it is fixed (owner pop-ups 2026-10-13: "Maintenance one-tap",
