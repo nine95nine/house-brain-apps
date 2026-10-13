@@ -447,6 +447,9 @@ class Service:
                                 backup_report=self.o.backup_report, pi_health=self.o.pi_health,
                                 housekeeping=self.o.housekeeping)
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
+            if self.o.report_issue and self.o.ai_review:                  # 0.9.6: AI problem reviews
+                from .problems import ProblemReviews
+                self.watcher.problem_ai = ProblemReviews(self.gh, self.j, self.o.report_issue)
             self.watcher.credentials = self.gh.auth.summary if hasattr(self.gh, "auth") else None
             self.watcher.relay_url = self.o.relay_credential_url
             # 0.7.3: hold list (all update paths) and the after-update check (Core, OS and App updates).
@@ -758,6 +761,11 @@ class Service:
         if not self.o.issue_checks:
             return
         self.ensure_engine()
+        if self.watcher.problem_ai is not None:            # 0.9.6: AI problem reviews (paged, spaced reads)
+            try:
+                self.watcher.problem_ai.refresh()
+            except Exception as err:  # noqa: BLE001 - the last reviews read stand
+                LOG.warning("AI problem review read waits: %s", net.redact(str(err))[:200])
         summary = self.watcher.check()
         self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary, **self._ledger_attrs(),
                                  **self._writer_attrs(),

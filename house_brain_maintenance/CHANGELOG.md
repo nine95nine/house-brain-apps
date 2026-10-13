@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.6
+
+Problem handling: every problem is followed until it is fixed (owner pop-ups 2026-10-13: "Maintenance one-tap",
+"Full process"). Contains 0.9.5 unchanged otherwise.
+
+- **One-tap fix for "The unit of sensor.… has changed".** Live 2026-10-13: six temperature sensors raised this
+  repair after the Core 2026.10.1 restart. Their long-term statistics carried an old unit label; the sensors report
+  °F now. One ask covers all of them: on Approve, each sensor's stored unit label is set to its current unit
+  (`recorder/update_statistics_metadata`, Home Assistant's own "Update the unit … without converting" fix), then
+  read back. Numbers are not changed. Statistics are **never deleted** (`recorder/clear_statistics` is refused).
+  Only sensors that report a unit with a known unit class are included; any other is still reported, with no fix.
+- **Nothing goes quiet.** Each open problem keeps its first-seen time.
+  - **Escalation:** a problem still open after 7 days gets one push ("still not fixed after a week").
+  - **Weekly list:** on Sunday after the summary hour, every problem still open is posted on the tracking issue
+    with its age, its AI review and its fix, plus one phone line. Nothing is posted when nothing is open.
+- **AI problem reviews.** The morning summary and the weekly list end with a machine line naming the problems
+  without a review (`house_brain_problem_queue.v1`). A scheduled AI routine researches them and posts
+  `house_brain_ai_problem_review.v1` (`FIX_NOW`, `OWNER_ACTION`, `WATCH` or `IGNORE`, with a summary). Only the
+  owner's account counts; the review is shown next to the problem and in the fix ask. It never acts.
+
 ## 0.9.5
 
 Deployer history move, Maintenance's steps M2 and M3 (#985 Pi test plan R1; Deployer lane handoff #942 comment

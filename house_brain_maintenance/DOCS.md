@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.5)
+## What it does (0.9.6)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -262,6 +262,8 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
   any device. The one exception (0.7.4): after your Approve of a one-tap install, the carrier's own script writes
   the new source of the Inspector, Observer or Inventory Scout into that one App folder and keeps its backup under
   `/share/hb91-app-update`. Nothing else in `/addons` or `/share` is written, and `/config` is never touched.
+- Delete long-term statistics. The one statistics change (0.9.6) is the unit label of a sensor's history, after
+  your Approve, with the numbers unchanged.
 
 ## One-tap install of a House Brain App — from 0.7.4
 
@@ -413,6 +415,25 @@ From 0.7.2, when an update ask (App, Core or OS) ends with no answer, one more p
 "Missed: update Home Assistant Core 2026.10.1. I'll ask again at 14:05 (local), or tap Ask me again on the
 Maintenance page." It is sent once per missed ask, never after Reject and never in dry run. From 0.9.0 it reads
 "Tap to approve or decline it on the Maintenance page, or I'll ask again at 14:05 (local)." (see below).
+
+## Problems are followed until they are fixed — from 0.9.6
+
+Live 2026-10-13: six "The unit of sensor.… has changed" repairs sat for two days, because the morning summary named
+them once and never again. Now:
+
+- **One-tap fix for statistics unit labels.** When a sensor's long-term statistics carry an old unit label and the
+  sensor now reports a unit of a known kind (for example °F), your phone asks once for all of them: "relabel the
+  history of 6 sensors to °F (numbers unchanged)". On Approve the stored label is changed, exactly like Home
+  Assistant's own "Update the unit of the historic statistic values … without converting" choice, and read back.
+  Home Assistant clears the repairs at its next check (within 5 minutes). Statistics are never deleted: the "Delete
+  all old statistic data" choice is never used.
+- **One reminder after a week.** A problem still open after 7 days gets one push.
+- **Sunday list.** Every problem still open is listed on the tracking issue each Sunday after the summary hour, with
+  its age, the AI review and the fix on offer.
+- **AI review** (with `ai_review` on). The summary and the Sunday list name the problems without a review. An AI
+  routine researches each one and posts a verdict: approve the offered fix, needs a step by you, wait and watch, or
+  harmless. It is shown next to the problem and in the fix ask. It never fixes anything: fixes still need your
+  Approve, and Home Assistant configuration (YAML) changes go through your approval and the Deployer.
 
 ## Moving the old Deployer's history — from 0.9.5
 

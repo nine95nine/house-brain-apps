@@ -123,7 +123,11 @@ RE_ST = re.compile(r"^[A-Za-z0-9._:/-]{1,120}$")
 SSDP_READ_SECONDS = 4.0
 SSDP_MAX_ROWS = 400
 RE_SWITCH = re.compile(r"^switch\.[a-z0-9_]{1,80}$")
-FIX_KINDS = frozenset({"restart_app", "start_app", "apply_suggestion", "reload_entry", "power_cycle"})
+FIX_KINDS = frozenset({"restart_app", "start_app", "apply_suggestion", "reload_entry", "power_cycle",
+                       "relabel_stats"})          # 0.9.6: statistics unit label (never a delete)
+RE_UNIT_TEXT = re.compile(r"^[^\x00-\x1f<>`|]{0,24}$")
+RE_UNIT_CLASS = re.compile(r"^[a-z_]{1,40}$")
+STATS_ISSUES = ("units_changed", "state_class_removed", "mean_type_changed")
 SAFE_STATES = frozenset({"startup", "started", "stopped", "unknown", "error"})
 PRIVILEGE_FIELDS = ("hassio_role", "full_access", "host_network", "host_pid", "docker_api", "auth_api",
                     "homeassistant_api", "apparmor")
@@ -774,6 +778,8 @@ class HomeAssistant:
             raise ForbiddenCall("fix entry id")
         elif kind == "power_cycle" and (not self.power_cycle_entity or ref != self.power_cycle_entity):
             raise ForbiddenCall("power-cycle target is not the configured switch")
+        elif kind == "relabel_stats" and ref != "units_changed":
+            raise ForbiddenCall("relabel target")
         if self._busy():
             raise ForbiddenCall("nested target")
         self._fix = (kind, ref)
@@ -1481,10 +1487,21 @@ class HomeAssistant:
         out_repairs = []
         for row in ((repairs or {}).get("issues") or [])[:200] if isinstance(repairs, dict) else []:
             if isinstance(row, dict):
-                out_repairs.append({k: s(row.get(k), 120) for k in (
+                item = {k: s(row.get(k), 120) for k in (
                     "domain", "issue_id", "severity", "translation_key", "learn_more_url",
-                    "breaks_in_ha_version", "dismissed_version")} |
-                    {"is_fixable": row.get("is_fixable") is True, "ignored": row.get("ignored") is True})
+                    "breaks_in_ha_version", "dismissed_version")} | \
+                    {"is_fixable": row.get("is_fixable") is True, "ignored": row.get("ignored") is True}
+                ph = row.get("translation_placeholders")
+                if row.get("domain") == "sensor" and item["translation_key"] in STATS_ISSUES and isinstance(ph, dict):
+                    # 0.9.6: the statistics issues' units (no values), so the fix can name the exact change
+                    sid = ph.get("statistic_id")
+                    item["stats"] = {
+                        "statistic_id": sid if isinstance(sid, str) and RE_ENTITY_ID.fullmatch(sid) else "",
+                        **{k: (ph.get(k) if isinstance(ph.get(k), str) and RE_UNIT_TEXT.fullmatch(ph.get(k))
+                               else None) for k in ("state_unit", "metadata_unit")},
+                        **{k: (ph.get(k) if isinstance(ph.get(k), str) and RE_UNIT_CLASS.fullmatch(ph.get(k))
+                               else None) for k in ("state_unit_class", "metadata_unit_class")}}
+                out_repairs.append(item)
         out_entries = []
         for row in (entries or [])[:500] if isinstance(entries, list) else []:
             if isinstance(row, dict) and isinstance(row.get("entry_id"), str) and RE_ENTRY_ID.fullmatch(row["entry_id"]):
@@ -1541,6 +1558,46 @@ class HomeAssistant:
 
     def start_app(self, slug: str) -> None:
         self._supervisor("POST", f"/addons/{slug}/start", body={}, timeout=300)
+
+    def relabel_statistics(self, statistic_id: str, unit_class: str, unit: str) -> None:
+        """0.9.6, only inside ``fix_target("relabel_stats", "units_changed")``: set the stored unit label of one
+        sensor's long-term statistics to its current unit, without converting any value (Home Assistant's own
+        "Update the unit of the historic statistic values" fix). Never deletes statistics."""
+        if self._fix != ("relabel_stats", "units_changed") or not RE_ENTITY_ID.fullmatch(statistic_id) \
+                or not statistic_id.startswith("sensor.") or not RE_UNIT_CLASS.fullmatch(unit_class or "") \
+                or not unit or not RE_UNIT_TEXT.fullmatch(unit):
+            raise ForbiddenCall("relabel outside its fix")
+        msg = {"type": "recorder/update_statistics_metadata", "statistic_id": statistic_id,
+               "unit_class": unit_class, "unit_of_measurement": unit}
+
+        def guard(m: dict) -> None:
+            if m != msg:
+                raise ForbiddenCall("ws relabel")
+        sock = CoreSocket(self.ws_url, self._token, guard)
+        try:
+            sock.command(msg, timeout=30)
+        finally:
+            sock.close()
+
+    def statistics_units(self, statistic_ids: list[str]) -> dict[str, str | None]:
+        """0.9.6: the stored unit of each sensor's long-term statistics (metadata only, read-only)."""
+        ids = [i for i in statistic_ids if isinstance(i, str) and RE_ENTITY_ID.fullmatch(i)][:50]
+        if not ids:
+            return {}
+        msg = {"type": "recorder/get_statistics_metadata", "statistic_ids": ids}
+
+        def guard(m: dict) -> None:
+            if m != msg:
+                raise ForbiddenCall("ws statistics metadata")
+        sock = CoreSocket(self.ws_url, self._token, guard)
+        try:
+            rows = sock.command(msg, timeout=30)
+        finally:
+            sock.close()
+        return {r["statistic_id"]: (r.get("statistics_unit_of_measurement")
+                                    if isinstance(r.get("statistics_unit_of_measurement"), str) else None)
+                for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict)
+                and r.get("statistic_id") in ids}
 
     def apply_suggestion(self, uuid: str) -> None:
         self._supervisor("POST", f"/resolution/suggestion/{uuid}", body={}, timeout=600)

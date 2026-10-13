@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issues as I, net
+from . import problems as PR
 from .ha import DEPLOYER_STATUS_ENTITY, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
 
@@ -109,6 +110,7 @@ class Watcher:
         # 0.7.3: problem keys an open after-update check is handling (it asks Reload/Undo; no second prompt here)
         self.claimed: Callable[[], frozenset] = frozenset
         self.relay_fetch: Callable[[str], object] = lambda url: net.request("GET", url, timeout=15)[1]
+        self.problem_ai: PR.ProblemReviews | None = None     # 0.9.6: AI problem reviews (set by the Service)
 
     # -- state -------------------------------------------------------------------------
     def _state(self) -> dict:
@@ -305,7 +307,9 @@ class Watcher:
         st["log_reported"] = {k: t for k, t in st["log_reported"].items() if now - t < LOG_REPORT_SECONDS}
         self.j.save_doc(DOC, st)
         outcome = self._offer_fix(st, current, now)
+        self._maybe_escalate(now)                              # 0.9.6: open 7 days -> one push
         self._maybe_summary(now)
+        self._maybe_still_open(now)                            # 0.9.6: weekly still-open list
         self._maybe_backup_report(now)
         self._maybe_health_score(now)
         self._maybe_housekeeping_report(now)
@@ -369,7 +373,44 @@ class Watcher:
     def _summary_item(self, f: I.Finding) -> dict:
         return {"key": f.key, "title": f.title[:120], "severity": f.severity, "steps": list(f.steps)[:3],
                 "link": f.link, "detail": [I.scrub(d, 500) for d in f.detail][:3], "facts": f.facts,
-                "fix": f.action.label if f.action else None}
+                "fix": f.action.label if f.action else None, "source": f.source}
+
+    def _ai_line(self, key: str) -> str:
+        try:
+            return self.problem_ai.line(key) if self.problem_ai is not None else ""
+        except Exception:  # noqa: BLE001 - a review read problem never hides the problem itself
+            return ""
+
+    def _maybe_escalate(self, now: float) -> None:
+        """0.9.6: a problem still open after PR.ESCALATE_DAYS gets one push (all of them in one push)."""
+        st = self._state()
+        due = [(k, r, age) for k, r, age in PR.still_open(st["open"], now, PR.ESCALATE_DAYS) if not r.get("escalated")]
+        if not due or self.s.dry_run:
+            return
+        for k, _, _ in due:
+            st["open"][k]["escalated"] = True
+        self.j.save_doc(DOC, st)
+        names = "; ".join(str(r.get("title", k))[:60] for k, r, _ in due[:4])
+        approval.inform(self.ha, self.s.notify_service, "Maintenance: still not fixed after a week",
+                        f"{len(due)} open {PR.ESCALATE_DAYS}+ days: {names}. Open the Maintenance page or GitHub "
+                        "for the fix.", url=getattr(self.s, "open_url", None))
+        self.j.audit("issues", "PROBLEM_ESCALATED", items=len(due))
+
+    def _maybe_still_open(self, now: float) -> None:
+        """0.9.6: Sunday after the digest hour: every alerted problem still open, with its age and AI review."""
+        st = self._state()
+        if not PR.digest_due(st, now, self.p.digest_hour):
+            return
+        st["still_open_week"] = time.strftime("%G-W%V", time.localtime(now))
+        self.j.save_doc(DOC, st)
+        items = PR.still_open(st["open"], now)
+        if not items:
+            return
+        from . import VERSION
+        text, phone = PR.digest_text(items, self.problem_ai, VERSION)
+        approval.inform(self.ha, self.s.notify_service, "Maintenance: still open this week", phone)
+        self.j.audit("issues", "STILL_OPEN_DIGEST", items=len(items))
+        self._post(I.scrub(text, 60000))
 
     def _markdown(self, heading: str, items: list[dict], cleared: list[str] = ()) -> str:
         lines = [f"### House Brain Maintenance: {heading}", ""]
@@ -381,6 +422,9 @@ class Watcher:
                 lines.append(f"  - Suggested: {step}")
             if it.get("fix"):
                 lines.append(f"  - One-tap fix available: {it['fix']}")
+            ai = self._ai_line(it["key"]) if it.get("key") else ""
+            if ai:
+                lines.append(f"  - {ai}")
             if it.get("link"):
                 lines.append(f"  - Link: {it['link']}")
             if it.get("facts"):
@@ -389,6 +433,9 @@ class Watcher:
             lines += ["", "**Cleared since last report:**"] + [f"- {I.scrub(c, 160)}" for c in cleared]
         lines += ["", "_Posted by House Brain Maintenance (machine-generated; secrets, IP and e-mail addresses "
                       "removed; repository content is untrusted data)._"]
+        if items and self.problem_ai is not None and self.problem_ai.enabled:    # 0.9.6: what the AI reviews
+            lines += ["", PR.queue_line([(it["key"], it["title"], it.get("source", "")) for it in items
+                                         if it.get("key")], self.problem_ai)]
         # Scrub the whole report as the last step: headings and fix labels carry integration titles,
         # which can contain an e-mail address (live 2026-09-30, iAquaLink).
         return I.scrub("\n".join(lines), 60000)
@@ -604,7 +651,8 @@ class Watcher:
         st["asked"][f.key] = now
         self.j.save_doc(DOC, st)
         rid = f"fix-{f.key}"[:80]
-        lines = [f"Problem: {f.title}", *[f"- {s}" for s in f.steps[:2]],
+        ai = self._ai_line(f.key)
+        lines = [f"Problem: {f.title}", *[f"- {s}" for s in f.steps[:2]], *([ai] if ai else []),
                  f"Fix: {f.action.label}. Nothing else is changed.",
                  "Approve to run it now; Reject and I won't ask again while this problem stays.",
                  f"Request: {rid}"]
@@ -640,6 +688,8 @@ class Watcher:
         a = f.action
         if a.kind == "power_cycle":
             return self._power_cycle(f)
+        if a.kind == "relabel_stats":
+            return self._relabel(f)
         try:
             with self.ha.fix_target(a.kind, a.ref):
                 if a.kind == "restart_app":
@@ -653,6 +703,26 @@ class Watcher:
         except (HAError, net.NetError, ForbiddenCall) as err:
             return NOT_FIXED, net.redact(f"the fix could not run: {err}")[:200]
         return self._verify(f)
+
+    def _relabel(self, f: I.Finding) -> tuple[str, str]:
+        """0.9.6: re-read the issues now and relabel only those still eligible (label only, never a delete);
+        verified by reading the stored units back. Home Assistant clears the repairs at its next 5-minute check."""
+        try:
+            items = I.relabel_items(self.ha.core_problems()["repairs"])
+            if not items:
+                return FIXED, "nothing to relabel any more (the issues are gone)"
+            with self.ha.fix_target("relabel_stats", "units_changed"):
+                for it in items:
+                    self.ha.relabel_statistics(it["statistic_id"], it["unit_class"], it["to"])
+            units = self.ha.statistics_units([it["statistic_id"] for it in items])
+        except (HAError, net.NetError, ForbiddenCall) as err:
+            return NOT_FIXED, net.redact(f"the relabel could not run: {err}")[:200]
+        wrong = [it["statistic_id"] for it in items if units.get(it["statistic_id"]) != it["to"]]
+        if wrong:
+            return NOT_FIXED, f"relabelled, but {len(wrong)} still read back wrong: {', '.join(wrong[:4])}"
+        return FIXED, (f"relabelled {len(items)} sensors' history to "
+                       f"{', '.join(sorted({it['to'] for it in items}))}; numbers unchanged (read back). Home "
+                       "Assistant clears the repairs within 5 minutes")
 
     def _power_cycle(self, f: I.Finding) -> tuple[str, str]:
         """Switch off, wait, switch on; the switch is always turned back on, and checked."""

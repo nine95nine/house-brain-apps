@@ -287,10 +287,51 @@ def from_resolution(res: dict, app_names: dict[str, str]) -> list[Finding]:
     return out
 
 
-def from_repairs(issues: list[dict]) -> list[Finding]:
+def relabel_items(issues: list[dict]) -> list[dict]:
+    """0.9.6: ``units_changed`` sensor issues that a label-only fix can safely clear: the sensor reports a unit of
+    a known unit class now, and the stored history carries a different, unconvertible label (Home Assistant only
+    raises this issue when it cannot convert). Each: statistic_id, from (old label), to (current unit), unit_class."""
     out = []
     for row in issues:
+        st = row.get("stats") or {}
+        if (row.get("domain") == "sensor" and row.get("translation_key") == "units_changed"
+                and not row.get("ignored") and st.get("statistic_id", "").startswith("sensor.")
+                and st.get("state_unit") and st.get("state_unit_class")
+                and st.get("metadata_unit") != st.get("state_unit")):
+            out.append({"statistic_id": st["statistic_id"], "from": st.get("metadata_unit"),
+                        "to": st["state_unit"], "unit_class": st["state_unit_class"]})
+    return sorted(out, key=lambda i: i["statistic_id"])[:50]
+
+
+def _label(unit) -> str:
+    return f"'{unit}'" if unit else "no unit"
+
+
+def from_repairs(issues: list[dict]) -> list[Finding]:
+    out = []
+    relabel = relabel_items(issues)
+    if relabel:                                     # 0.9.6: one problem, one Approve, for all of them
+        froms = sorted({_label(i["from"]) for i in relabel})
+        tos = sorted({_label(i["to"]) for i in relabel})
+        names = ", ".join(i["statistic_id"][7:] for i in relabel[:6]) + (" and more" if len(relabel) > 6 else "")
+        out.append(Finding(
+            "repair:sensor:units_changed", "repairs", WARNING,
+            f"{len(relabel)} sensor{'s' if len(relabel) > 1 else ''}: the history's unit label is wrong ({names})",
+            detail=tuple(f"{i['statistic_id']}: stored as {_label(i['from'])}, reads {_label(i['to'])}"
+                         for i in relabel[:10]),
+            steps=(f"Fix: relabel their stored history from {' / '.join(froms)} to {' / '.join(tos)}, without "
+                   "changing any number (Home Assistant's own 'Update the unit … without converting').",
+                   "Never 'Delete all old statistic data': that would erase the history."),
+            link="https://my.home-assistant.io/redirect/developer_statistics",
+            action=Action("relabel_stats", "units_changed",
+                          f"relabel the history of {len(relabel)} sensor{'s' if len(relabel) > 1 else ''} to "
+                          f"{' / '.join(tos)} (numbers unchanged)"),
+            facts={"items": relabel}))
+    done = {f"units_changed_{i['statistic_id']}" for i in relabel}
+    for row in issues:
         if row.get("ignored") or row.get("dismissed_version"):
+            continue
+        if row.get("domain") == "sensor" and row.get("issue_id") in done:
             continue
         severity = CRITICAL if row.get("severity") in ("critical", "error") else WARNING
         domain = humanize(row.get("domain", ""))

@@ -112,12 +112,14 @@ OFF = Gate("off", None, "", True)
 
 
 class AiReviews:
+    DOC = DOC
+
     def __init__(self, gh, journal, issue: int, enabled: bool = True, clock=time.time) -> None:
         self.gh, self.j, self.issue, self.enabled, self.clock = gh, journal, int(issue), enabled, clock
         self.owner = gh.repo.split("/", 1)[0] if gh is not None else ""
 
     def _doc(self) -> dict:
-        doc = self.j.load_doc(DOC, {})
+        doc = self.j.load_doc(self.DOC, {})
         doc = doc if isinstance(doc, dict) else {}
         doc.setdefault("since", None)
         doc.setdefault("reviews", {})
@@ -146,14 +148,18 @@ class AiReviews:
             at = _ts((c or {}).get("updated_at")) if isinstance(c, dict) else None
             if at is not None:
                 newest = max(newest, at)
-            for r in parse(c, self.owner):
+            for r in self._parse(c, self.owner):
                 old = reviews.get(r["item"])
                 if old is None or r["at"] >= float(old.get("at") or 0):     # the newest review of an item wins
                     reviews[r["item"]] = {k: r[k] for k in ("verdict", "summary", "at", "url")}
         doc["reviews"] = {k: v for k, v in reviews.items() if now - float(v.get("at") or 0) < KEEP}
         doc["since"] = _iso(max(newest - 1, now - LOOKBACK))
         doc["read_at"] = now
-        self.j.save_doc(DOC, doc)
+        self.j.save_doc(self.DOC, doc)
+
+    @staticmethod
+    def _parse(comment: dict, owner: str) -> list[dict]:
+        return parse(comment, owner)
 
     def get(self, item: str) -> dict | None:
         return self._doc()["reviews"].get(item)
