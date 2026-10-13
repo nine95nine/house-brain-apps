@@ -674,6 +674,7 @@ class HomeAssistant:
         self._entity: dict | None = None          # 0.7.0: {"entity_id", "kind", "to", "frm"} while open
         self._stage: str | None = None            # 0.7.4: the allowlisted local App whose source is being staged
         self._key: dict | None = None             # 0.8.0: {"role", "slug", "names"} during one key change
+        self._legacy: dict | None = None          # 0.9.5: {"bslug"} during one legacy Deployer backup/stage step
         self._self_slug: str | None = None
         # 0.6.1 shared Core socket (see shared_ws)
         self._shared_lock = threading.Lock()
@@ -724,6 +725,13 @@ class HomeAssistant:
         if system is not None and system_call_ok(system["kind"], system["version"], method, path, body,
                                                  system["backup"]):
             return
+        leg = self._legacy                        # 0.9.5: the legacy Deployer's backup, its info and its download
+        if leg is not None and (
+                (method == "POST" and path == "/backups/new/partial" and leg["bslug"] is None
+                 and app_backup_body_ok(MIGRATE_OLD, path, body))
+                or (method == "GET" and leg["bslug"] is not None
+                    and path in (f"/backups/{leg['bslug']}/info", f"/backups/{leg['bslug']}/download"))):
+            return
         move = self._scout_move                   # 0.9.3: the store Scout's info and its two settings only
         if move is not None and ((method == "GET" and path == f"/addons/{move}/info") or (
                 method == "POST" and path == f"/addons/{move}/options" and isinstance(body, dict)
@@ -745,7 +753,7 @@ class HomeAssistant:
 
     def _busy(self) -> bool:
         return any(t is not None for t in (self._target, self._fix, self._system, self._os_act, self._pifw,
-                                           self._migrate,
+                                           self._migrate, self._legacy,
                                            self._entity,
                                            self._stage, self._key))
 
@@ -949,6 +957,55 @@ class HomeAssistant:
             yield
         finally:
             self._migrate = None
+
+    @contextmanager
+    def legacy_target(self, bslug: str | None = None):
+        """0.9.5 (#985 test plan M2/M3): with ``bslug`` None, only a partial backup of the legacy Deployer
+        (``local_house_brain_deployer``, nothing else); with ``bslug``, only that backup's info and its download."""
+        if bslug is not None and (not isinstance(bslug, str) or not RE_BACKUP_SLUG.fullmatch(bslug)):
+            raise ForbiddenCall("legacy backup")
+        if self._busy():
+            raise ForbiddenCall("nested legacy target")
+        self._legacy = {"bslug": bslug}
+        try:
+            yield
+        finally:
+            self._legacy = None
+
+    def legacy_backup(self, name: str) -> str:
+        if self._legacy is None or self._legacy["bslug"] is not None:
+            raise ForbiddenCall("legacy backup outside its step")
+        return self.backup_app(MIGRATE_OLD, name)
+
+    def legacy_backup_info(self) -> dict:
+        """The pinned backup's custody facts only (no options, no file names)."""
+        leg = self._legacy
+        if leg is None or leg["bslug"] is None:
+            raise ForbiddenCall("legacy backup info outside its step")
+        data = self._supervisor("GET", f"/backups/{leg['bslug']}/info")
+        data = data if isinstance(data, dict) else {}
+        apps = [{"slug": str(a.get("slug"))[:80], "version": str(a.get("version"))[:32]}
+                for a in (data.get("addons") or [])[:20] if isinstance(a, dict)]
+        folders = sorted(str(f)[:40] for f in (data.get("folders") or [])[:20])
+        def s(key, n):
+            v = data.get(key)
+            return v[:n] if isinstance(v, str) else None
+        return {"slug": leg["bslug"], "name": s("name", 100), "date": s("date", 40), "type": s("type", 20),
+                "size": data.get("size") if isinstance(data.get("size"), (int, float)) else None,
+                "protected": data.get("protected") is True, "compressed": data.get("compressed") is True,
+                "homeassistant": bool(data.get("homeassistant")), "addons": apps, "folders": folders}
+
+    def legacy_backup_download(self, max_bytes: int) -> bytes:
+        leg = self._legacy
+        if leg is None or leg["bslug"] is None:
+            raise ForbiddenCall("legacy backup download outside its step")
+        path = f"/backups/{leg['bslug']}/download"
+        self._guard("GET", path)
+        _, data = net.request("GET", self.base + path, {"Authorization": f"Bearer {self._token}"}, timeout=600,
+                              raw=True, max_bytes=max_bytes)
+        if not isinstance(data, bytes):
+            raise HAError("BACKUP_DOWNLOAD")
+        return data
 
     def deployer_options(self) -> dict:
         """0.6.6, only inside ``migrate_target``: the old Deployer's options, limited to the known names. The token

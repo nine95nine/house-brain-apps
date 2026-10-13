@@ -50,7 +50,8 @@ class NetError(Exception):
 
 def request(method: str, url: str, headers: dict[str, str] | None = None,
             body: Any = None, timeout: float = 30.0, raw: bool = False,
-            raw_body: bytes | None = None, headers_out: dict | None = None) -> tuple[int, Any]:
+            raw_body: bytes | None = None, headers_out: dict | None = None,
+            max_bytes: int = MAX_RESPONSE_BYTES) -> tuple[int, Any]:
     data = raw_body
     hdrs = dict(headers or {})
     # 0.5.1 (live 2026-10-05): Cloudflare answered 403 to Python's default "Python-urllib" user agent
@@ -62,7 +63,7 @@ def request(method: str, url: str, headers: dict[str, str] | None = None,
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     try:
         with _OPENER.open(req, timeout=timeout) as resp:
-            payload = resp.read(MAX_RESPONSE_BYTES + 1)
+            payload = resp.read(max_bytes + 1)          # 0.9.5: a larger cap only for one backup download
             status = resp.status
             if headers_out is not None:   # Credential Autopilot: e.g. the PAT expiry header
                 headers_out.update({k.lower(): v for k, v in resp.headers.items()})
@@ -77,7 +78,7 @@ def request(method: str, url: str, headers: dict[str, str] | None = None,
         raise NetError(err.code, text or str(err.reason)) from None
     except (urllib.error.URLError, OSError, TimeoutError) as err:
         raise NetError(0, f"{type(err).__name__}: {err}") from None
-    if len(payload) > MAX_RESPONSE_BYTES:
+    if len(payload) > max_bytes:
         raise NetError(status, "response too large")
     if raw:
         return status, payload

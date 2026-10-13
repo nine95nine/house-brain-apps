@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.5
+
+Deployer history move, Maintenance's steps M2 and M3 (#985 Pi test plan R1; Deployer lane handoff #942 comment
+6133340527, item 3; owner pop-up 2026-10-12: "Backup + shared folder"). Contains 0.9.4 unchanged otherwise.
+
+- **`LEGACY_STAGE` request, two owner-approved phases.**
+  - `backup` makes and pins a backup of the stopped old Deployer (0.3.6) only, and records its custody.
+  - `stage` re-checks that exact backup under the shared writer lock, reads it in memory, and seals its five
+    history files as an `hbm.legacy_snapshot.preparation.v1` stage in `/share/house_brain_legacy_stage_v1`, for
+    the Deployer's import step.
+- **Reader and stage from #975.** The strict reader and stage writer are the inactive #975 preparation, unchanged
+  (pinned by hash). Real App backups are PAX tar files; their archive is first narrowed to plain USTAR with only
+  `addon.json` and the history files. Links, unknown PAX keys and unsafe names refuse.
+- **Never kept:** the old Deployer's settings and token. **Never done:** uninstall, restore, start. AppArmor gains
+  read-write on that one stage folder only.
+
 ## 0.9.4
 
 The Maintenance half of the shared writer lock's proof (#985 enrollment plan R1 step E6; Deployer handoff #942

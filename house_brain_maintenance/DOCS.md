@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.4)
+## What it does (0.9.5)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -413,6 +413,26 @@ From 0.7.2, when an update ask (App, Core or OS) ends with no answer, one more p
 "Missed: update Home Assistant Core 2026.10.1. I'll ask again at 14:05 (local), or tap Ask me again on the
 Maintenance page." It is sent once per missed ask, never after Reject and never in dry run. From 0.9.0 it reads
 "Tap to approve or decline it on the Maintenance page, or I'll ask again at 14:05 (local)." (see below).
+
+## Moving the old Deployer's history — from 0.9.5
+
+This is the Deployer history move (#985), steps M2 and M3 of its Pi test plan. The old local Deployer (0.3.6) stays
+stopped and installed throughout. An assistant files two `LEGACY_STAGE` requests, and your phone asks once for each:
+
+1. **Back up the old Deployer** (`phase: backup`). Only when the old Deployer is stopped and the store Deployer is
+   not installing anything. A backup of that one App only is made. Its facts (name, date, size, exact contents) are
+   recorded as its custody, and the result names a `custody_sha256`.
+2. **Stage its history** (`phase: stage`, with that `custody_sha256`). Under the shared writer lock, this App:
+   - checks the pinned backup again;
+   - reads it through Home Assistant, in memory only;
+   - takes out exactly the five history files (`ledger.json`, `installs.json`, `audit.jsonl`, `FROZEN.json`,
+     `txn.json`).
+
+   They are sealed in `/share/house_brain_legacy_stage_v1/stage-…/` for the Deployer's next step (M4). The old
+   Deployer's settings inside the backup, including its old GitHub token, are never kept, shown or posted.
+
+A strict reader checks the backup's App archive: only plain files and folders, version 0.3.6, stopped. Anything
+unexpected stops it with a reason, and nothing is used. Nothing is ever uninstalled, restored or started here.
 
 ## Inventory Scout from the store — from 0.9.3
 

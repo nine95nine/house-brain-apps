@@ -27,7 +27,8 @@ from . import approval, net
 from .ha import AppView, ForbiddenCall, HAError, HomeAssistant, fingerprint
 from .journal import Journal
 from . import logwindow
-from .manifest import APP_LOG_WINDOW, CHECK_BROKER, ROTATE_SCOUT_KEY, RUN_SCOUT_ONCE, WRITER_PROBE, Manifest
+from .manifest import (APP_LOG_WINDOW, CHECK_BROKER, LEGACY_STAGE, ROTATE_SCOUT_KEY, RUN_SCOUT_ONCE, WRITER_PROBE,
+                       Manifest)
 from .writer import WriterError
 from .web import ApprovalBoard
 
@@ -138,6 +139,7 @@ class Engine:
         self.s = settings
         self.writer = None                # 0.9.4: the shared writer lock (writer.SharedWriter), set by the service
         self.probe_hold_seconds = PROBE_HOLD_SECONDS
+        self.legacy_stage_root = None     # 0.9.5: None = legacystage.STAGE_ROOT (tests point it elsewhere)
 
     # -- helpers --------------------------------------------------------------
     def _ask(self, m: Manifest, title: str, lines: list[str]) -> str:
@@ -186,6 +188,9 @@ class Engine:
                 return self._app_log_window(m)
             if m.job == WRITER_PROBE:
                 return self._writer_probe(m)
+            if m.job == LEGACY_STAGE:                       # 0.9.5: #985 test plan M2/M3
+                from .legacystage import STAGE_ROOT, LegacyStager
+                return LegacyStager(self, self.legacy_stage_root or STAGE_ROOT).run(m)
         except (HAError, net.NetError) as err:
             reason = net.redact(str(err))[:200]
             if self.j.load_txn():

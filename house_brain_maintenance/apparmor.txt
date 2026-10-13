@@ -56,6 +56,10 @@ profile house_brain_maintenance flags=(attach_disconnected,mediate_deleted) {
   # never create, rename or remove either (the Deployer enrolled them once, with the owner's approval).
   /share/house_brain_writer_v1/ r,
   /share/house_brain_writer_v1/.house_brain_writer_v1.lock rwk,
+  # 0.9.5 (#985 Pi test plan M3): the legacy Deployer's staged history; this App creates and writes it, the Deployer
+  # only reads it. Nothing else under /share.
+  /share/house_brain_legacy_stage_v1/ rw,
+  /share/house_brain_legacy_stage_v1/** rw,
 
   /proc/ r,
   /proc/self/** r,

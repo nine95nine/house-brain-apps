@@ -90,6 +90,11 @@ JOBS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
 WRITER_PROBE = "WRITER_PROBE"
 PROBE_OPERATIONS = ("try", "hold")
 JOBS[WRITER_PROBE] = (frozenset({"operation"}), frozenset())
+# 0.9.5 (#985 Pi test plan R1 M2/M3, owner pop-up 2026-10-12 "Backup + shared folder"): back up the stopped legacy
+# Deployer and stage its history. Owner-approved per phase; ``stage`` must name the pinned backup's custody digest.
+LEGACY_STAGE = "LEGACY_STAGE"
+LEGACY_PHASES = ("backup", "stage")
+JOBS[LEGACY_STAGE] = (frozenset({"phase"}), frozenset({"custody_sha256"}))
 _TOP = frozenset({"schema", "request_id", "job", "requested_by", "tracking_issue", "note", "params"})
 _REQUIRED_TOP = frozenset({"schema", "request_id", "job", "requested_by", "params"})
 
@@ -135,6 +140,9 @@ class Manifest:
     key_role: str | None = None
     # 0.9.4 WRITER_PROBE
     probe_operation: str | None = None
+    # 0.9.5 LEGACY_STAGE
+    legacy_phase: str | None = None
+    custody_sha256: str | None = None
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict:
@@ -203,6 +211,13 @@ def parse(raw: bytes) -> Manifest:
         if params["operation"] not in PROBE_OPERATIONS:
             raise ManifestError("PROBE_OPERATION")
         log["probe_operation"] = params["operation"]
+    if job == LEGACY_STAGE:
+        phase, digest = params["phase"], params.get("custody_sha256")
+        if phase not in LEGACY_PHASES or (phase == "backup") != (digest is None):
+            raise ManifestError("LEGACY_PHASE")
+        if digest is not None and (not isinstance(digest, str) or not RE_SHA256.fullmatch(digest)):
+            raise ManifestError("CUSTODY_SHA256")
+        log.update(legacy_phase=phase, custody_sha256=digest)
     fp = params.get("expect_key_fingerprint")
     if fp is not None and (not isinstance(fp, str) or not RE_SHA256.fullmatch(fp)):
         raise ManifestError("EXPECT_KEY_FINGERPRINT")
