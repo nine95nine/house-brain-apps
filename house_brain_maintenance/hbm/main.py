@@ -22,6 +22,7 @@ from .entities import JOBS as ENTITY_JOBS, EntityPolicy, EntityUpdater
 from .migrate import JOB as MIGRATE_JOB, MigratePolicy, Migrator
 from .scoutmove import JOB as SCOUTMOVE_JOB, ScoutMove
 from .observermove import JOB as OBSMOVE_JOB, TXN as OBSMOVE_TXN, ObserverMove, ObserverMovePolicy
+from .inspectormove import JOB as INSMOVE_JOB, TXN as INSMOVE_TXN, InspectorMove
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
@@ -352,6 +353,7 @@ class Service:
         self.writer = SharedWriter()                       # 0.9.1: shared writer lock with the Deployer (never created)
         self.scoutmove: ScoutMove | None = None            # 0.9.3: Inventory Scout local -> store switch
         self.obsmove: ObserverMove | None = None           # 0.9.8: Engineering Observer local -> store switch
+        self.insmove: InspectorMove | None = None          # 0.9.9: Engineering Inspector local -> store switch
         self._writer_reported = False                      # 0.9.4: lock identity posted on #454 once per start
         self.watcher: Watcher | None = None
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
@@ -444,6 +446,10 @@ class Service:
                 watch_seconds=600.0 * scale, poll=min(10.0, self.poll), reask_hours=float(self.o.update_reask_hours)))
             if self.obsmove.restore():                                   # 0.9.8: the recorded store Observer
                 LOG.info("Engineering Observer: the store Observer %s is in use", self.ha.observer)
+            self.insmove = InspectorMove(self.ha, self.j, settings, ObserverMovePolicy(
+                watch_seconds=900.0 * scale, poll=min(10.0, self.poll), reask_hours=float(self.o.update_reask_hours)))
+            if self.insmove.restore():                                   # 0.9.9: the recorded store Inspector
+                LOG.info("Engineering Inspector: the store Inspector %s is in use", self.ha.inspector)
             watch = WatchPolicy(digest_hour=self.o.digest_hour,
                                 max_fix_asks_per_day=self.o.max_approval_requests_per_day,
                                 reask_hours=float(self.o.update_reask_hours),
@@ -643,6 +649,11 @@ class Service:
                 self.finish(out.request_id, OBSMOVE_JOB, f"obsmove:{txn.get('new')}", self.o.report_issue or None,
                             Result(out.result_outcome, out.reasons, out.facts))
                 return
+            if txn.get("kind") == INSMOVE_TXN:            # 0.9.9: the Inspector switch to the store
+                out = self.insmove.recover(txn)
+                self.finish(out.request_id, INSMOVE_JOB, f"insmove:{txn.get('new')}", self.o.report_issue or None,
+                            Result(out.result_outcome, out.reasons, out.facts))
+                return
             if txn.get("kind") == "entity":
                 out = self.entities.recover(txn)
                 out.facts = {"entity_id": txn.get("entity_id"), "kind": txn.get("entity_kind"), "from": txn.get("from"),
@@ -830,6 +841,11 @@ class Service:
             if om is not None:                          # 0.9.8: Engineering Observer from the store
                 self.finish(om.request_id, OBSMOVE_JOB, f"obsmove:{om.facts.get('new')}",
                             self.o.report_issue or None, Result(om.result_outcome, om.reasons, om.facts))
+                return
+            im = self.insmove.cycle() if self.insmove is not None else None
+            if im is not None:                          # 0.9.9: Engineering Inspector from the store
+                self.finish(im.request_id, INSMOVE_JOB, f"insmove:{im.facts.get('new')}",
+                            self.o.report_issue or None, Result(im.result_outcome, im.reasons, im.facts))
                 return
             # 0.6.0: Core/OS only when no App update ran in this cycle (never in the same run).
             sys_out = self.system.cycle()

@@ -58,18 +58,61 @@ class Outcome:
 
 
 class ObserverMove:
+    """The Observer switch. 0.9.9: the Inspector switch (``inspectormove.InspectorMove``) reuses this sequence through
+    the class attributes and the ``_*`` hooks below; nothing else differs."""
+    JOB, STAGE, DOC, TXN, MARKER = JOB, STAGE, DOC, TXN, ACCEPTED
+    LOCAL = LOCAL_OBSERVER
+    NAME = "Engineering Observer"
+    PREFIX = "observer-store"
+    AUDIT = "OBSMOVE"
+    SET_BOOT = True                     # the local Observer is set to manual start (and back to auto on undo)
+    ASK = ("Switch the Engineering Observer to the version from the House Brain store?",
+           "Plan: copy its 3 settings (Broker address, key, interval) -> check them by fingerprint -> stop the "
+           "local Observer and set it to manual start (kept, not removed) -> start the store Observer -> check "
+           "the Broker accepts its reports. Any problem: the local one runs again automatically.",
+           "Then Observer updates come as normal store updates (review, backup, health watch, restore).")
+    DONE_WHY = "publishes to the Broker (report accepted)"
+    KEPT_WHY = "the local Observer is stopped and set to manual start (kept, not removed)"
+    MANUAL = ("Settings -> Apps -> House Brain Engineering Observer (the local one) -> Start on boot on -> Start")
+
     def __init__(self, ha: HomeAssistant, journal: Journal, settings, policy: ObserverMovePolicy) -> None:
         self.ha, self.j, self.s, self.p = ha, journal, settings, policy
 
+    # -- hooks (the Inspector switch overrides these) ----------------------------------------
+    def _current(self) -> str:
+        return self.ha.observer
+
+    def _store_slug(self) -> str | None:
+        return self.ha.store_observer_slug()
+
+    def _target(self, old: str, new: str):
+        return self.ha.observer_move_target(old, new)
+
+    def _copy(self) -> tuple[str, str]:
+        return self.ha.copy_observer_settings()
+
+    def _view(self):
+        return self.ha.store_observer_view()
+
+    def _log(self) -> str:
+        return self.ha.store_observer_log()
+
+    def _retarget(self, new: str) -> None:
+        self.ha.retarget_observer(new)
+
+    def _precheck(self) -> str | None:
+        """A reason the switch is not offered right now, or None."""
+        return None
+
     def _mem(self) -> dict:
-        mem = self.j.load_doc(DOC, {})
+        mem = self.j.load_doc(self.DOC, {})
         mem = mem if isinstance(mem, dict) else {}
         for key in ("slug", "asked", "declined", "practiced", "done_at"):
             mem.setdefault(key, None)
         return mem
 
     def _save(self, mem: dict) -> None:
-        self.j.save_doc(DOC, mem)
+        self.j.save_doc(self.DOC, mem)
 
     @staticmethod
     def _recent(stamp, hours: float) -> bool:
@@ -79,29 +122,29 @@ class ObserverMove:
         """After a restart: use the recorded store Observer again while it is still installed. Returns its slug."""
         mem = self._mem()
         slug = mem["slug"]
-        if not slug or self.ha.observer == slug:
+        if not slug or self._current() == slug:
             return None
         try:
-            new = self.ha.store_observer_slug()
+            new = self._store_slug()
             installed = {a.slug for a in self.ha.installed_apps()}
         except (HAError, net.NetError):
             return None                             # retried on the next start; the configured Observer stays
         if slug != new or slug not in installed:
-            self.j.audit("observer-store", "OBSERVER_STORE_GONE", slug=str(slug)[:80])
+            self.j.audit(self.PREFIX, self.AUDIT + "_STORE_GONE", slug=str(slug)[:80])
             mem.update(slug=None, done_at=None)
             self._save(mem)
             return None
-        self.ha.retarget_observer(slug)
+        self._retarget(slug)
         return slug
 
     def _pair(self) -> tuple[str, str] | None:
-        if self.ha.observer != LOCAL_OBSERVER:
-            return None                             # already the store Observer, or a custom one
-        new = self.ha.store_observer_slug()
+        if self._current() != self.LOCAL:
+            return None                             # already the store App, or a custom one
+        new = self._store_slug()
         if new is None:
             return None
         installed = {a.slug for a in self.ha.installed_apps()}
-        return (LOCAL_OBSERVER, new) if LOCAL_OBSERVER in installed and new in installed else None
+        return (self.LOCAL, new) if self.LOCAL in installed and new in installed else None
 
     # -- one cycle -----------------------------------------------------------------------
     def cycle(self) -> Outcome | None:
@@ -112,29 +155,26 @@ class ObserverMove:
         mem = self._mem()
         if mem["declined"] or mem["done_at"]:
             return None
-        rid = f"observer-store-{new.split('_', 1)[0]}"
-        if self._recent(mem["asked"], self.p.reask_hours) and not approval.decided(STAGE, rid):
+        rid = f"{self.PREFIX}-{new.split('_', 1)[0]}"
+        if self._recent(mem["asked"], self.p.reask_hours) and not approval.decided(self.STAGE, rid):
             return None
+        if self._precheck() is not None:
+            return None                             # not offered in this state; looked at again on a later check
         facts = {"old": old, "new": new}
         if self.s.dry_run:
             if self._recent(mem["practiced"], self.p.practice_hours):
                 return None
             mem["practiced"] = time.time()
             self._save(mem)
-            return Outcome(rid, DRY_RUN_OK, ["dry run: the Observer switch would be asked; nothing changed"], facts)
+            return Outcome(rid, DRY_RUN_OK, [f"dry run: the {self.NAME} switch would be asked; nothing changed"],
+                           facts)
         mem["asked"] = time.time()
         self._save(mem)
-        self.j.audit(rid, "APPROVAL_REQUESTED", job=JOB)
+        self.j.audit(rid, "APPROVAL_REQUESTED", job=self.JOB)
         decision = approval.ask(
-            self.ha, self.s.notify_service, self.s.owner_user_id, stage=STAGE,
-            title="Maintenance: use the store Engineering Observer?",
-            message="\n".join((
-                "Switch the Engineering Observer to the version from the House Brain store?",
-                "Plan: copy its 3 settings (Broker address, key, interval) -> check them by fingerprint -> stop the "
-                "local Observer and set it to manual start (kept, not removed) -> start the store Observer -> check "
-                "the Broker accepts its reports. Any problem: the local one runs again automatically.",
-                "Then Observer updates come as normal store updates (review, backup, health watch, restore).",
-                "", f"Request: {rid}")),
+            self.ha, self.s.notify_service, self.s.owner_user_id, stage=self.STAGE,
+            title=f"Maintenance: use the store {self.NAME}?",
+            message="\n".join((*self.ASK, "", f"Request: {rid}")),
             timeout=self.s.approval_timeout, require_auth=self.s.require_auth, board=self.s.board,
             open_url=self.s.open_url, should_stop=getattr(self.s, "should_stop", None))
         self.j.audit(rid, "APPROVAL_" + decision.outcome, channel=decision.channel, ignored=decision.ignored_events)
@@ -152,34 +192,39 @@ class ObserverMove:
     def apply(self, rid: str, old: str, new: str) -> Outcome:
         try:
             if self.ha.app_detail(old).state != "started":
-                return Outcome(rid, REFUSED, ["the local Observer is not running; nothing changed (start it, then it "
-                                              "is asked again)"])
+                return Outcome(rid, REFUSED, [f"the local {self.NAME} is not running; nothing changed (start it, "
+                                              "then it is asked again)"])
             if self.ha.app_detail(new).state not in ("stopped", "unknown"):
-                return Outcome(rid, REFUSED, ["the store Observer is already running; stop it (this App starts it) "
-                                              "and it is asked again. Nothing changed"])
+                return Outcome(rid, REFUSED, [f"the store {self.NAME} is already running; stop it (this App starts "
+                                              "it) and it is asked again. Nothing changed"])
+            why = self._precheck()
+            if why is not None:
+                return Outcome(rid, REFUSED, [f"{why}; nothing changed"])
         except (HAError, net.NetError) as err:
             return Outcome(rid, REFUSED, [f"could not read the Observers ({net.redact(str(err))[:160]}); nothing "
                                           "changed"])
-        txn = {"kind": TXN, "request_id": rid, "old": old, "new": new, "stage": "COPYING", "started": time.time()}
+        txn = {"kind": self.TXN, "request_id": rid, "old": old, "new": new, "stage": "COPYING",
+               "started": time.time()}
         self.j.save_txn(txn)
-        self.j.audit(rid, "OBSMOVE_COPYING", old=old, new=new)
+        self.j.audit(rid, self.AUDIT + "_COPYING", old=old, new=new)
         try:
-            with self.ha.observer_move_target(old, new):
-                url, fp = self.ha.copy_observer_settings()
-                back = self.ha.store_observer_view()
+            with self._target(old, new):
+                url, fp = self._copy()
+                back = self._view()
                 if back.broker_url != url or back.key_fingerprint != fp:
                     self.j.clear_txn()
-                    return Outcome(rid, REFUSED, ["the store Observer does not read back the same settings; the "
-                                                  "local Observer stays in use, nothing else changed"],
+                    return Outcome(rid, REFUSED, [f"the store {self.NAME} does not read back the same settings; the "
+                                                  "local one stays in use, nothing else changed"],
                                    {"key_fingerprint": fp[:12]})
                 txn.update(stage="STOPPING_OLD", key_fingerprint=fp[:12], store_version=back.version)
                 self.j.save_txn(txn)
-                self.j.audit(rid, "OBSMOVE_STOPPING_OLD", fingerprint_prefix=fp[:12])
-                self.ha.set_boot(old, "manual")
+                self.j.audit(rid, self.AUDIT + "_STOPPING_OLD", fingerprint_prefix=fp[:12])
+                if self.SET_BOOT:
+                    self.ha.set_boot(old, "manual")
                 self.ha.stop_app(old)
                 txn["stage"] = "STARTING_NEW"
                 self.j.save_txn(txn)
-                self.j.audit(rid, "OBSMOVE_STARTING_NEW")
+                self.j.audit(rid, self.AUDIT + "_STARTING_NEW")
                 self.ha.start_app(new)
         except ForbiddenCall as err:
             self.j.clear_txn()
@@ -197,28 +242,27 @@ class ObserverMove:
         state = None
         while True:
             try:
-                with self.ha.observer_move_target(old, new):
-                    view = self.ha.store_observer_view()
+                with self._target(old, new):
+                    view = self._view()
                     state = view.state
-                    log = self.ha.store_observer_log() if state == "started" else ""
+                    log = self._log() if state == "started" else ""
             except (HAError, net.NetError, ForbiddenCall):
                 log = ""
-            if ACCEPTED in log:
+            if self.MARKER in log:
                 self.j.clear_txn()
-                self.ha.retarget_observer(new)
+                self._retarget(new)
                 mem = self._mem()
                 mem.update(slug=new, done_at=time.time())
                 self._save(mem)
-                self.j.audit(rid, "OBSMOVE_DONE", new=new)
-                return Outcome(rid, DONE, [f"the store Observer ({new} {view.version}) publishes to the Broker (report "
-                                           "accepted); it is the Observer from now on",
-                                           "the local Observer is stopped and set to manual start (kept, not "
-                                           "removed)"], {"store_version": view.version,
-                                                         "key_fingerprint": txn.get("key_fingerprint")})
+                self.j.audit(rid, self.AUDIT + "_DONE", new=new)
+                return Outcome(rid, DONE, [f"the store {self.NAME} ({new} {view.version}) {self.DONE_WHY}; it is the "
+                                           f"{self.NAME} from now on", self.KEPT_WHY],
+                               {"store_version": view.version, "key_fingerprint": txn.get("key_fingerprint")})
             if time.monotonic() >= deadline:
                 break
             time.sleep(self.p.poll)
-        return self._undo(txn, f"the store Observer did not get a report accepted in time (state: {state or 'unknown'})")
+        return self._undo(txn, f"the store {self.NAME} did not get a report accepted in time (state: "
+                               f"{state or 'unknown'})")
 
     def _failed(self, txn: dict, reason: str) -> Outcome:
         if txn.get("stage") == "COPYING":
@@ -230,12 +274,14 @@ class ObserverMove:
         rid, old, new = txn["request_id"], txn["old"], txn["new"]
         txn.update(stage="UNDOING", failure=why)
         self.j.save_txn(txn)
-        self.j.audit(rid, "OBSMOVE_UNDOING", reason=why)
+        self.j.audit(rid, self.AUDIT + "_UNDOING", reason=why)
         errors = []
+        steps = [lambda: self.ha.stop_app(new), lambda: self.ha.set_boot(old, "auto"), lambda: self.ha.start_app(old)]
+        if not self.SET_BOOT:
+            del steps[1]
         try:
-            with self.ha.observer_move_target(old, new):
-                for step in (lambda: self.ha.stop_app(new), lambda: self.ha.set_boot(old, "auto"),
-                             lambda: self.ha.start_app(old)):
+            with self._target(old, new):
+                for step in steps:
                     try:
                         step()
                     except (HAError, net.NetError) as err:
@@ -244,11 +290,9 @@ class ObserverMove:
             errors.append(str(err)[:120])
         self.j.clear_txn()
         if errors:
-            return Outcome(rid, FAILED_MANUAL, [f"Observer switch failed ({why}) and the undo did not finish: "
-                                                + "; ".join(errors),
-                                                "Settings -> Apps -> House Brain Engineering Observer (the local one) "
-                                                "-> Start on boot on -> Start"])
-        return Outcome(rid, UNDONE, [f"Observer switch failed ({why}); the local Observer runs again, nothing lost"],
+            return Outcome(rid, FAILED_MANUAL, [f"{self.NAME} switch failed ({why}) and the undo did not finish: "
+                                                + "; ".join(errors), self.MANUAL])
+        return Outcome(rid, UNDONE, [f"{self.NAME} switch failed ({why}); the local one runs again, nothing lost"],
                        {"failure": why})
 
     # -- recovery after a restart ----------------------------------------------------------
@@ -268,4 +312,4 @@ class ObserverMove:
         if stage == "UNDOING":
             return self._undo(txn, str(txn.get("failure") or "interrupted"))
         self.j.clear_txn()
-        return Outcome(rid, FAILED_MANUAL, ["unknown journalled Observer switch stage"])
+        return Outcome(rid, FAILED_MANUAL, [f"unknown journalled {self.NAME} switch stage"])

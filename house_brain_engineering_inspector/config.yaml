@@ -1,0 +1,49 @@
+name: "House Brain Engineering Inspector"
+version: "0.2.6"
+slug: "house_brain_engineering_inspector"
+description: >-
+  Owner-private, read-only Home Assistant engineering inspection App.
+  Reads bounded Home Assistant state/registry metadata and package-file metadata
+  only. It has no service-call, Docker, host, device, shell-command, write, or
+  physical authority. Optional (off by default): the privacy-filtered sensor
+  snapshot sender for the House Brain AI read plane (dry run first).
+arch:
+  - aarch64
+homeassistant: "2026.8.3"
+startup: application
+boot: manual_only
+stage: experimental
+backup: hot
+init: false
+apparmor: true
+hassio_api: false
+homeassistant_api: true
+docker_api: false
+auth_api: false
+full_access: false
+host_network: false
+host_ipc: false
+host_dbus: false
+host_pid: false
+host_uts: false
+stdin: false
+usb: false
+uart: false
+udev: false
+gpio: false
+devicetree: false
+kernel_modules: false
+audio: false
+video: false
+tmpfs: true
+map:
+  - type: homeassistant_config
+    read_only: true
+options:
+  entity_snapshot_mode: "off"
+  broker_entity_url: ""
+  entity_write_key: ""
+schema:
+  entity_snapshot_mode: list(off|dry_run|export)
+  broker_entity_url: str?
+  entity_write_key: password?

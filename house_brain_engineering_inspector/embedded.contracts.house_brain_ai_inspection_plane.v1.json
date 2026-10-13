@@ -1,0 +1,102 @@
+{
+  "authority": {
+    "config_content_export": false,
+    "mutation": false,
+    "physical_control": false,
+    "raw_storage_access": false,
+    "service_calls": false,
+    "shell": false
+  },
+  "data_classes": {
+    "allowed": [
+      "PUBLIC_ENGINEERING",
+      "HOUSE_TELEMETRY",
+      "PRIVATE_HOME"
+    ],
+    "prohibited": [
+      "SECURITY_SENSITIVE",
+      "HEALTH_SENSITIVE",
+      "SECRET",
+      "PHYSICAL_AUTHORITY"
+    ]
+  },
+  "privacy": {
+    "blocked_domain_parent_devices_exported": false,
+    "blocked_entity_domains": [
+      "alarm_control_panel",
+      "camera",
+      "device_tracker",
+      "geo_location",
+      "image",
+      "lock",
+      "person",
+      "zone"
+    ],
+    "device_connections_exported": false,
+    "device_identifiers_exported": false,
+    "private_snapshot_logged": false,
+    "state_attribute_policy": "EXPLICIT_SCALAR_ALLOWLIST",
+    "untrusted_text_marked": true
+  },
+  "schema_version": "house_brain_ai_inspection_plane.v1",
+  "scope": "engineering.inspect.private",
+  "source": {
+    "component": "house_brain_engineering_inspector",
+    "filesystem": {
+      "contents_exported": false,
+      "mode": "READ_ONLY_METADATA_AND_SHA256",
+      "recursive": false,
+      "root": "/homeassistant/packages",
+      "symlinks_followed": false
+    },
+    "home_assistant_rest": {
+      "methods": [
+        "GET"
+      ],
+      "paths": [
+        "/config",
+        "/states"
+      ]
+    },
+    "home_assistant_websocket": {
+      "commands": [
+        "config/entity_registry/list",
+        "config/device_registry/list",
+        "config/area_registry/list"
+      ]
+    }
+  },
+  "status": "REPOSITORY_CANDIDATE_NOT_COMMISSIONED",
+  "tools": [
+    {
+      "description": "Return Inspector freshness, Core version, evidence counts, and fail-closed readiness.",
+      "mutation": false,
+      "name": "get_home_assistant_inspection_status",
+      "physical_control": false
+    },
+    {
+      "description": "Search sanitized current entity states by entity-id/domain/name without security/location domains.",
+      "mutation": false,
+      "name": "search_home_assistant_states",
+      "physical_control": false
+    },
+    {
+      "description": "List sanitized entity-registry metadata, including disabled/hidden metadata where HA provides it.",
+      "mutation": false,
+      "name": "list_home_assistant_registry_entities",
+      "physical_control": false
+    },
+    {
+      "description": "List sanitized device-registry metadata without identifiers, connections, or devices linked to blocked entity domains.",
+      "mutation": false,
+      "name": "list_home_assistant_devices",
+      "physical_control": false
+    },
+    {
+      "description": "List top-level package filenames, classification, size, mtime and SHA-256; never return YAML contents.",
+      "mutation": false,
+      "name": "list_home_assistant_packages",
+      "physical_control": false
+    }
+  ]
+}

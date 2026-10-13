@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.9
+
+Engineering Inspector from the store, the last step of the store move (owner pop-ups 2026-10-13: "Inspector 0.2.6
+adds it", "Only in export mode"; Work Board #942 claim 6140814916). Contains 0.9.8 unchanged otherwise.
+
+- **Store.** The Engineering Inspector is published as 0.2.6, which is 0.2.5 plus the source manifest the store needs.
+- **One Approve switches it**, offered only while the local Inspector exports snapshots.
+  - Its 3 settings are copied and read back by fingerprint.
+  - The local Inspector is stopped (kept) and the store Inspector started.
+  - DONE when its log shows `ENTITY_SNAPSHOT_STORED` (up to 15 minutes); otherwise an automatic undo.
+  - No boot setting is touched: both Inspectors are manual-only. Journalled with watch-before-undo after a restart.
+- **Shared code.** The Observer and Inspector switches now share one tested sequence (`observermove.ObserverMove`
+  with small hooks). The Observer's behaviour is unchanged; its 14 tests pass unmodified.
+- After the switch, key changes for the Inspector role use the store Inspector, recorded in `inspector_store`.
+- **Fix: legacy history staging (`LEGACY_STAGE` stage, #985 M3).** Live 2026-10-13 (`legacy-stage-2026-10-13a`,
+  #454 6140987570) the stage failed safely with `BACKUP_COMPONENT`, and nothing was staged. The pinned backup of the
+  local Deployer 0.3.6 is about 41 MB, because a locally built App's backup holds its Docker image. The component is
+  now capped at 64 MiB (`MAX_BACKUP`, the download cap), not 16 MiB. Only `addon.json` and the history files are kept,
+  still capped at 16 MiB, and the strict reader and stage writer are unchanged (the Deployer pins their bytes). Owner
+  decision 2026-10-13: "Ask them to include it".
+
 ## 0.9.8
 
 Engineering Observer from the store, the second step of the store move (owner pop-ups 2026-10-13: "Observer to the

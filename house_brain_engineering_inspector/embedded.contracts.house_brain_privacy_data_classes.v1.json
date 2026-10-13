@@ -1,0 +1,1386 @@
+{
+  "schema_version": "house_brain_privacy_data_classes.v1",
+  "contract_version": "1.0.0",
+  "status": "REPOSITORY_ENFORCED_ADVISORY",
+  "initiative": "#60 Privacy data classes",
+  "policy": {
+    "evaluator": "tools/evaluate_privacy_data_policy.py",
+    "input_schema": "house_brain_privacy_policy.input.v1",
+    "record": "docs/architecture/PRIVACY_DATA_POLICY_R1.md"
+  },
+  "authority": {
+    "data_access": false,
+    "transmission_authorized_by_allow": false,
+    "physical_control": false,
+    "note": "Classification and gate results are advisory metadata. An ALLOW never authorizes retrieval or transmission; live enforcement adapters remain owner-gated."
+  },
+  "classes": [
+    {
+      "id": "PUBLIC",
+      "description": "Intentionally non-private information suitable for public release (versions, schema names, public research).",
+      "redaction": "NONE",
+      "retention": {
+        "hint": "UNRESTRICTED",
+        "max_days": null,
+        "persist_outside_house": true
+      }
+    },
+    {
+      "id": "HOUSEHOLD",
+      "description": "Ordinary household operational telemetry and engineering state (reachability, power, versions of installed software, reason codes).",
+      "redaction": "MINIMIZE_FOR_PUBLICATION",
+      "retention": {
+        "hint": "OPERATIONAL_HISTORY",
+        "max_days": 400,
+        "persist_outside_house": false
+      }
+    },
+    {
+      "id": "PRIVATE",
+      "description": "Personal or household-identifying context: network identifiers, person/recipient identifiers, coarse location, presence, open household free text.",
+      "redaction": "PSEUDONYMIZE_OR_TOKENIZE_BEFORE_PROVIDER",
+      "retention": {
+        "hint": "SHORT_LIVED_EVIDENCE",
+        "max_days": 90,
+        "persist_outside_house": false
+      }
+    },
+    {
+      "id": "SENSITIVE",
+      "description": "Higher-impact data: precise location, health, camera/audio, security posture.",
+      "redaction": "DROP_OR_AGGREGATE",
+      "retention": {
+        "hint": "MINIMAL_LOCAL_ONLY",
+        "max_days": 30,
+        "persist_outside_house": false
+      }
+    },
+    {
+      "id": "SECRET",
+      "description": "Credentials, tokens, keys, PINs and equivalent authorization material.",
+      "redaction": "NEVER_PROPAGATE",
+      "retention": {
+        "hint": "CUSTODY_STORE_ONLY",
+        "max_days": 0,
+        "persist_outside_house": false
+      }
+    }
+  ],
+  "ai_fabric_crosswalk": {
+    "PUBLIC_ENGINEERING": "PUBLIC",
+    "HOUSE_TELEMETRY": "HOUSEHOLD",
+    "PRIVATE_HOME": "PRIVATE",
+    "SECURITY_SENSITIVE": "SENSITIVE",
+    "HEALTH_SENSITIVE": "SENSITIVE",
+    "SECRET": "SECRET",
+    "PHYSICAL_AUTHORITY": "SECRET"
+  },
+  "ai_fabric_crosswalk_notes": "PHYSICAL_AUTHORITY is an authority label, not a data class; it is mapped to SECRET so it can never be allowed across a provider boundary.",
+  "restricted_categories": {
+    "CREDENTIAL": {
+      "minimum_class": "SECRET",
+      "carrier_kinds": [
+        "STRING",
+        "OPAQUE"
+      ],
+      "name_tokens": [
+        "password",
+        "passwd",
+        "passphrase",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "credential",
+        "credentials",
+        "private_key",
+        "access_key",
+        "recovery_key",
+        "signing_key",
+        "session_key",
+        "client_secret",
+        "bearer",
+        "authorization",
+        "cookie",
+        "otp",
+        "pin",
+        "pin_code"
+      ]
+    },
+    "NETWORK_IDENTIFIER": {
+      "minimum_class": "PRIVATE",
+      "carrier_kinds": [
+        "STRING",
+        "OPAQUE"
+      ],
+      "name_tokens": [
+        "ip",
+        "ipv4",
+        "ipv6",
+        "ip_address",
+        "mac",
+        "mac_address",
+        "hostname",
+        "host_name",
+        "fqdn",
+        "ssid",
+        "bssid",
+        "url",
+        "uri",
+        "magicdns",
+        "address",
+        "dns_name",
+        "node_name"
+      ]
+    },
+    "PERSON_IDENTIFIER": {
+      "minimum_class": "PRIVATE",
+      "carrier_kinds": [
+        "STRING",
+        "OPAQUE"
+      ],
+      "name_tokens": [
+        "person",
+        "people",
+        "user",
+        "username",
+        "email",
+        "phone",
+        "recipient",
+        "contact",
+        "resident",
+        "occupant",
+        "guest",
+        "member",
+        "full_name",
+        "first_name",
+        "last_name",
+        "display_name"
+      ]
+    },
+    "LOCATION": {
+      "minimum_class": "PRIVATE",
+      "carrier_kinds": [
+        "STRING",
+        "NUMBER",
+        "OPAQUE"
+      ],
+      "name_tokens": [
+        "location",
+        "zone",
+        "address",
+        "street",
+        "postal_code",
+        "zip_code",
+        "city",
+        "elevation",
+        "geo",
+        "geolocation",
+        "place"
+      ]
+    },
+    "PRECISE_LOCATION": {
+      "minimum_class": "SENSITIVE",
+      "carrier_kinds": [
+        "STRING",
+        "NUMBER",
+        "OPAQUE"
+      ],
+      "name_tokens": [
+        "latitude",
+        "longitude",
+        "lat",
+        "lon",
+        "lng",
+        "gps",
+        "coordinates",
+        "coordinate",
+        "geohash"
+      ]
+    },
+    "PRESENCE": {
+      "minimum_class": "PRIVATE",
+      "carrier_kinds": [
+        "STRING",
+        "TIMESTAMP",
+        "ENUM",
+        "NUMBER",
+        "BOOLEAN",
+        "OPAQUE"
+      ],
+      "name_tokens": [
+        "presence",
+        "occupancy",
+        "occupied",
+        "occupant",
+        "device_tracker",
+        "tracker",
+        "on_home_network",
+        "is_home",
+        "home_away",
+        "arrival",
+        "departure",
+        "away",
+        "asleep",
+        "whereabouts"
+      ],
+      "match_parent_name": true
+    },
+    "HEALTH": {
+      "minimum_class": "SENSITIVE",
+      "carrier_kinds": [
+        "STRING",
+        "TIMESTAMP",
+        "ENUM",
+        "NUMBER",
+        "BOOLEAN",
+        "OPAQUE"
+      ],
+      "name_tokens": [
+        "health",
+        "medical",
+        "heart",
+        "heart_rate",
+        "pulse",
+        "sleep",
+        "weight",
+        "glucose",
+        "medication",
+        "blood",
+        "oxygen",
+        "spo2",
+        "bmi",
+        "respiration",
+        "body_temperature",
+        "hrv",
+        "respiratory",
+        "vo2",
+        "vo2_max",
+        "body_fat",
+        "body_mass",
+        "lean_body_mass",
+        "step_count",
+        "active_energy",
+        "exercise_time",
+        "exercise_minutes",
+        "walking_running_distance",
+        "blood_pressure"
+      ]
+    },
+    "CAMERA_AUDIO": {
+      "minimum_class": "SENSITIVE",
+      "carrier_kinds": [
+        "STRING",
+        "OPAQUE"
+      ],
+      "name_tokens": [
+        "camera",
+        "image",
+        "video",
+        "audio",
+        "recording",
+        "microphone",
+        "photo",
+        "picture"
+      ]
+    }
+  },
+  "generic_leaf_names": [
+    "id",
+    "name",
+    "value",
+    "values",
+    "state",
+    "label",
+    "text",
+    "identifier",
+    "key",
+    "status"
+  ],
+  "contracts": {
+    "cooling_thermal_episode.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "ANALYSIS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_change_correlation_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_exact_rollback_binding_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_exact_rollback_binding_result.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_incident_diagnosis_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_incident_maintenance_composition_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_incident_maintenance_composition_result.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_known_good_manifest.v1.schema.json": {
+      "role": "CONFIG",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_maintenance_context.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_maintenance_inventory.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "dismissals": {
+        "system_health": {
+          "categories": [
+            "HEALTH"
+          ],
+          "rationale": "Home Assistant system_health integration status (software health), not human health."
+        }
+      }
+    },
+    "home_assistant_maintenance_inventory_composition_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_maintenance_target_type_evidence.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_maintenance_transaction_evidence_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_maintenance_transaction_evidence_result.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_maintenance_transaction_record.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_maintenance_version_readback_evidence.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_observer_reliability_bridge_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "home_assistant_reliability_observation.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_ai_benchmark_evidence.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "ANALYSIS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_ai_benchmark_answer_set.v2.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "ANALYSIS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_ai_diagnostic_bundle_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_ai_diagnostic_envelope.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_ai_read_plane.v1.json#tools/get_app_identity/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "PUBLIC",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v1.json#tools/get_app_identity/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "PUBLIC",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v1.json#tools/get_backup_readiness/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v1.json#tools/get_backup_readiness/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v1.json#tools/get_gateway_readiness/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v1.json#tools/get_gateway_readiness/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v1.json#tools/get_house_brain_status/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v1.json#tools/get_house_brain_status/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v1.json#tools/get_platform_versions/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "PUBLIC",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v1.json#tools/get_platform_versions/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "PUBLIC",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_app_identity/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "PUBLIC",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_app_identity/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "PUBLIC",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_app_runtime_info/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "PUBLIC",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_app_runtime_info/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "PUBLIC",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_app_runtime_stats/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_app_runtime_stats/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_backup_readiness/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_backup_readiness/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_gateway_readiness/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_gateway_readiness/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_house_brain_status/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_house_brain_status/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_platform_versions/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "PUBLIC",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_platform_versions/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "PUBLIC",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_tailscale_identity/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/get_tailscale_identity/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label.",
+      "fields": {
+        "requested_node_name": {
+          "class": "PRIVATE",
+          "rationale": "Tailnet node name / MagicDNS hostname / tailnet IPv4 are network identifiers of the household host (policy minimum PRIVATE)."
+        },
+        "magicdns_hostname": {
+          "class": "PRIVATE",
+          "rationale": "Tailnet node name / MagicDNS hostname / tailnet IPv4 are network identifiers of the household host (policy minimum PRIVATE)."
+        },
+        "tailscale_ipv4": {
+          "class": "PRIVATE",
+          "rationale": "Tailnet node name / MagicDNS hostname / tailnet IPv4 are network identifiers of the household host (policy minimum PRIVATE)."
+        }
+      }
+    },
+    "house_brain_ai_read_plane.v2.json#tools/list_installed_apps/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "PUBLIC",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_read_plane.v2.json#tools/list_installed_apps/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "PUBLIC",
+      "note": "Remote MCP tool result returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ev_service_headroom_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "PRIVATE",
+      "note": "#127 EV service-headroom estimator input: fine-grained whole-home (and optional per-device) power history plus declared service ratings. Whole-home load shape is an occupancy side channel, so the contract is PRIVATE even though it carries no person, entity, location or credential field (entity IDs are replaced at import)."
+    },
+    "house_brain_ha_states_adapter_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "fields": {
+        "states": {
+          "class": "SECRET",
+          "rationale": "Raw Home Assistant /api/states snapshot is opaque: it can carry any entity attribute, including person/device_tracker latitude/longitude and camera picture URLs that may embed an access token. Local processor only; the adapter reads only mapped roles and emits no raw values."
+        }
+      }
+    },
+    "house_brain_ha_states_adapter_result.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_life_safety_device_lifecycle_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "#81 predictive-maintenance R2 model input: equipment counters, dates, policy thresholds and evidence refs (household operational data; no person, location or credential fields)."
+    },
+    "house_brain_bond_fan_discovery_packet.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Initiative #135 owner-captured read-only Bond/room-source registry readback; pseudonymous bridge/fan refs, no credentials or network identifiers.",
+      "fields": {
+        "room_sources/-/occupancy_entity_id": {
+          "class": "PRIVATE",
+          "rationale": "Names the room-level occupancy sensor, i.e. where household presence is sensed."
+        },
+        "room_sources/-/occupancy_kind": {
+          "class": "PRIVATE",
+          "rationale": "Occupancy sensing modality for a room is presence-infrastructure detail."
+        }
+      }
+    },
+    "house_brain_life_safety_local_fallback_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "fields": {
+        "recipients/-/recipient_id": {
+          "class": "PRIVATE",
+          "rationale": "Recipient role label identifies a household member."
+        },
+        "recipients/-/on_home_network": {
+          "class": "PRIVATE",
+          "rationale": "Whether a household member's device is on the home network is presence data."
+        },
+        "recipients/-/presence_observed_at": {
+          "class": "PRIVATE",
+          "rationale": "Time a household member's presence was observed is presence data."
+        }
+      }
+    },
+    "house_brain_life_safety_local_fallback_result.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "fields": {
+        "classes/-/channels/-/per_recipient": {
+          "class": "PRIVATE",
+          "rationale": "Per-recipient delivery expectations identify household members."
+        },
+        "classes/-/recipients_reached": {
+          "class": "PRIVATE",
+          "rationale": "Reached-recipient list identifies household members."
+        }
+      }
+    },
+    "house_brain_maintenance_broker_admission.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_maintenance_calendar_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "#81 predictive-maintenance R2 model input: equipment counters, dates, policy thresholds and evidence refs (household operational data; no person, location or credential fields)."
+    },
+    "house_brain_network_ha_entity_mapping.v1.schema.json": {
+      "role": "CONFIG",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_local_fallback_catalog.v1.schema.json": {
+      "role": "CONFIG",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "fields": {
+        "families/-/research_sources": {
+          "class": "PUBLIC",
+          "rationale": "Public vendor/community documentation citations (URL, date, claim)."
+        }
+      },
+      "dismissals": {
+        "families/-/research_sources/-/url": {
+          "categories": [
+            "NETWORK_IDENTIFIER"
+          ],
+          "rationale": "Public documentation URL, not a household network identifier; content screen proves no address/MAC is committed."
+        }
+      }
+    },
+    "house_brain_network_outage_advisory_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_outage_advisory_input.v2.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_outage_advisory_result.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_outage_advisory_result.v2.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "dismissals": {
+        "site_topology_assessment/isp_health_observable": {
+          "categories": [
+            "HEALTH"
+          ],
+          "rationale": "ISP link-health observability flag, not human health."
+        }
+      }
+    },
+    "house_brain_network_outage_advisory_input.v3.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_outage_advisory_result.v3.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_outage_incident_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_outage_incident_record.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "dismissals": {
+        "incidents/-/isp_health_unobservable_samples": {
+          "categories": [
+            "HEALTH"
+          ],
+          "rationale": "Count of samples where ISP link health was unobservable, not human health."
+        }
+      }
+    },
+    "house_brain_network_producer_evaluation_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_producer_evaluation_result.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_producer_observation.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_quality_analysis_result.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_quality_comparison.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_quality_measurement_packet.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_network_site_profile.v1.schema.json": {
+      "role": "CONFIG",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_power_role_table.v1.schema.json": {
+      "role": "CONFIG",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_post_outage_recovery_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_post_outage_recovery_result.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_backup_freshness_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "#71 backup freshness evaluator input: per-location backup custody timestamps, counts and states plus emergency-kit custody state. No backup names, archive contents, keys or credentials."
+    },
+    "house_brain_pump_duty_energy_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "HOUSEHOLD",
+      "note": "#111 pool-pump duty-plan energy/TOU estimate input: pump speeds, owner schedule blocks, tariff rates and evidence refs (household operational data; no person, location or credential fields)."
+    },
+    "house_brain_pump_history.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "PRIVATE",
+      "note": "#111 pool-pump R2: fine-grained whole-home power time series. Whole-home load shape is an occupancy side channel, so the contract is PRIVATE even though it carries no person, entity, location or credential field (entity IDs are replaced by role tokens at import)."
+    },
+    "house_brain_evap_hard_water_program_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "PRIVATE",
+      "note": "#121 -> #81 evap hard-water program: owner maintenance log (dated attended visits, conditions, opaque photo references), water tests and evap pump-hour counters. Visit timestamps and runtime are household activity data, so the contract is PRIVATE. No person, location, credential or image content; photos are opaque photo: tokens and the result reports only a count.",
+      "fields": {
+        "log/-/photo_refs/-": {
+          "class": "SENSITIVE",
+          "rationale": "Opaque photo: token (pattern-limited, no URL/path/data URI) that points at an owner-held equipment photo; classified at the camera/audio minimum so a future photo pipeline cannot inherit a weaker class. The evaluator never echoes it."
+        }
+      }
+    },
+    "house_brain_pool_equipment_wear_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "PRIVATE",
+      "note": "#111 -> #81 pool-equipment wear adapter: embeds #111 Sense-corroboration input packets, i.e. fine-grained whole-home power time series (an occupancy side channel), so the contract is PRIVATE like its source. The adapter result is aggregated (hours, dates, slopes) and carries no samples or cycle times."
+    },
+    "house_brain_pump_sense_corroboration_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "PRIVATE",
+      "note": "#111 pool-pump R2: fine-grained whole-home power time series. Whole-home load shape is an occupancy side channel, so the contract is PRIVATE even though it carries no person, entity, location or credential field (entity IDs are replaced by role tokens at import)."
+    },
+    "house_brain_sense_load_identity_evidence_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "PRIVATE",
+      "note": "#215 Sense device-confidence packet: per-appliance on/off episode times and independent entity state history. Appliance-level timing is an occupancy side channel, so the contract is PRIVATE; the result echoes device tokens, counts and ratios only (no Sense names, no episode times)."
+    },
+    "house_brain_pump_solar_window_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "HOUSEHOLD",
+      "note": "#111 pool-pump solar-window detector input: hourly averaged solar/base-load profile, pump watts, tariff and owner allowed hours (aggregated household operational data; no person, location or credential fields)."
+    },
+    "house_brain_pump_threshold_evidence_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "PRIVATE",
+      "note": "#111 pool-pump R2: fine-grained whole-home power time series. Whole-home load shape is an occupancy side channel, so the contract is PRIVATE even though it carries no person, entity, location or credential field (entity IDs are replaced by role tokens at import)."
+    },
+    "house_brain_replay_transaction_evidence.v1.schema.json": {
+      "role": "RECORD",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD"
+    },
+    "house_brain_runtime_wear_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "#81 predictive-maintenance R2 model input: equipment counters, dates, policy thresholds and evidence refs (household operational data; no person, location or credential fields)."
+    },
+    "house_brain_ups_battery_aging_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "#81 predictive-maintenance R2 model input: equipment counters, dates, policy thresholds and evidence refs (household operational data; no person, location or credential fields)."
+    },
+    "house_brain_whole_house_scenario.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "HOUSEHOLD",
+      "note": "#50 Twin R2 rehearsal scenario (scenario time, uncalibrated). Mostly synthetic power/network state; the occupancy timeline has presence shape.",
+      "fields": {
+        "initial/occupancy": {
+          "class": "PRIVATE",
+          "rationale": "Per-household-member HOME/AWAY state is presence data; scenarios are synthetic today, but the shape would carry real presence if fed from live state."
+        },
+        "events": {
+          "class": "PRIVATE",
+          "rationale": "The event timeline includes OCCUPANT_LEAVES/OCCUPANT_ARRIVES with a household-member subject and time offset, which is a presence timeline."
+        }
+      }
+    },
+    "house_brain_ev_shore_precondition_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "PRIVATE",
+      "note": "#126 shore-power / EV preconditioning advisory input: a departure time and vehicle plugged-in/readiness state are a household routine and presence side channel, so the contract is PRIVATE even though it carries no person, VIN, location, GPS or credential field. Local processor only; not an AI-facing surface."
+    },
+    "house_brain_energy_which_car_tonight_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "PRIVATE",
+      "note": "#214 Which car tonight? advisory input: per-vehicle SOC/range/plug/readiness and owner-entered planned trip distances are a household routine and presence side channel, so the contract is PRIVATE even though it carries no person, VIN, destination, calendar, location, GPS or credential field. Local processor only; not an AI-facing surface."
+    },
+    "house_brain_leak_detector_inventory.v1.schema.json": {
+      "role": "CONFIG",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "#124 leak detector inventory: device classes, pilot zones and planned detectors. Zone labels name equipment locations; each zone carries its own privacy class (bathroom zones PRIVATE).",
+      "fields": {
+        "zones/-/label": {
+          "class": "PRIVATE",
+          "rationale": "A room/zone label is coarse in-home location; bathroom zones can reveal occupant activity, so labels are classed PRIVATE and only HOUSEHOLD-class labels are shown in the digest."
+        },
+        "zones/-/zone_id": {
+          "class": "PRIVATE",
+          "rationale": "Leak zone id names an in-home location (coarse location); bathroom zones can reveal occupant activity. Kept local."
+        },
+        "detectors/-/zone_id": {
+          "class": "PRIVATE",
+          "rationale": "Leak zone id names an in-home location (coarse location); bathroom zones can reveal occupant activity. Kept local."
+        },
+        "device_classes/-/research_sources": {
+          "class": "PUBLIC",
+          "rationale": "Public manufacturer/Home Assistant documentation citations (URL, date, claim)."
+        }
+      },
+      "dismissals": {
+        "device_classes/-/research_sources/-/url": {
+          "categories": [
+            "NETWORK_IDENTIFIER"
+          ],
+          "rationale": "Public documentation URL, not a household network identifier; content screen proves no address/MAC is committed."
+        }
+      }
+    },
+    "house_brain_leak_alert_routing_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "#124 leak detector observations (wet/dry, availability, battery, tamper, report time) plus posture and owner policy.",
+      "fields": {
+        "recipients": {
+          "class": "PRIVATE",
+          "rationale": "Optional Life-Safety recipient override carries recipient role labels and home-network presence."
+        }
+      }
+    },
+    "house_brain_leak_alert_routing_result.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "#124 leak truth, alerts and routes. Recipient-subject gaps are reduced to a count; no recipient ids or presence timestamps are emitted.",
+      "fields": {
+        "detectors/-/zone_id": {
+          "class": "PRIVATE",
+          "rationale": "Leak zone id names an in-home location (coarse location); bathroom zones can reveal occupant activity. Kept local."
+        },
+        "drill_plan/next_zone_to_test": {
+          "class": "PRIVATE",
+          "rationale": "Leak zone id names an in-home location (coarse location); bathroom zones can reveal occupant activity. Kept local."
+        },
+        "drill_plan/zones/-/zone_id": {
+          "class": "PRIVATE",
+          "rationale": "Leak zone id names an in-home location (coarse location); bathroom zones can reveal occupant activity. Kept local."
+        },
+        "summary/dry_confirmed_zone_ids/-": {
+          "class": "PRIVATE",
+          "rationale": "Leak zone id names an in-home location (coarse location); bathroom zones can reveal occupant activity. Kept local."
+        },
+        "summary/unknown_zone_ids/-": {
+          "class": "PRIVATE",
+          "rationale": "Leak zone id names an in-home location (coarse location); bathroom zones can reveal occupant activity. Kept local."
+        },
+        "summary/wet_zone_ids/-": {
+          "class": "PRIVATE",
+          "rationale": "Leak zone id names an in-home location (coarse location); bathroom zones can reveal occupant activity. Kept local."
+        },
+        "zones/-/zone_id": {
+          "class": "PRIVATE",
+          "rationale": "Leak zone id names an in-home location (coarse location); bathroom zones can reveal occupant activity. Kept local."
+        }
+      }
+    },
+    "house_brain_leak_battery_tracking_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "#124 -> #81 leak detector battery samples and service dates (household operational data; no person, location or credential fields)."
+    },
+    "house_brain_leak_detection_latency_input.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "#124 owner bench-trial timestamps for leak detection latency."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/get_entity_states/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/get_entity_states/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Privacy-filtered entity snapshot (#212 G0, contracts/house_brain_entity_read_policy.v1.json) returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/list_entity_ids/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/list_entity_ids/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Privacy-filtered entity snapshot (#212 G0, contracts/house_brain_entity_read_policy.v1.json) returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/get_entity_history/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/get_entity_history/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Privacy-filtered entity snapshot (#212 G0, contracts/house_brain_entity_read_policy.v1.json) returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    }
+  },
+  "restricted_ha_domains": {
+    "required": [
+      "alarm_control_panel",
+      "camera",
+      "device_tracker",
+      "geo_location",
+      "image",
+      "lock",
+      "person",
+      "zone"
+    ],
+    "advisory": [
+      "calendar",
+      "todo",
+      "media_player",
+      "conversation",
+      "assist_satellite"
+    ],
+    "note": "required: presence/location/identity/camera/security domains every AI inspection surface must block. advisory: domains whose attributes routinely carry schedules, names or voice content; reported as warnings until the owner decides."
+  },
+  "ai_surfaces": [
+    {
+      "contract": "house_brain_ai_read_plane.v1.json",
+      "kind": "Plane-A read plane (MCP)",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "allowed_data_classes",
+      "prohibited_pointer": "prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_ai_read_plane.v2.json",
+      "kind": "Plane-A read plane (MCP)",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "allowed_data_classes",
+      "prohibited_pointer": "prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_ai_inspection_plane.v1.json",
+      "kind": "HA inspection plane (MCP)",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "data_classes/allowed",
+      "prohibited_pointer": "data_classes/prohibited",
+      "sanitizer_pointer": "privacy",
+      "blocked_domains_pointer": "privacy/blocked_entity_domains"
+    },
+    {
+      "contract": "house_brain_ai_capability_passport.v1.json",
+      "kind": "AI capability passport",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "permitted_data_classes",
+      "prohibited_pointer": "prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_ai_capability_passport.v2.json",
+      "kind": "AI capability passport",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "permitted_data_classes",
+      "prohibited_pointer": "prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_chatgpt_provider_profile.v1.json",
+      "kind": "AI provider profile",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "allowed_data_classes",
+      "prohibited_pointer": "prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_chatgpt_provider_profile.v2.json",
+      "kind": "AI provider profile",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "allowed_data_classes",
+      "prohibited_pointer": "prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_claude_provider_profile.v1.json",
+      "kind": "AI provider profile",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "allowed_data_classes",
+      "prohibited_pointer": "prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_grok_provider_profile.v1.json",
+      "kind": "AI provider profile",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "allowed_data_classes",
+      "prohibited_pointer": "prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_grok_provider_profile.v2.json",
+      "kind": "AI provider profile",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "allowed_data_classes",
+      "prohibited_pointer": "prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_gemini_provider_profile.v1.json",
+      "kind": "AI provider profile",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "allowed_data_classes",
+      "prohibited_pointer": "prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_local_model_provider_profile.v1.json",
+      "kind": "AI provider profile",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "allowed_data_classes",
+      "prohibited_pointer": "prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_ha_ai_task_templates.v1.json",
+      "kind": "HA AI Task prompt templates (draft, not deployed)",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "ai_surface/allowed_data_classes",
+      "prohibited_pointer": "ai_surface/prohibited_data_classes"
+    },
+    {
+      "contract": "house_brain_ai_entity_read_plane.v1.json",
+      "kind": "Plane-A entity read plane (MCP, #212 G0)",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "allowed_pointer": "allowed_data_classes",
+      "prohibited_pointer": "prohibited_data_classes",
+      "blocked_domains_pointer": "privacy/blocked_entity_domains"
+    }
+  ],
+  "declared_egress_paths": [
+    {
+      "id": "maintenance-broker-snapshot",
+      "kind": "Outbound HTTPS telemetry to remote relay (Cloudflare Worker)",
+      "policy_destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "carries_classes": [
+        "PUBLIC",
+        "HOUSEHOLD"
+      ],
+      "sanitizer_declared": true,
+      "status": "Observer snapshot contract house_brain_maintenance_snapshot.v1; bounded engineering facts only; schema lives in the Broker service, not contracts/",
+      "evidence": [
+        "docs/architecture/HOUSE_BRAIN_ENGINEERING_GATEWAY_PHASE1.md",
+        "services/house-brain-maintenance-broker/src/core.mjs"
+      ],
+      "rationale": "The remote relay's readers are admitted AI providers, so it is evaluated at the strictest applicable R1 destination (AI_PROVIDER)."
+    },
+    {
+      "id": "live-read-relay-snapshot",
+      "kind": "Outbound HTTPS telemetry to remote relay (Cloudflare Worker)",
+      "policy_destination": "AI_PROVIDER",
+      "purpose": "ANALYSIS",
+      "carries_classes": [
+        "PUBLIC",
+        "HOUSEHOLD"
+      ],
+      "sanitizer_declared": true,
+      "status": "house_brain_live_snapshot.v1; BUILT / NOT DEPLOYED per its architecture record",
+      "evidence": [
+        "docs/architecture/HOUSE_BRAIN_LIVE_READ_RELAY.md"
+      ],
+      "rationale": "External read-only consumers include ChatGPT web retrieval; evaluated as AI_PROVIDER."
+    },
+    {
+      "id": "life-safety-notification-dispatch",
+      "kind": "Recommended push/notify dispatch (advisory only)",
+      "policy_destination": "OUT_OF_R1_SCOPE",
+      "purpose": "OPERATIONS",
+      "carries_classes": [
+        "HOUSEHOLD",
+        "PRIVATE"
+      ],
+      "sanitizer_declared": false,
+      "status": "NOT WIRED — recommendation metadata only; any real dispatch is a separate owner-gated step",
+      "evidence": [
+        "contracts/house_brain_life_safety_local_fallback_result.v1.schema.json",
+        "docs/wiki/Life-Safety-Local-Fallback-R1.md"
+      ],
+      "rationale": "Notification transport is not an R1 destination; recorded so a future wiring step must classify it before commissioning."
+    }
+  ],
+  "exceptions": [
+    {
+      "code": "EGRESS_REDACTION_REQUIRED",
+      "contract": "house_brain_ai_read_plane.v2.json#tools/get_tailscale_identity/output_schema",
+      "field_id": "magicdns_hostname",
+      "owner": "House Brain AI Fabric / Engineering Read Gateway lane (read-plane v2 owner; repository owner decides)",
+      "rationale": "Accepted read-plane v2 (validation 2026-09-13) returns the tailnet node name, MagicDNS hostname and tailnet IPv4 to an admitted AI provider. They are network identifiers (policy minimum PRIVATE) and R1 requires REDACT for PRIVATE at AI_PROVIDER; the tool is labelled PUBLIC_ENGINEERING/HOUSE_TELEMETRY. Pre-existing accepted behaviour, preserved unchanged. The read plane is REPOSITORY_CANDIDATE_NOT_COMMISSIONED. Options: (a) a read-plane revision labelling the tool PRIVATE_HOME that returns keyed pseudonyms (tools/privacy_screen.pseudonymize) or presence booleans only; (b) an explicit owner-approved crosswalk exception treating tailnet-internal identifiers as HOUSE_TELEMETRY. A stale exception fails the gate.",
+      "follow_up": "Owner decision before remote MCP commissioning: redact/pseudonymize these identifiers in a read-plane revision labelled PRIVATE_HOME, or explicitly approve tailnet identifiers as HOUSE_TELEMETRY. Remove the rows when resolved.",
+      "recorded_on": "2026-09-29"
+    },
+    {
+      "code": "EGRESS_REDACTION_REQUIRED",
+      "contract": "house_brain_ai_read_plane.v2.json#tools/get_tailscale_identity/output_schema",
+      "field_id": "requested_node_name",
+      "owner": "House Brain AI Fabric / Engineering Read Gateway lane (read-plane v2 owner; repository owner decides)",
+      "rationale": "Accepted read-plane v2 (validation 2026-09-13) returns the tailnet node name, MagicDNS hostname and tailnet IPv4 to an admitted AI provider. They are network identifiers (policy minimum PRIVATE) and R1 requires REDACT for PRIVATE at AI_PROVIDER; the tool is labelled PUBLIC_ENGINEERING/HOUSE_TELEMETRY. Pre-existing accepted behaviour, preserved unchanged. The read plane is REPOSITORY_CANDIDATE_NOT_COMMISSIONED. Options: (a) a read-plane revision labelling the tool PRIVATE_HOME that returns keyed pseudonyms (tools/privacy_screen.pseudonymize) or presence booleans only; (b) an explicit owner-approved crosswalk exception treating tailnet-internal identifiers as HOUSE_TELEMETRY. A stale exception fails the gate.",
+      "follow_up": "Owner decision before remote MCP commissioning: redact/pseudonymize these identifiers in a read-plane revision labelled PRIVATE_HOME, or explicitly approve tailnet identifiers as HOUSE_TELEMETRY. Remove the rows when resolved.",
+      "recorded_on": "2026-09-29"
+    },
+    {
+      "code": "EGRESS_REDACTION_REQUIRED",
+      "contract": "house_brain_ai_read_plane.v2.json#tools/get_tailscale_identity/output_schema",
+      "field_id": "tailscale_ipv4",
+      "owner": "House Brain AI Fabric / Engineering Read Gateway lane (read-plane v2 owner; repository owner decides)",
+      "rationale": "Accepted read-plane v2 (validation 2026-09-13) returns the tailnet node name, MagicDNS hostname and tailnet IPv4 to an admitted AI provider. They are network identifiers (policy minimum PRIVATE) and R1 requires REDACT for PRIVATE at AI_PROVIDER; the tool is labelled PUBLIC_ENGINEERING/HOUSE_TELEMETRY. Pre-existing accepted behaviour, preserved unchanged. The read plane is REPOSITORY_CANDIDATE_NOT_COMMISSIONED. Options: (a) a read-plane revision labelling the tool PRIVATE_HOME that returns keyed pseudonyms (tools/privacy_screen.pseudonymize) or presence booleans only; (b) an explicit owner-approved crosswalk exception treating tailnet-internal identifiers as HOUSE_TELEMETRY. A stale exception fails the gate.",
+      "follow_up": "Owner decision before remote MCP commissioning: redact/pseudonymize these identifiers in a read-plane revision labelled PRIVATE_HOME, or explicitly approve tailnet identifiers as HOUSE_TELEMETRY. Remove the rows when resolved.",
+      "recorded_on": "2026-09-29"
+    },
+    {
+      "code": "FABRIC_LABEL_UNDERSTATES",
+      "contract": "house_brain_ai_read_plane.v2.json#tools/get_tailscale_identity/output_schema",
+      "field_id": null,
+      "owner": "House Brain AI Fabric / Engineering Read Gateway lane (read-plane v2 owner; repository owner decides)",
+      "rationale": "Accepted read-plane v2 (validation 2026-09-13) returns the tailnet node name, MagicDNS hostname and tailnet IPv4 to an admitted AI provider. They are network identifiers (policy minimum PRIVATE) and R1 requires REDACT for PRIVATE at AI_PROVIDER; the tool is labelled PUBLIC_ENGINEERING/HOUSE_TELEMETRY. Pre-existing accepted behaviour, preserved unchanged. The read plane is REPOSITORY_CANDIDATE_NOT_COMMISSIONED. Options: (a) a read-plane revision labelling the tool PRIVATE_HOME that returns keyed pseudonyms (tools/privacy_screen.pseudonymize) or presence booleans only; (b) an explicit owner-approved crosswalk exception treating tailnet-internal identifiers as HOUSE_TELEMETRY. A stale exception fails the gate.",
+      "follow_up": "Owner decision before remote MCP commissioning: redact/pseudonymize these identifiers in a read-plane revision labelled PRIVATE_HOME, or explicitly approve tailnet identifiers as HOUSE_TELEMETRY. Remove the rows when resolved.",
+      "recorded_on": "2026-09-29"
+    }
+  ]
+}

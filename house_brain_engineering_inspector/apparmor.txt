@@ -1,0 +1,48 @@
+#include <tunables/global>
+
+profile house-brain-engineering-inspector flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  signal,
+  network inet stream,
+  network inet6 stream,
+
+  /usr/local/bin/python3 rix,
+  /usr/local/bin/python3.14 rix,
+  /opt/house-brain-engineering-inspector/ r,
+  /opt/house-brain-engineering-inspector/*.py r,
+  # v0.2.0 entity snapshot sender: embedded builder sources and the App options file (read only).
+  # The sender lays the verified copies out under /tmp (rw, below) before importing them.
+  /opt/house-brain-engineering-inspector/embedded.* r,
+  /data/ r,
+  /data/options.json r,
+  /usr/local/lib/python3.14/ r,
+  /usr/local/lib/python3.14/** mr,
+  /usr/local/lib/libpython3.14.so* mr,
+  /lib/** mr,
+  /usr/lib/** mr,
+  /etc/ssl/** r,
+  /etc/resolv.conf r,
+  /etc/hosts r,
+  /etc/nsswitch.conf r,
+  /etc/host.conf r,
+  /etc/ca-certificates/** r,
+
+  # Home Assistant config will be mapped read-only only after the separate
+  # app-manifest approval gate. AppArmor narrows that map to package metadata.
+  /homeassistant/ r,
+  /homeassistant/packages/ r,
+  /homeassistant/packages/* r,
+  deny /homeassistant/** wklx,
+  deny /homeassistant/.storage/** r,
+  deny /homeassistant/secrets.yaml r,
+  deny /homeassistant/configuration.yaml r,
+
+  /proc/ r,
+  /proc/self/** r,
+  /sys/devices/system/cpu/** r,
+
+  /tmp/ rw,
+  /tmp/** rwk,
+}

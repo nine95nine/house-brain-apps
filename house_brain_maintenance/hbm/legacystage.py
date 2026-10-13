@@ -69,7 +69,13 @@ def custody_problem(info: dict) -> str | None:
 
 def outer_component(raw: bytes) -> tuple[bytes, dict]:
     """The legacy App's component from a Supervisor backup (an uncompressed outer tar holding ``backup.json`` and
-    one ``<slug>.tar.gz``), memory only. Anything else in the outer tar refuses."""
+    one ``<slug>.tar.gz``), memory only. Anything else in the outer tar refuses.
+
+    0.9.9 (#985 M3 live 2026-10-13, #454 6140987570; owner "Ask them to include it"): the component is capped at
+    MAX_BACKUP (64 MiB), not MAX_INPUT. A locally built App's backup also holds its Docker image (the pinned legacy
+    Deployer backup is about 41 MB), so the 16 MiB cap refused it before ``normalize_component`` could drop the image.
+    The kept bytes (``addon.json`` + history) stay capped at MAX_INPUT there, and the strict reader keeps its own
+    limits."""
     facts: dict = {}
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as outer:
@@ -78,15 +84,15 @@ def outer_component(raw: bytes) -> tuple[bytes, dict]:
             if any(m.name not in OUTER_ALLOWED for m in members):
                 raise Refusal("BACKUP_CONTENT")
             comps = [m for m in members if m.name.lstrip("./") in COMPONENTS]
-            if len(comps) != 1 or not comps[0].isreg() or comps[0].size > MAX_INPUT:
+            if len(comps) != 1 or not comps[0].isreg() or comps[0].size > MAX_BACKUP:
                 raise Refusal("BACKUP_COMPONENT")
             fh = outer.extractfile(comps[0])
-            data = fh.read(MAX_INPUT + 1) if fh is not None else b""
+            data = fh.read(MAX_BACKUP + 1) if fh is not None else b""
     except Refusal:
         raise
     except (tarfile.TarError, OSError, EOFError):
         raise Refusal("BACKUP_FORMAT") from None
-    if not data or len(data) > MAX_INPUT:
+    if not data or len(data) > MAX_BACKUP:
         raise Refusal("BACKUP_COMPONENT")
     return data, facts
 

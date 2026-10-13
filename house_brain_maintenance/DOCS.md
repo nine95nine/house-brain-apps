@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.8)
+## What it does (0.9.9)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -258,8 +258,9 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
   full backups except right before a Core/OS update you approved, or restore anything but the one App
   it just updated or, after a failed Core update, Home Assistant only from the backup it just made.
   The only stops are the store switch-overs you approve, each once (the Deployer from 0.6.6, the Engineering
-  Observer from 0.9.8): the local App is stopped and set to manual start, never uninstalled by the Observer switch,
-  and started again automatically if the switch fails.
+  Observer from 0.9.8, the Engineering Inspector from 0.9.9): the local App is stopped (the Observer and Deployer
+  are also set to manual start; the Inspector is manual-only already), never uninstalled by the Observer or
+  Inspector switch, and started again automatically if the switch fails.
 - Keep, log or report other Apps' settings or passwords (it reads only versions and states).
 - Touch files, restart Home Assistant (except as part of the Core update or restore above), or control
   any device. The one exception (0.7.4): after your Approve of a one-tap install, the carrier's own script writes
@@ -457,6 +458,23 @@ stopped and installed throughout. An assistant files two `LEGACY_STAGE` requests
 
 A strict reader checks the backup's App archive: only plain files and folders, version 0.3.6, stopped. Anything
 unexpected stops it with a reason, and nothing is used. Nothing is ever uninstalled, restored or started here.
+
+## Engineering Inspector from the store — from 0.9.9
+
+The last step of the store move (owner pop-ups 2026-10-13 "Inspector 0.2.6 adds it", "Only in export mode").
+
+1. Install "House Brain Engineering Inspector" (0.2.6) from the House Brain store. Do not start it and leave its
+   settings empty: this App fills them in.
+2. While your local Inspector exports entity snapshots (its live mode), your phone asks once: "use the store
+   Engineering Inspector?". In other modes it is not offered.
+3. On Approve: its 3 settings (Broker address, export mode, key) are copied and checked by fingerprint, the local
+   Inspector is stopped (kept, never uninstalled), the store Inspector is started, and its log must show the Broker
+   stored its entity snapshot (`ENTITY_SNAPSHOT_STORED`) within 15 minutes.
+4. Done: the store Inspector is the Inspector from then on (key changes, store updates). No Start-on-boot setting is
+   touched; both Inspectors start only manually, as before.
+
+If the snapshot is not stored in time, the store Inspector is stopped and the local one started again. Reject is
+final.
 
 ## Engineering Observer from the store — from 0.9.8
 

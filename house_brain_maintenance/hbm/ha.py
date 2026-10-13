@@ -558,6 +558,10 @@ RE_MIGRATE_NEW = re.compile(r"[0-9a-f]{8}_house_brain_deployer")
 LOCAL_OBSERVER = "local_house_brain_engineering_observer"
 RE_STORE_OBSERVER = re.compile(r"[0-9a-f]{8}_house_brain_engineering_observer")
 OBSERVER_OPTION_NAMES = ("broker_url", "broker_write_key", "publish_interval_seconds")
+# 0.9.9 (owner pop-ups 2026-10-13 "Inspector 0.2.6 adds it", "Only in export mode"): the Engineering Inspector follows.
+# It is a manual_only App, so its switch never touches a boot setting.
+RE_STORE_INSPECTOR = re.compile(r"[0-9a-f]{8}_house_brain_engineering_inspector")
+INSPECTOR_OPTION_NAMES = ("broker_entity_url", "entity_snapshot_mode", "entity_write_key")
 # The Deployer 0.3.7 option names; nothing else is ever copied (the store App has the same schema).
 DEPLOYER_OPTION_KEYS = ("github_repo", "github_token", "github_auth", "retire_old_token", "requests_branch",
                         "source_ref_allowlist", "notify_service", "owner_username", "dry_run", "poll_seconds",
@@ -581,17 +585,19 @@ def migrate_call_ok(old: str, new: str, remove: bool, method: str, path: str, bo
                               f"/addons/{new}/stop"}
 
 
-def observer_move_call_ok(old: str, new: str, method: str, path: str, body: Any) -> bool:
-    """0.9.8: True only for the exact calls of one open ``observer_move_target`` (bodies compared whole)."""
+def observer_move_call_ok(old: str, new: str, method: str, path: str, body: Any,
+                          names: tuple = OBSERVER_OPTION_NAMES, boot: bool = True) -> bool:
+    """0.9.8: True only for the exact calls of one open ``observer_move_target`` (bodies compared whole). 0.9.9: the
+    Inspector switch uses the same rule with its own option names and no boot setting (``boot=False``)."""
     if method == "GET":
         return path in (f"/addons/{new}/info", f"/addons/{new}/logs/latest")
     if method != "POST":
         return False
     if path == f"/addons/{new}/options":
         opts = body.get("options") if isinstance(body, dict) and set(body) == {"options"} else None
-        return isinstance(opts, dict) and tuple(sorted(opts)) == OBSERVER_OPTION_NAMES
+        return isinstance(opts, dict) and tuple(sorted(opts)) == names
     if path == f"/addons/{old}/options":
-        return body in ({"boot": "manual"}, {"boot": "auto"})
+        return boot and body in ({"boot": "manual"}, {"boot": "auto"})
     return body in (None, {}) and path in {f"/addons/{old}/stop", f"/addons/{old}/start", f"/addons/{new}/start",
                                            f"/addons/{new}/stop"}
 
@@ -685,6 +691,7 @@ class HomeAssistant:
         self.ws_url = ws_url
         self.scout = scout_slug
         self.observer = observer_slug
+        self.inspector = INSPECTOR_SLUG           # 0.9.9: the store Inspector after an owner-approved switch
         self._token = token
         net.register_secret(token)
         self._scout_move: str | None = None       # 0.9.3: the store Scout, only inside copy_scout_to
@@ -700,6 +707,7 @@ class HomeAssistant:
         self._key: dict | None = None             # 0.8.0: {"role", "slug", "names"} during one key change
         self._legacy: dict | None = None          # 0.9.5: {"bslug"} during one legacy Deployer backup/stage step
         self._obsmove: dict | None = None         # 0.9.8: {"old", "new"} during the Observer switch to the store
+        self._insmove: dict | None = None         # 0.9.9: {"old", "new"} during the Inspector switch to the store
         self._self_slug: str | None = None
         # 0.6.1 shared Core socket (see shared_ws)
         self._shared_lock = threading.Lock()
@@ -766,6 +774,10 @@ class HomeAssistant:
         om = self._obsmove                        # 0.9.8: the Observer switch to the store
         if om is not None and observer_move_call_ok(om["old"], om["new"], method, path, body):
             return
+        im = self._insmove                        # 0.9.9: the Inspector switch (no boot setting)
+        if im is not None and observer_move_call_ok(im["old"], im["new"], method, path, body,
+                                                    names=INSPECTOR_OPTION_NAMES, boot=False):
+            return
         mig = self._migrate
         if mig is not None and migrate_call_ok(mig["old"], mig["new"], mig["remove"], method, path, body):
             return
@@ -781,7 +793,7 @@ class HomeAssistant:
 
     def _busy(self) -> bool:
         return any(t is not None for t in (self._target, self._fix, self._system, self._os_act, self._pifw,
-                                           self._migrate, self._legacy, self._obsmove,
+                                           self._migrate, self._legacy, self._obsmove, self._insmove,
                                            self._entity,
                                            self._stage, self._key))
 
@@ -918,7 +930,7 @@ class HomeAssistant:
         if role == "scout_inventory":
             return self.scout
         if role == "inspector_entity":
-            return INSPECTOR_SLUG
+            return self.inspector
         if role == "ai_read":
             prefix = self.self_slug().split("_", 1)[0]
             slug = f"{prefix}_house_brain_ai_access"
@@ -1101,6 +1113,74 @@ class HomeAssistant:
             raise ForbiddenCall("observer target")
         self.observer = new
         self._build_routes()
+
+    # -- 0.9.9 Engineering Inspector from the store ---------------------------------------------
+    def store_inspector_slug(self) -> str | None:
+        slug = f"{self.self_slug().split('_', 1)[0]}_house_brain_engineering_inspector"
+        return slug if RE_STORE_INSPECTOR.fullmatch(slug) else None
+
+    @contextmanager
+    def inspector_move_target(self, old: str, new: str):
+        """0.9.9: open the Inspector switch-over calls: the store Inspector's info, log and three settings, and stop/
+        start of the local and the store Inspector. No boot setting (both are manual_only), never an uninstall."""
+        if old != INSPECTOR_SLUG or old != self.inspector or not isinstance(new, str) \
+                or not RE_STORE_INSPECTOR.fullmatch(new) or new != self.store_inspector_slug():
+            raise ForbiddenCall("inspector move target")
+        if self._busy():
+            raise ForbiddenCall("nested inspector move target")
+        self._insmove = {"old": old, "new": new}
+        try:
+            yield
+        finally:
+            self._insmove = None
+
+    def inspector_mode(self) -> str | None:
+        """The local Inspector's ``entity_snapshot_mode`` (read-only; the key and URL are dropped at once)."""
+        data = self._supervisor("GET", f"/addons/{self.inspector}/info")
+        raw = data.get("options") if isinstance(data, dict) else None
+        mode = raw.get("entity_snapshot_mode") if isinstance(raw, dict) else None
+        return mode if mode in ("off", "dry_run", "export") else None
+
+    def copy_inspector_settings(self) -> tuple[str, str]:
+        """Only inside ``inspector_move_target`` and only in export mode: copy the three settings to the store
+        Inspector; the key is registered as a secret at once: (broker URL, key fingerprint)."""
+        im = self._insmove
+        if im is None:
+            raise ForbiddenCall("inspector copy outside the switch-over")
+        data = self._supervisor("GET", f"/addons/{im['old']}/info")
+        raw = data.get("options") if isinstance(data, dict) else None
+        if not isinstance(raw, dict) or tuple(sorted(raw)) != INSPECTOR_OPTION_NAMES:
+            raise HAError("INSPECTOR_OPTIONS")
+        url, key, mode = raw.get("broker_entity_url"), raw.get("entity_write_key"), raw.get("entity_snapshot_mode")
+        if mode != "export" or not isinstance(url, str) or not url or len(url) > 300 \
+                or not isinstance(key, str) or not key:
+            raise HAError("INSPECTOR_OPTIONS")
+        net.register_secret(key)
+        self._supervisor("POST", f"/addons/{im['new']}/options",
+                         body={"options": {"broker_entity_url": url, "entity_snapshot_mode": "export",
+                                           "entity_write_key": key}}, timeout=60)
+        return url, fingerprint(key)
+
+    def store_inspector_view(self) -> AppView:
+        im = self._insmove
+        if im is None:
+            raise ForbiddenCall("inspector view outside the switch-over")
+        data = self._supervisor("GET", f"/addons/{im['new']}/info")
+        if isinstance(data, dict) and isinstance(data.get("options"), dict):   # its URL option has another name
+            data = {**data, "options": {**data["options"], "broker_url": data["options"].get("broker_entity_url")}}
+        return _project(im["new"], data, "entity_write_key")
+
+    def store_inspector_log(self) -> str:
+        im = self._insmove
+        if im is None:
+            raise ForbiddenCall("inspector log outside the switch-over")
+        data = self._call("GET", f"/addons/{im['new']}/logs/latest", timeout=60, raw=True)
+        return net.redact(bytes(data or b"")[-262144:].decode("utf-8", "replace"))
+
+    def retarget_inspector(self, new: str) -> None:
+        if not isinstance(new, str) or not RE_STORE_INSPECTOR.fullmatch(new) or new != self.store_inspector_slug():
+            raise ForbiddenCall("inspector target")
+        self.inspector = new
 
     def deployer_options(self) -> dict:
         """0.6.6, only inside ``migrate_target``: the old Deployer's options, limited to the known names. The token

@@ -1,0 +1,52 @@
+{
+  "schema": "house_brain_inspector_embedded_sources.v2",
+  "purpose": "Byte-identical flat copies of the accepted repository entity-snapshot builder and its inputs for Engineering Inspector 0.2.0 (#212 G0). Written only by tools/sync_inspector_embedded_sources.py.",
+  "entry": "tools/build_house_brain_entity_snapshot.py",
+  "files": [
+    {
+      "flat": "embedded.contracts.house_brain_ai_inspection_plane.v1.json",
+      "path": "contracts/house_brain_ai_inspection_plane.v1.json",
+      "sha256": "fa9c74d9e2fd484453e2d6ba8d2b705899e6a011c408196866a1cf36f94603c9"
+    },
+    {
+      "flat": "embedded.contracts.house_brain_entity_read_policy.v1.json",
+      "path": "contracts/house_brain_entity_read_policy.v1.json",
+      "sha256": "335a2f0f547701ccfb2a65a89c3f5689923f222b0965a7e81a2d5e8898f26eb8"
+    },
+    {
+      "flat": "embedded.contracts.house_brain_privacy_data_classes.v1.json",
+      "path": "contracts/house_brain_privacy_data_classes.v1.json",
+      "sha256": "805a311be8c77103ff3e8fd3d993d410c950d66263792602e596f5a6820d57bd"
+    },
+    {
+      "flat": "embedded.tools.build_house_brain_entity_snapshot.py",
+      "path": "tools/build_house_brain_entity_snapshot.py",
+      "sha256": "ed47c8a6f2d778823fcac4e18540c6f02e8bdb7f063733d546d6387837846e0e"
+    },
+    {
+      "flat": "embedded.tools.evaluate_network_dependency_posture.py",
+      "path": "tools/evaluate_network_dependency_posture.py",
+      "sha256": "1a9ede4f179df1916c4c7be9fea4cb50905fc068edbfe3e548112a63ad2761ce"
+    },
+    {
+      "flat": "embedded.tools.evaluate_network_producer_observations.py",
+      "path": "tools/evaluate_network_producer_observations.py",
+      "sha256": "15743cb9663ecdea680dc64e69102d427d7a94c483c6e4099d4afcdf80b1b7c3"
+    },
+    {
+      "flat": "embedded.tools.evaluate_privacy_data_policy.py",
+      "path": "tools/evaluate_privacy_data_policy.py",
+      "sha256": "a09ea347444f90d8eef3533a26e9e0f233e0404ff17ebb0cb9eb3d1a3f689e77"
+    },
+    {
+      "flat": "embedded.tools.privacy_screen.py",
+      "path": "tools/privacy_screen.py",
+      "sha256": "4aa9b6bfab58c41f1a976260b85933e6c437fa7944abab3e15d0fffeed850965"
+    },
+    {
+      "flat": "embedded.tools.validate_repository_secret_boundaries.py",
+      "path": "tools/validate_repository_secret_boundaries.py",
+      "sha256": "379c5b024f6911539cf3e4027628d1e20afc291b10e6cf606404d110d50d3505"
+    }
+  ]
+}
