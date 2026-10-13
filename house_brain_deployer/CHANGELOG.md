@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.21 — 2026-10-13
+
+A one-tap test of the shared writer lock, and read-only access to the legacy history stage (owner pop-up 2026-10-13
+"Small 0.3.21 first"; #985 enrollment plan R1 step E6 and Pi test plan M4 groundwork). Everything in 0.3.20 is
+unchanged; draft PR #985 moves to 0.3.22.
+
+- **Lock test:** an AI can file `house_brain_writer_probe_request.v1` with `operation` `try` or `hold`. After your Approve
+  the Deployer either takes the shared lock once and lets it go (`ACQUIRED`, or `WRITER_BUSY` when the Maintenance App
+  holds it), or holds it for a fixed 60 seconds so the Maintenance App's own test must report busy. It never creates
+  the lock, writes nothing and reports only the lock's device/inode. Together with the Maintenance App's `WRITER_PROBE`
+  job (0.9.4) this proves the two Apps can never write at the same time.
+- **Legacy stage:** AppArmor adds read-only `/share/house_brain_legacy_stage_v1/` and its contents, the folder the
+  Maintenance App (0.9.5) fills with the old Deployer's history. Nothing in this release reads it yet.
+- **Unchanged:** every install, lookup, re-ask, HTTP and enrollment path, and the approval log lines.
+
 ## 0.3.20 — 2026-10-12
 
 Removes the temporary folder-create permission and logs each approval ask (owner pop-up 2026-10-12 "E5 + ask/answer

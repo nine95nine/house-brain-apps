@@ -45,6 +45,10 @@ profile house_brain_deployer flags=(attach_disconnected,mediate_deleted) {
   /share/house_brain_writer_v1/.house_brain_writer_v1.lock rwk,
   # 0.3.20 (enrollment plan R1 step E5): the temporary folder-create rule from 0.3.19 is removed. The folder and
   # lock exist on the Pi (#561 comment 6125839870); nothing here can create, rename or delete them.
+  # 0.3.21 (owner pop-up 2026-10-13, #942 6135517984): read-only access to the legacy history stage that the
+  # Maintenance App creates and owns (#985 Pi test plan M3/M4). The Deployer never writes there.
+  /share/house_brain_legacy_stage_v1/ r,
+  /share/house_brain_legacy_stage_v1/** r,
 
   /proc/ r,
   /proc/self/** r,

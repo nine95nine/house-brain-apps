@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 
-from . import VERSION, approval, diagnose, ghauth, ghpage, net, selfreport, undo, writer_enroll
+from . import VERSION, approval, diagnose, ghauth, ghpage, net, selfreport, undo, writer_enroll, writer_probe
 from .engine import FAILED_MANUAL, REFUSED, Engine, Result, Settings, Stopping, Timing
 from .fsops import Packages
 from .github import REQUESTS_DIR, GitHub, RE_REPO
@@ -480,6 +480,47 @@ class Service:
                 result = Result(REFUSED, [f"WRITER_ENROLL:{type(err).__name__}"])
         self.finish(request_id, digest, issue, result, key=request_id)
 
+    def _writer_probe(self, request_id: str, raw: bytes, digest: str) -> None:
+        """0.3.21 (owner pop-up 2026-10-12, #985 plan R1 E6): try or hold the shared writer lock, after Approve."""
+        from .writer import WriterError
+        try:
+            rid, issue, operation = writer_probe.parse(raw)
+            if rid != request_id:
+                raise ManifestError("PROBE_REQUEST_ID")
+        except ManifestError as err:
+            self.finish(request_id, digest, None, Result(REFUSED, [err.code]), key=request_id)
+            return
+        limited = self._limit_reason(request_id, lookup=True)
+        if limited:
+            self.diag.add(limited)
+            self._announce_hold(limited, issue)
+            return
+        engine = self.ensure_engine()
+        what = ("try the shared writer lock once and let it go at once" if operation == "try" else
+                f"hold the shared writer lock for {int(writer_probe.hold_seconds())} seconds")
+        decision = engine._ask(request_id, "LOOKUP", "House Brain: test the shared writer lock?",
+                               f"The Deployer will {what}. While it holds the lock the Maintenance App cannot "
+                               "write. Nothing is created, changed or deleted.",
+                               self.timing.approval_timeout)
+        if decision != approval.APPROVE:
+            result = Result("REJECTED" if decision == approval.REJECT else "TIMED_OUT", [decision])
+        else:
+            try:
+                evidence = writer_probe.run(writer_enroll.root(), operation, should_stop=lambda: self.stop)
+                if evidence["result"] == "ACQUIRED":
+                    LOG.info("HBD-NATIVE writer_probe op=%s result=ACQUIRED held=%s ino=%s dev=%s.%s", operation,
+                             evidence["held_seconds"], evidence["ino"], os.major(evidence["dev"]),
+                             os.minor(evidence["dev"]))
+                    result = Result("WRITER_PROBE_ACQUIRED", [], {"writer_probe": evidence})
+                else:
+                    LOG.info("HBD-NATIVE writer_probe op=%s result=WRITER_BUSY", operation)
+                    result = Result("WRITER_PROBE_BUSY", [], {"writer_probe": evidence})
+            except WriterError as err:
+                result = Result(REFUSED, [f"WRITER_PROBE:{err}"])
+            except Exception as err:  # noqa: BLE001 - fixed code only; no path text leaves the house
+                result = Result(REFUSED, [f"WRITER_PROBE:{type(err).__name__}"])
+        self.finish(request_id, digest, issue, result, key=request_id)
+
     def frozen(self) -> str | None:
         rid = self.j.frozen_by()
         if rid and self.o.clear_freeze_for == rid and not self.j.load_txn():
@@ -679,7 +720,8 @@ class Service:
             digest = hashlib.sha256(raw).hexdigest()
             http_inspection = http_cleanup.is_inspect(raw)
             enroll = writer_enroll.is_enroll(raw)   # 0.3.19: keyed and limited like a lookup
-            lookup = is_lookup(raw) or http_inspection or enroll
+            probe = writer_probe.is_probe(raw)      # 0.3.21: likewise
+            lookup = is_lookup(raw) or http_inspection or enroll or probe
             key = request_id if lookup else self.key(request_id)  # lookups are read-only in both modes
             seen = ledger.get(key)
             if seen:
@@ -698,6 +740,8 @@ class Service:
             if lookup:
                 if enroll:
                     self._writer_enroll(request_id, raw, digest)
+                elif probe:
+                    self._writer_probe(request_id, raw, digest)
                 elif http_inspection:
                     self._http_inspect(request_id, raw, digest)
                 else:

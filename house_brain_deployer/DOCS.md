@@ -131,6 +131,9 @@ An AI files a one-time request. You get one push: **"Create the shared writer lo
 empty folder `/share/house_brain_writer_v1/` and its empty lock file. Reject or no answer changes nothing. Only
 0.3.19 could create that folder; from 0.3.20 the Deployer can use the lock but no longer create the folder.
 
+From 0.3.21 an AI can ask you to **test the shared writer lock**. After your Approve the Deployer either tries the
+lock once or holds it for 60 seconds, so the Maintenance App can prove it waits. Nothing is created or changed.
+
 From 0.3.20 the log shows one `approval asked: …` line when a push goes out and one `approval answered: …` line
 when you answer or it expires (the default window is 6 hours).
 
