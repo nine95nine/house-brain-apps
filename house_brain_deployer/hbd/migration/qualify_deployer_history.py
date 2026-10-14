@@ -25,6 +25,7 @@ OUTCOMES = {"SUCCEEDED", "DRY_RUN_OK", "DRY_RUN_BLOCKED", "ALREADY_APPLIED", "RE
             "WRITER_ENROLLED", "WRITER_PROBE_ACQUIRED", "WRITER_PROBE_BUSY",
             "LEGACY_PREPARED", "LEGACY_SELECTED", "LEGACY_UNSELECTED", "LEGACY_FAILED", "LEGACY_RESET"}
 STAGES = {"DEPLOY", "DRYRUN", "RESTART", "ROLLBACK", "LOOKUP"}
+UNKNOWN_DIGEST = "unknown"   # main.recover / _raw_digest when the request could not be read again
 
 
 def _require(ok, reason="INSTALL_SCHEMA"):
@@ -60,12 +61,17 @@ def _ledger_safety(decoded):
                  "LEDGER_SCHEMA")
         _require(isinstance(rec["outcome"], str) and rec["outcome"] in OUTCOMES, "LEDGER_SCHEMA")
         if "restart_timed_out" in rec:
-            _require(rec["restart_timed_out"] is True and rec["outcome"] == "ROLLED_BACK"
-                     and not is_undo and not key.endswith("#dry"), "RESTART_TIMEOUT_SCHEMA")
+            # 0.3.27 (shapes 4 and 6): an Undo also asks RESTART, and recovery during dry run writes the
+            # "#dry" key, so both carry this flag in real histories. The flag stays exact.
+            _require(rec["restart_timed_out"] is True and rec["outcome"] == "ROLLED_BACK", "RESTART_TIMEOUT_SCHEMA")
         _timestamp(rec["at"])
         digest = rec["digest"]
         _require(isinstance(digest, str), "LEDGER_SCHEMA")
-        if is_undo:
+        if digest == UNKNOWN_DIGEST or (is_undo and manifest.RE_SHA256.fullmatch(digest)):
+            # 0.3.27 (shapes 2 and 3): restart recovery records "unknown" when the request could not be read
+            # again, and a recovered Undo records the rebuilt manifest's sha256. Both are past results only.
+            pass
+        elif is_undo:
             if digest == "undo":
                 _require(rec["outcome"] == "REFUSED", "LEDGER_SCHEMA")
             else:
@@ -86,7 +92,8 @@ def _ledger_safety(decoded):
                      and original != base and not is_undo, "REASK_SCHEMA")
             # Missing targets can represent interrupted linking: retain them as
             # unresolved, never synthesize a successful result or fresh consent.
-            _require(not ledger.get(original, {}).get("reask_of"), "REASK_CHAIN")
+            # 0.3.27 (shape 5): a refused re-ask of a re-ask is recorded with its link, so a chain is history,
+            # not a grant; the live re-ask check still refuses running one (reask.check_ledger).
         if "reasked_by" in rec:
             linked = rec["reasked_by"]
             _require(isinstance(linked, list) and all(isinstance(v, str) and manifest.RE_REQUEST_ID.fullmatch(v)
@@ -105,7 +112,8 @@ def _ledger_safety(decoded):
                          and rec["outcome"] in {"APPROVE", "REJECT", "TIMEOUT", "UNAVAILABLE"}, "APPROVAL_SCHEMA")
                 _require(type(rec.get("ignored_events")) is int and rec["ignored_events"] >= 0,
                          "APPROVAL_SCHEMA")
-                _require(isinstance(rec.get("detail"), str) and isinstance(rec.get("channel"), str),
+                # 0.3.27 (shape 1): 0.1.0 wrote no "channel"; when present it is still a string.
+                _require(isinstance(rec.get("detail"), str) and isinstance(rec.get("channel", ""), str),
                          "APPROVAL_SCHEMA")
         elif kind == "OUTCOME":
             _request_key(rec["request_id"])
@@ -165,7 +173,9 @@ def _record(rec):
     _require(all(v in manifest.LOG_LEVELS for v in levels) and {"ERROR", "CRITICAL"} <= set(levels))
     if "undone_by" in rec:
         _require(rec["undone_by"] == rec["request_id"] + undo.SUFFIX)
-        _require(history._finite_number(rec["undone_at"]) and rec["undone_at"] >= rec["at"])
+        # 0.3.27 (shape 7): both stamps come from time.time(); the Pi has no clock battery and NTP can step it
+        # back, so the Undo time is only required to be a real time, not later than the install.
+        _require(history._finite_number(rec["undone_at"]) and rec["undone_at"] >= 0)
     return undo.build(rec)
 
 

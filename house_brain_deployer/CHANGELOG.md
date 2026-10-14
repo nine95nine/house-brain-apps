@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.27 — 2026-10-14 (history migration accepts every shape published versions wrote; owner pop-up "Build 0.3.27, all 7")
+
+- The M4 retry on 0.3.26 refused with `LEGACY_HISTORY:APPROVAL_SCHEMA` (#561 6161027304), before asking and with
+  nothing written. A sweep of every Deployer version from 0.1.0 to 0.3.26 found seven record shapes that real
+  versions wrote and the migration validator (`hbd/migration/qualify_deployer_history.py`) rejected:
+  1. approval decisions without `channel` (0.1.0);
+  2. a recovered Undo stored with the rebuilt manifest's sha256 (0.3.3+);
+  3. digest `unknown` after restart recovery (all versions);
+  4. `restart_timed_out` on an `#undo` key (0.3.11+);
+  5. a refused re-ask of a re-ask, recorded with its link (0.3.8+);
+  6. a recovery during dry run carrying `restart_timed_out` on its `#dry` key;
+  7. `undone_at` earlier than `at` after the Pi's clock stepped back.
+  All seven are now accepted, exactly and nothing wider (a present `channel` must be a string; digests are still
+  sha256, `undo`, `undo:<time>` or `unknown`; the flag is still exactly `true` with `ROLLED_BACK`). These records are
+  history only and never approve anything; the live re-ask check still refuses running a re-ask of a re-ask.
+- Tests: an end-to-end Prepare of an old history holding all seven shapes (it refuses on 0.3.26); the validator's
+  unit tests changed on purpose for these shapes; mutants QS01–QS07 killed.
+
 ## 0.3.26 — 2026-10-14 (history migration: overlap rule; owner pop-up 2026-10-14 "Keep newer, save old")
 
 - Pi step M4 (Prepare) refused on the real histories with `LEGACY_HISTORY:LEDGER_CONFLICT` (#561 6159321794): the

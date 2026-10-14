@@ -171,6 +171,9 @@ From 0.3.26, a result or install that is in **both** histories with different en
 Deployer's entry is kept, and the old Deployer's entry is saved unchanged beside the moved history. The Prepare and
 Select asks say how many there were; Reject if the number looks wrong.
 
+From 0.3.27 the move also accepts every record shape older Deployer versions wrote (for example 0.1.0's approval
+answers without a channel), so an old history is not refused for its age.
+
 After Select and a Deployer restart, the Deployer runs on the moved history with no further taps. At every start
 it re-checks the selection, its folders and the shared writer lock, and holds and tells you if anything differs.
 The old Deployer, your packages and Maintenance's copy are never written.
