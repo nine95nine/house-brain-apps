@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.11)
+## What it does (0.9.12)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -445,6 +445,14 @@ them once and never again. Now:
   routine researches each one and posts a verdict: approve the offered fix, needs a step by you, wait and watch, or
   harmless. It is shown next to the problem and in the fix ask. It never fixes anything: fixes still need your
   Approve, and Home Assistant configuration (YAML) changes go through your approval and the Deployer.
+- **Reviewer watchdog (0.9.12).** When an update or a problem waits more than 6 hours for its AI review (an update
+  from when it was first offered, a problem from the first post that listed it), you get one problem: "The AI reviewer
+  has not answered for over 6 hours", naming up to 5 of them. It is pushed once and is in the next morning summary;
+  it clears by itself when the reviews arrive. Open the "House Brain Maintenance reviewers" chat, where the hourly
+  reviewer runs. It says nothing while the reviews cannot be read from GitHub, and nothing with `ai_review` off.
+- **After an update (0.9.12).** For 24 hours after an App update is installed, a new problem with that App, an App
+  that needs it (Zigbee2MQTT needs Mosquitto) or an integration it provides (MQTT) carries `"after_update":
+  "<item>"` in the review list, so the reviewer looks at the update first.
 
 ## Moving the old Deployer's history — from 0.9.5
 

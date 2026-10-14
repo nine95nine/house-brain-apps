@@ -44,6 +44,7 @@ DISK_SAMPLES_KEPT = 40
 CREDENTIAL_SOURCES = ("credential", "credential_deployer", "credential_relay",   # 0.6.3 Credential Autopilot
                       "credential_keys",                                         # 0.8.0 automatic Broker keys
                       "credential_connector")                                    # 0.9.11 AI connector sign-ins
+PUSH_ONCE_SOURCES = CREDENTIAL_SOURCES + (PR.STALL_SOURCE,)                      # 0.9.12 reviewer watchdog
 RELAY_DOC = "relay_credential"
 RELAY_READ_EVERY = 20 * 3600       # the relay self-tests weekly; one read a day is plenty
 FIXED = "FIXED"
@@ -112,6 +113,9 @@ class Watcher:
         self.claimed: Callable[[], frozenset] = frozenset
         self.relay_fetch: Callable[[str], object] = lambda url: net.request("GET", url, timeout=15)[1]
         self.problem_ai: PR.ProblemReviews | None = None     # 0.9.6: AI problem reviews (set by the Service)
+        # 0.9.12 reviewer watchdog: (name, first offered) of waiting updates without an AI review, None when not known
+        self.review_waits: Callable[[], list | None] | None = None
+        self.queued: list[str] = []                           # 0.9.12: problem keys in the queue line being posted
 
     # -- state -------------------------------------------------------------------------
     def _state(self) -> dict:
@@ -248,6 +252,7 @@ class Watcher:
         findings += self._device_findings(st, now, failed)
         findings += I.from_liveness(self.j.load_doc(LIVENESS_DOC, {}), now)
         findings += self._credential_findings(failed)
+        findings += self._reviewer_findings(st, now, failed)    # 0.9.12: reviewer watchdog
         if self.os_findings is not None:
             try:
                 findings += self.os_findings()
@@ -277,8 +282,15 @@ class Watcher:
         current = {f.key: f for f in findings}
         skipped_sources = {src for src in failed}
         push_now: list[I.Finding] = []
+        installs = None
         for f in findings:
             rec = st["open"].setdefault(f.key, {"first": now, "polls": 0, "alerted": False})
+            if not rec["polls"]:                # 0.9.12: first seen now; within 24 h after an install about it?
+                if installs is None:
+                    installs = (self.j.load_doc(PR.INSTALLS_DOC, {}) or {}).get("installs") or []
+                tag = PR.after_update(installs, f.key, f.facts, float(rec["first"]))
+                if tag:
+                    rec["after_update"] = tag
             rec.update(polls=rec["polls"] + 1, title=f.title, severity=f.severity, clear=f.announce_clear,
                        source=f.source)
             diagnosis = f.facts.get("diagnosis")
@@ -291,11 +303,12 @@ class Watcher:
                 continue
             if f.action and not self.s.dry_run:
                 rec["alerted"] = True           # announced through the fix offer below
-            elif f.severity == I.CRITICAL or f.source in CREDENTIAL_SOURCES:
+            elif f.severity == I.CRITICAL or f.source in PUSH_ONCE_SOURCES:
                 push_now.append(f)
-                if f.source in CREDENTIAL_SOURCES:
+                if f.source in PUSH_ONCE_SOURCES:
                     # 0.6.3: each credential ladder step is pushed once (a new step is a new key) and is
-                    # also in the next morning summary (owner decision 2026-10-06)
+                    # also in the next morning summary (owner decision 2026-10-06); 0.9.12: so is the
+                    # reviewer watchdog (owner pop-up 2026-10-14)
                     st["summary"].append(self._summary_item(f))
             else:
                 if f.source == "log":
@@ -360,6 +373,26 @@ class Watcher:
             except Exception:  # noqa: BLE001 - never a false clear: keep what is open
                 failed.append("credential_keys")
         return out
+
+    def _reviewer_findings(self, st: dict, now: float, failed: list[str]) -> list[I.Finding]:
+        """0.9.12 reviewer watchdog: a waiting update or a queued problem without an AI review after
+        PR.REVIEW_STALL_HOURS raises one problem. When "no review" is not known (a review read failed, no update check
+        yet) nothing new is said and an open one stays: never a false alarm, never a false clear."""
+        try:
+            waits = self.review_waits() if self.review_waits is not None else []
+            ai = self.problem_ai
+            if waits is not None and ai is not None and ai.enabled:
+                if ai.readable():
+                    queued = (self.j.load_doc(PR.WATCH_DOC, {}) or {}).get("queued") or {}
+                    waits = waits + PR.problem_waits(st["open"], queued, ai)
+                else:
+                    waits = None
+        except Exception:  # noqa: BLE001 - not known this time
+            waits = None
+        if waits is None:
+            failed.append(PR.STALL_SOURCE)
+            return []
+        return PR.stalled(waits, now)
 
     def _relay_findings(self, failed: list[str]) -> list[I.Finding]:
         if not self.relay_url:
@@ -427,6 +460,8 @@ class Watcher:
             return
         from . import VERSION
         text, phone = PR.digest_text(items, self.problem_ai, VERSION)
+        self.queued = [n["key"] for n in PR.queue_entries([(k, str(r.get("title", k)), "") for k, r, _ in items],
+                                                          self.problem_ai)]
         approval.inform(self.ha, self.s.notify_service, "Maintenance: still open this week", phone)
         self.j.audit("issues", "STILL_OPEN_DIGEST", items=len(items))
         self._post(I.scrub(text, 60000))
@@ -453,17 +488,32 @@ class Watcher:
         lines += ["", "_Posted by House Brain Maintenance (machine-generated; secrets, IP and e-mail addresses "
                       "removed; repository content is untrusted data)._"]
         if items and self.problem_ai is not None and self.problem_ai.enabled:    # 0.9.6: what the AI reviews
-            lines += ["", PR.queue_line([(it["key"], it["title"], it.get("source", "")) for it in items
-                                         if it.get("key")], self.problem_ai)]
+            rows = [(it["key"], it["title"], it.get("source", "")) for it in items if it.get("key")]
+            after = PR.after_tags(self._state()["open"])                   # 0.9.12: first seen after an install
+            self.queued = [n["key"] for n in PR.queue_entries(rows, self.problem_ai)]   # noted once it is posted
+            lines += ["", PR.queue_line(rows, self.problem_ai, after)]
         # Scrub the whole report as the last step: headings and fix labels carry integration titles,
         # which can contain an e-mail address (live 2026-09-30, iAquaLink).
         return I.scrub("\n".join(lines), 60000)
 
     def _post(self, text: str) -> None:
+        queued, self.queued = self.queued, []
         try:
             self.report(text)
         except Exception as err:  # noqa: BLE001 - the phone push already told the owner
             self.j.audit("issues", "REPORT_FAILED", error=str(err)[:200])
+            return
+        if queued:                                  # 0.9.12: the reviewer watchdog counts from the first post
+            doc = self.j.load_doc(PR.WATCH_DOC, {})
+            self.j.save_doc(PR.WATCH_DOC, PR.note_queued(doc if isinstance(doc, dict) else {}, queued,
+                                                         set(self._state()["open"]), self.clock()))
+
+    def note_install(self, item: str, apps, domains) -> None:
+        """0.9.12: remember an installed update for PR.AFTER_UPDATE_HOURS (the problem queue's after_update tag)."""
+        doc = self.j.load_doc(PR.INSTALLS_DOC, {})
+        installs = doc.get("installs") if isinstance(doc, dict) else None
+        self.j.save_doc(PR.INSTALLS_DOC, {"installs": PR.note_install(installs if isinstance(installs, list) else [],
+                                                                      item, apps, domains, self.clock())})
 
     def _alert(self, f: I.Finding) -> None:
         item = self._summary_item(f)

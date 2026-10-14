@@ -117,6 +117,7 @@ class AiReviews:
     def __init__(self, gh, journal, issue: int, enabled: bool = True, clock=time.time) -> None:
         self.gh, self.j, self.issue, self.enabled, self.clock = gh, journal, int(issue), enabled, clock
         self.owner = gh.repo.split("/", 1)[0] if gh is not None else ""
+        self.failed = False           # 0.9.12: the last read did not complete (then "no review" is not known)
 
     def _doc(self) -> dict:
         doc = self.j.load_doc(self.DOC, {})
@@ -135,6 +136,7 @@ class AiReviews:
         if not force and now - float(doc["read_at"] or 0) < READ_EVERY:
             return
         since = doc["since"] or _iso(now - LOOKBACK)
+        self.failed = True                      # 0.9.12: until this read completes
         comments = []
         for page in range(1, MAX_PAGES + 1):    # 0.9.0 fix: the first read saw only the oldest 100 of #454's comments
             chunk = self.gh.issue_comments(self.issue, since, page)   # and found a review hours late (live 2026-10-12)
@@ -156,6 +158,7 @@ class AiReviews:
         doc["since"] = _iso(max(newest - 1, now - LOOKBACK))
         doc["read_at"] = now
         self.j.save_doc(self.DOC, doc)
+        self.failed = False
 
     @staticmethod
     def _parse(comment: dict, owner: str) -> list[dict]:
@@ -163,6 +166,10 @@ class AiReviews:
 
     def get(self, item: str) -> dict | None:
         return self._doc()["reviews"].get(item)
+
+    def readable(self) -> bool:
+        """0.9.12: "no review" is known: a read completed, and the last one did not fail (the reviewer watchdog)."""
+        return not self.failed and float(self._doc()["read_at"] or 0) > 0
 
     def gate(self, item: str, first_seen: float | None) -> Gate:
         """May this update be asked (and may it install by itself)? ``first_seen``: when it was first offered."""

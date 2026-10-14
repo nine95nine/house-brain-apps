@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.12
+
+Reviewer watchdog and after-update tag (owner pop-up 2026-10-14: "Build both"). Contains 0.9.11 unchanged otherwise.
+
+- **Reviewer watchdog.** Live 2026-10-14: two House Brain store App updates waited in the AI review queue and left it
+  without any AI review, while the reviewer routines were failing silently. Nothing said so. Now, when any update or
+  any problem in the review queue has waited more than 6 hours without an AI review, the App raises one problem:
+  "The AI reviewer has not answered for over 6 hours (N waiting)", naming up to 5 of them and how long each waited.
+  - An update counts from when it was first offered; a problem from the first post that listed it for review.
+  - Like the sign-in steps, it is pushed to your phone once and is in the next morning summary. It is never an
+    approval ask, and it clears by itself when nothing waits too long any more.
+  - It is never put in the problem review queue itself.
+  - Nothing counts with `ai_review` off or in practice mode. When the reviews cannot be read from GitHub, nothing
+    new is said and an open one stays (no false alarm, no false clear).
+- **After-update tag.** For 24 hours after an App update is installed, a problem first seen in that window about that
+  App, an App that needs it, or an integration it provides carries `"after_update": "app:<slug>@<version>"` in its
+  entry of the problem review line (`house_brain_problem_queue.v1`). The newest such install wins. The App keeps at
+  most 20 installs of the last 24 hours (`recent_installs`), and the tag survives a restart. In the line the `@` is
+  written as `\u0040` (the same JSON string), because the report's address scrub would remove `slug@version`.
+
 ## 0.9.11
 
 Sign-in expiry heads-up (owner pop-ups 2026-10-13: "Build it", "You, as 0.9.11", "Yes, use #454"; Work Board #942

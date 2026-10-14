@@ -34,10 +34,10 @@ from .cfrelay import RE_CONTROL_URL, CfRelay, control_url_from_broker, safe_cycl
 from .keys import FAILED_MANUAL as KEY_STUCK, JOB as KEY_JOB, SETUP_JOB as KEY_SETUP_JOB, KeyPolicy, KeyRotator
 from .stage import PENDING_DOC as STAGE_PENDING_DOC, StagePolicy, Stager
 from .holds import Holds
-from .aireview import AiReviews
+from .aireview import AiReviews, item_app
 from .inbox import Inbox
 from . import system as system_mod, entities as entities_mod, updates as updates_mod
-from .updatequeue import UpdateQueue
+from .updatequeue import UpdateQueue, rows_from
 from .afterupdate import JOB as AFTER_JOB, AfterPolicy, AfterUpdate, loaded_snapshot
 from .web import INGRESS_PEER, MAX_WAITING, ApprovalBoard, IngressServer, ReaskQueue
 from .writer import SharedWriter
@@ -479,9 +479,11 @@ class Service:
                     engine.ai = self.ai
                 self.update_queue = UpdateQueue(self.j, self.report_text, lambda title, msg: approval.inform(
                     self.ha, self.o.notify_service, title, msg))
+                self.watcher.review_waits = self.review_waits          # 0.9.12: reviewer watchdog
             for engine in (self.updater, self.system):
                 engine.on_done = self.after.start
                 engine.snapshot = (lambda: loaded_snapshot(self.ha)) if self.o.after_update_minutes > 0 else None
+            self.updater.on_done = self.app_update_done             # 0.9.12: also remembered 24 h (after_update)
             self.watcher.claimed = self.after.claimed
             # 0.7.4: one-tap local App source install; its update step is exactly self.updater's path.
             self.stage_policy.poll = self.poll
@@ -710,6 +712,37 @@ class Service:
         if self.engine is not None:                     # 0.9.0: the page's "Needs your decision" list
             self.inbox.set_offered(self.offered_rows())
         self.poll_issues()                              # integrations the check is handling)
+
+    def app_update_done(self, kind: str, txn: dict) -> None:
+        """0.7.3 after-update check. 0.9.12: the install is remembered 24 h for the problem queue's ``after_update``
+        tag: the App, the running Apps that need its services (``deps_started``: the review counts only running ones)
+        and the integrations it provides (``mqtt:provide`` -> mqtt)."""
+        try:
+            slug = str(txn.get("slug"))
+            try:
+                provides = [s.split(":", 1)[0] for s in self.ha.app_detail(slug).services if s.endswith(":provide")]
+            except Exception:  # noqa: BLE001 - unreadable: the App and the Apps that need it still count
+                provides = []
+            self.watcher.note_install(item_app(slug, str(txn.get("to"))),
+                                      [slug, *(txn.get("deps_started") or [])], provides)
+        except Exception as err:  # noqa: BLE001 - a note problem never stops the after-update check
+            LOG.warning("install note waits: %s", net.redact(str(err))[:200])
+        self.after.start(kind, txn)
+
+    def review_waits(self) -> list[tuple[str, float]] | None:
+        """0.9.12 reviewer watchdog: (name, first offered) of each waiting update without an AI review; [] in practice
+        mode (no list is posted); None when "no review" is not known (the last review read failed, or no update check
+        ran since the start, so the waiting list is not built yet)."""
+        if self.ai is None or not self.ai.enabled or self.o.dry_run:
+            return []
+        if not self.ai.readable() or not self.last_update_check:
+            return None
+        seen = {f"app:{k}": v for k, v in self.updater._mem()["first_seen"].items()}
+        seen.update({f"entity:{k}": v for k, v in self.entities._mem()["first_seen"].items()})
+        seen.update(self.system._mem()["reviewed"])
+        rows = rows_from(*(e.queue for e in (self.system, self.updater, self.entities)))
+        return [(f"{r.get('name')} {r.get('to')}", float(seen[r["item"]])) for r in rows
+                if r["item"] in seen and self.ai.get(r["item"]) is None]
 
     def poll_after_update(self) -> bool:
         """0.7.3: one step of an open after-update check. True while one is open (updates wait)."""
