@@ -170,6 +170,72 @@ def _merge(source: dict, destination: dict, now: float):
         raise LegacyError(f"LEGACY_HISTORY:{err}") from None
 
 
+OVERLAP_SCHEMA = "hbd.legacy_overlap.v1"
+MAX_OVERLAP_BYTES = 1024 * 1024
+
+
+def reconcile(source: dict, destination: dict) -> tuple[dict, dict]:
+    """0.3.26, owner pop-up 2026-10-14 "Keep newer, save old".
+
+    The same request id in both histories with different entries (each Deployer stamps its own ``at``)
+    used to refuse the whole merge (LEDGER_CONFLICT / INSTALL_CONFLICT). Now the live store Deployer's
+    entry is kept and the old Deployer's entry is taken out of the merge and returned unchanged, to be
+    saved beside the moved history. Equal entries are not overlaps. With no overlap the source bytes
+    are returned untouched, so fingerprints stay exactly as before. The id stays handled either way,
+    so no request can ever run again because of this rule.
+    """
+    try:
+        old, new = history._decode(source), history._decode(destination)
+    except history.HistoryError as err:
+        raise LegacyError(f"LEGACY_HISTORY:{err}") from None
+    ledger_overlap = {key: rec for key, rec in old["ledger"].items()
+                      if key in new["ledger"] and history._canonical(new["ledger"][key]) != history._canonical(rec)}
+    live_installs = {rec["request_id"]: rec for rec in new["installs"]}
+    install_overlap = [rec for rec in old["installs"] if rec["request_id"] in live_installs
+                       and history._canonical(live_installs[rec["request_id"]]) != history._canonical(rec)]
+    overlap = {"schema": OVERLAP_SCHEMA, "kept": "store_deployer", "ledger": ledger_overlap,
+               "installs": install_overlap}
+    if not ledger_overlap and not install_overlap:
+        return dict(source), overlap
+    _require(len(history._canonical(overlap)) <= MAX_OVERLAP_BYTES, "LEGACY_OVERLAP_LIMIT")
+    reduced = dict(source)
+    if ledger_overlap:
+        reduced["ledger.json"] = history._canonical({k: v for k, v in old["ledger"].items()
+                                                     if k not in ledger_overlap})
+    if install_overlap:
+        dropped = {rec["request_id"] for rec in install_overlap}
+        reduced["installs.json"] = history._canonical([rec for rec in old["installs"]
+                                                       if rec["request_id"] not in dropped])
+    return reduced, overlap
+
+
+def overlap_counts(overlap: dict) -> dict:
+    return {"ledger": len(overlap["ledger"]), "installs": len(overlap["installs"])}
+
+
+def overlap_text(overlap: dict) -> str:
+    o = overlap_counts(overlap)
+    if not o["ledger"] and not o["installs"]:
+        return "No request is in both histories."
+    return (f"{o['ledger']} results and {o['installs']} installs are in both histories with different entries: "
+            "today's Deployer's entries are kept and the old ones are saved unchanged beside the moved history.")
+
+
+def _save_overlap(data_dir: str, run: str, overlap: dict, fence) -> str | None:
+    """Write the old entries (only when there are any) next to the PREPARED record: 0600, never overwritten."""
+    from .migration.deployer_history_store import GenerationStore
+    if not overlap["ledger"] and not overlap["installs"]:
+        return None
+    raw = history._canonical(overlap)
+    parent = os.open(os.path.join(data_dir, GENERATIONS), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        GenerationStore._write(parent, "LEGACY-OVERLAP-" + run + ".json", raw, fence)
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+    return _sha(raw)
+
+
 def counts(files: dict) -> dict:
     decoded = history._decode(files)
     return {"installs": len(decoded["installs"]), "ledger": len(decoded["ledger"]), "audit": len(decoded["audit"]),
@@ -192,10 +258,11 @@ def inspect_prepare(data_dir: str, stage: str, snapshot_sha256: str, now: float)
     _require(not selection_present(data_dir), "LEGACY_ALREADY_SELECTED")
     _folders_empty_or_absent(data_dir, (WORKING, USES))
     destination = _live(data_dir)
-    source, receipt = _read_stage(stage, snapshot_sha256)
+    original, receipt = _read_stage(stage, snapshot_sha256)
+    source, overlap = reconcile(original, destination)
     planned = _merge(source, destination, now)
     return {"source": source, "destination": destination, "planned": planned, "receipt": receipt,
-            "counts": counts(planned.private_files()), "legacy": counts(source)}
+            "counts": counts(planned.private_files()), "legacy": counts(original), "overlap": overlap}
 
 
 def _live(data_dir: str) -> dict:
@@ -234,12 +301,13 @@ def inspect_select(data_dir: str, prepared_request_id: str, result_sha256: str, 
     _require(record["result_sha256"] == result_sha256, "LEGACY_PREPARED_MISMATCH")
     _require(history._finite_number(record["expires_at"]) and now < record["expires_at"], "LEGACY_PREPARE_EXPIRED")
     destination = _live(data_dir)
-    source, _ = _read_stage(record["stage"], record["snapshot_sha256"])
+    original, _ = _read_stage(record["stage"], record["snapshot_sha256"])
+    source, overlap = reconcile(original, destination)
     planned = _merge(source, destination, now)
     added = counts(planned.private_files())
     since = {k: added[k] - record["counts"][k] for k in ("installs", "ledger", "audit")}
     return {"source": source, "destination": destination, "planned": planned, "record": record,
-            "counts": added, "since": since}
+            "counts": added, "since": since, "overlap": overlap}
 
 
 def _same_as_shown(fresh: dict, shown: dict) -> None:
@@ -248,6 +316,7 @@ def _same_as_shown(fresh: dict, shown: dict) -> None:
     The ask itself appends approval log lines (and results may land), so the live part may only grow there.
     """
     _require(fresh["planned"].source_sha256 == shown["planned"].source_sha256, "LEGACY_DRIFT")
+    _require(history._canonical(fresh["overlap"]) == history._canonical(shown["overlap"]), "LEGACY_DRIFT")
     for key in ("installs", "undone", "frozen"):
         _require(fresh["counts"][key] == shown["counts"][key], "LEGACY_DRIFT")
     for key in ("ledger", "audit"):
@@ -411,12 +480,15 @@ def run_prepare(*, data_dir, packages_root, request_id, stage, snapshot_sha256, 
             run = run_name("p", request_id)
             _, active, receipt = _stage_and_export(data_dir, run, fresh["source"], fresh["destination"], scope,
                                                    authority, fence, bindings, clock)
+        authority.guard()
+        overlap_sha256 = _save_overlap(data_dir, run, fresh["overlap"], fence)
         record = {"schema": "hbd.legacy_prepared.v1", "request_id": request_id, "stage": stage,
                   "snapshot_sha256": snapshot_sha256, "component_sha256": fresh["receipt"]["component_sha256"],
                   "source_sha256": fresh["planned"].source_sha256,
                   "destination_sha256": fresh["planned"].destination_sha256,
                   "result_sha256": fresh["planned"].result_sha256, "counts": fresh["counts"],
-                  "scope": vars(scope), "expires_at": scope.expires_at, "export": active}
+                  "scope": vars(scope), "expires_at": scope.expires_at, "export": active,
+                  "overlap": overlap_counts(fresh["overlap"]), "overlap_sha256": overlap_sha256}
         raw = history._canonical(record)
         parent = os.open(os.path.join(data_dir, GENERATIONS), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
@@ -428,7 +500,8 @@ def run_prepare(*, data_dir, packages_root, request_id, stage, snapshot_sha256, 
         return {"schema": "hbd.legacy_prepare.v1", "stage": stage, "snapshot_sha256": snapshot_sha256,
                 "source_sha256": record["source_sha256"], "destination_sha256": record["destination_sha256"],
                 "result_sha256": record["result_sha256"], "counts": record["counts"],
-                "legacy_counts": fresh["legacy"], "generation_sha256": receipt["generation_sha256"],
+                "legacy_counts": fresh["legacy"], "overlap": record["overlap"],
+                "overlap_sha256": overlap_sha256, "generation_sha256": receipt["generation_sha256"],
                 "expires_at": int(scope.expires_at), "lock": {"dev": lock.st_dev, "ino": lock.st_ino},
                 "selected": False, "uninstall_allowed": False}
 
@@ -445,6 +518,8 @@ def run_select(*, data_dir, packages_root, request_id, prepared_request_id, resu
         scope = make_scope(prepared_request_id, owner_id, fresh["record"]["expires_at"])
         authority = PhaseAuthority(scope=scope, planned=fresh["planned"], fence=fence, clock=clock,
                                    should_stop=should_stop)
+        authority.guard()
+        overlap_sha256 = _save_overlap(data_dir, run_name("s", request_id), fresh["overlap"], fence)
         with root_bindings(data_dir, packages_root, fence.root) as bindings:
             exports, active, receipt = _stage_and_export(data_dir, run_name("s", request_id), fresh["source"],
                                                          fresh["destination"], scope, authority, fence, bindings,
@@ -459,6 +534,7 @@ def run_select(*, data_dir, packages_root, request_id, prepared_request_id, resu
             marker = fh.read()
         return {"schema": "hbd.legacy_select.v1", "prepared_request_id": prepared_request_id,
                 "result_sha256": fresh["planned"].result_sha256, "counts": fresh["counts"], "since_prepare": fresh["since"],
+                "overlap": overlap_counts(fresh["overlap"]), "overlap_sha256": overlap_sha256,
                 "generation_sha256": receipt["generation_sha256"], "marker_sha256": _sha(marker),
                 "pointer": result["pointer"], "applies": "next Deployer start", "uninstall_allowed": False}
 

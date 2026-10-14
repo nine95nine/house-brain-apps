@@ -665,7 +665,8 @@ class Service:
                 message = (f"Copies the old Deployer's history from Maintenance's stage into the Deployer's private "
                            f"folder, merged with today's: {c['installs']} installs ({c['undone']} undone), "
                            f"{c['ledger']} results, {c['audit']} log lines, freeze {'yes' if c['frozen'] else 'no'}. "
-                           f"Fingerprint {shown['planned'].result_sha256[:12]}. Nothing is selected yet; the old "
+                           f"Fingerprint {shown['planned'].result_sha256[:12]}. "
+                           f"{legacy_migrate.overlap_text(shown['overlap'])} Nothing is selected yet; the old "
                            "Deployer and your packages are not changed.")
             elif schema == legacy_migrate.SELECT:
                 if self.o.return_to_previous_history:
@@ -676,7 +677,8 @@ class Service:
                 title = "House Brain: use the moved history from the next start?"
                 message = (f"From the next Deployer restart it runs on the moved history: {c['installs']} installs, "
                            f"{c['ledger']} results, {c['audit']} log lines (including {since['ledger']} results "
-                           f"recorded since Prepare). Fingerprint {shown['planned'].result_sha256[:12]}. Until the "
+                           f"recorded since Prepare). Fingerprint {shown['planned'].result_sha256[:12]}. "
+                           f"{legacy_migrate.overlap_text(shown['overlap'])} Until the "
                            "restart other requests wait. To undo before the restart, send Unselect; after it, turn "
                            "on return_to_previous_history.")
             elif schema == legacy_migrate.RESET:

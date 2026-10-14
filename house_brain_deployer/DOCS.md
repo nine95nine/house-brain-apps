@@ -167,6 +167,10 @@ From 0.3.25 the page shows **History in use** and, while a selection exists, an 
 history** button (the same as Unselect or the option; it applies at the next restart). Installs made by the old
 Deployer get no Undo button.
 
+From 0.3.26, a result or install that is in **both** histories with different entries no longer stops Prepare: today's
+Deployer's entry is kept, and the old Deployer's entry is saved unchanged beside the moved history. The Prepare and
+Select asks say how many there were; Reject if the number looks wrong.
+
 After Select and a Deployer restart, the Deployer runs on the moved history with no further taps. At every start
 it re-checks the selection, its folders and the shared writer lock, and holds and tells you if anything differs.
 The old Deployer, your packages and Maintenance's copy are never written.

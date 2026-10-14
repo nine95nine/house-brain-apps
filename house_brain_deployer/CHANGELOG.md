@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.26 — 2026-10-14 (history migration: overlap rule; owner pop-up 2026-10-14 "Keep newer, save old")
+
+- Pi step M4 (Prepare) refused on the real histories with `LEGACY_HISTORY:LEDGER_CONFLICT` (#561 6159321794): the
+  same request ids are in both Deployers' histories with different entries (each Deployer stamps its own time).
+  It refused before asking and wrote nothing.
+- Now, for a result or install that is in both histories with a different entry, the store Deployer's entry is kept
+  and the old Deployer's entry is saved unchanged in `hbd-generations-v1/LEGACY-OVERLAP-<run>.json` (0600, next to
+  the PREPARED record; written at Prepare and again at Select). Equal entries are not overlaps; with no overlap the
+  merge and every fingerprint are exactly as in 0.3.25. The id stays handled either way, so nothing can run again.
+- The Prepare and Select asks say how many results and installs overlapped; the results report `overlap` counts and
+  the side file's `overlap_sha256`. A different overlap between the ask and the lock refuses (`LEGACY_DRIFT`).
+- A freeze that differs between the two histories still refuses (`FREEZE_CONFLICT`).
+- Tests: 3 new L4 tests (23 in `test_l4_legacy_migrate.py`); mutants LM31–LM37 killed.
+
 ## 0.3.25 — 2026-10-13 (migration polish; owner pop-ups 2026-10-13; renumbered above the 0.3.24 package tidy)
 
 - Installs that came from the old Deployer are kept and shown, but get no Undo button after the switch (owner:
