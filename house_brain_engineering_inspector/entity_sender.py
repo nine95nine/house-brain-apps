@@ -47,7 +47,7 @@ SENDER_SCHEMA: Final = "house_brain_engineering_inspector.entity_sender.v1"
 # 0.2.3 (live 2026-10-06): Cloudflare's edge answered 403 (error 1010) to Python's default "Python-urllib"
 # user agent before the Broker ran (ENTITY_SNAPSHOT_BROKER_HTTP_ERROR). The POST now names the App, like the
 # Maintenance App 0.5.1, the Scout and the Observer. Keep it equal to config.yaml ``version``.
-APP_VERSION: Final = "0.2.8"
+APP_VERSION: Final = "0.2.9"
 USER_AGENT: Final = f"house-brain-engineering-inspector/{APP_VERSION}"
 OPTIONS_PATH: Final = Path("/data/options.json")
 APP_DIR: Final = Path(__file__).resolve().parent
@@ -204,9 +204,15 @@ def state_rows(rows: Any) -> tuple[list[dict[str, Any]], int]:
     return kept, dropped
 
 
-async def collect(rest_get: Callable[[str], Any], ws_command: Callable[[str], Any]) -> tuple[list, dict, int]:
+async def collect(rest_get: Callable[[str], Any], ws_command: Callable[[str], Any], *,
+                  audit_raw_registry: Callable[[Any], None] | None = None) -> tuple[list, dict, int]:
     states, dropped = state_rows(rest_get("/states"))
-    registry = registry_map(await ws_command("config/entity_registry/list"))
+    # One existing allowlisted registry read. Evaluate BEFORE registry_map intentionally
+    # drops unique_id. The raw rows are never exported or written to App logs.
+    registry_rows = await ws_command("config/entity_registry/list")
+    if audit_raw_registry is not None:
+        audit_raw_registry(registry_rows)
+    registry = registry_map(registry_rows)
     return states, registry, dropped
 
 
@@ -492,11 +498,26 @@ def run_export(rest_get: Callable, ws_command: Callable, opts: dict[str, str], *
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     ws_command = persistent_ws_command(ws_command)   # 0.2.4: one socket for every cycle
+    import registry_probe  # 0.2.9; only exact known identifiers, no extra HA reads
     done = 0
     while cycles is None or done < cycles:
         done += 1
         try:
-            states, registry, dropped = asyncio.run(collect(rest_get, ws_command))
+            family_probe: dict[str, Any] = {"result": "INDETERMINATE",
+                                            "entity_id_collisions": None,
+                                            "unique_id_collisions": None,
+                                            "registry_rows_examined": 0}
+            def _audit_registry(rows: Any) -> None:
+                try:
+                    family_probe.update(registry_probe.summarize(rows))
+                except Exception:  # any local probe defect must NOT break accepted entity export
+                    family_probe["result"] = "INDETERMINATE"
+                    family_probe["entity_id_collisions"] = None
+                    family_probe["unique_id_collisions"] = None
+                    family_probe["registry_rows_examined"] = 0
+
+            states, registry, dropped = asyncio.run(
+                collect(rest_get, ws_command, audit_raw_registry=_audit_registry))
             end_ts = clock()
             hist = read_history(rest_get, builder, policy, end_ts)   # 0.2.5: fail soft, never raises
             snapshot, body = build_with_history(builder, states, registry, now=utc_now(lambda: end_ts),
@@ -506,6 +527,12 @@ def run_export(rest_get: Callable, ws_command: Callable, opts: dict[str, str], *
             _emit({"status": SEND_OUTCOMES.get(status, "ENTITY_SNAPSHOT_BROKER_HTTP_ERROR"), "http_status": status,
                    "entity_count": snapshot["entity_count"], "body_bytes": len(body),
                    "generated_at": snapshot["generated_at"], "sender_dropped_rows": dropped,
+                   # Sorted by _emit so these 4 bounded fields appear near the start of
+                   # Supervisor log lines and survive Maintenance APP_LOG_WINDOW truncation.
+                   "family_registry_result": family_probe["result"],
+                   "family_registry_eid_hits": family_probe["entity_id_collisions"],
+                   "family_registry_uid_hits": family_probe["unique_id_collisions"],
+                   "family_registry_rows": family_probe["registry_rows_examined"],
                    "history_status": hist.status, "history_entity_count": len(history),
                    "history_change_count": sum(len(v) for v in history.values()), **_history_error(hist)}, out)
         except Exception as exc:  # one bounded line per failed cycle; the next cycle retries
