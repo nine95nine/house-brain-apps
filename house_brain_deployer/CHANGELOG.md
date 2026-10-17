@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.28 — 2026-10-17 (AppArmor reads for the history move; owner pop-up "Build 0.3.28")
+
+- M4 attempt 3 on 0.3.27 passed every history check and the owner's Approve, then ended
+  `LEGACY_FAILED: LEGACY:RootBindingError` before writing the copy (#561 6168580600).
+- Cause: the folder binding (used by Prepare, Select, the moved-history startup and the interrupted-install
+  recovery) walks each path from "/" and reads each held folder's mount id from `/proc/<pid>/fdinfo/<n>`. The
+  AppArmor profile allowed neither. Two read-only rules are added: `/ r,` (the root directory itself, not its
+  contents) and `/proc/[0-9]*/fdinfo/[0-9]* r,`. Nothing is writable that was not before.
+- A failed binding now reports its fixed code and the OS error, e.g. `LEGACY:RootBindingError:ROOT_UNAVAILABLE:EACCES`,
+  never a path.
+- New confined L5 test runs the real binding inside the enforced AppArmor container; L4 test for the report;
+  mutants RG01–RG02.
+
 ## 0.3.27 — 2026-10-14 (history migration accepts every shape published versions wrote; owner pop-up "Build 0.3.27, all 7")
 
 - The M4 retry on 0.3.26 refused with `LEGACY_HISTORY:APPROVAL_SCHEMA` (#561 6161027304), before asking and with

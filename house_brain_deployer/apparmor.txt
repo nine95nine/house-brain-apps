@@ -57,6 +57,11 @@ profile house_brain_deployer flags=(attach_disconnected,mediate_deleted) {
   /proc/[0-9]*/mountinfo r,
   /proc/[0-9]*/attr/current r,
   /proc/[0-9]*/attr/apparmor/current r,
+  # 0.3.28 (owner pop-up 2026-10-17 "Build 0.3.28"; M4 attempt 3 LEGACY:RootBindingError, #561 6168580600):
+  # the history move pins its folders by walking each path from "/" (reading the root directory itself, not
+  # its contents) and reads the mount id of each held folder from its own fdinfo. Both read-only.
+  / r,
+  /proc/[0-9]*/fdinfo/[0-9]* r,
   /sys/devices/system/cpu/** r,
 
   /tmp/ rw,

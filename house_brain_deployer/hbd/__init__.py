@@ -1,4 +1,4 @@
 """House Brain Deployer: pull-based, owner-approved Home Assistant package deployment."""
 
-VERSION = "0.3.27"
+VERSION = "0.3.28"
 SCHEMA = "house_brain_deploy_request.v1"

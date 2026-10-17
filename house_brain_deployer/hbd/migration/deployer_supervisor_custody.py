@@ -23,7 +23,7 @@ MAX_SECONDS = 5
 # never qualification. The candidate entry follows hbd.VERSION so a renumber cannot
 # leave the candidate unable to observe itself. 0.3.13 and 0.3.17 were draft labels, never published.
 DESTINATION_VERSIONS = ('0.3.9', '0.3.10', '0.3.11', '0.3.12', '0.3.14', '0.3.15', '0.3.16', '0.3.18', '0.3.19',
-                        '0.3.20', '0.3.21', '0.3.22', '0.3.23', '0.3.25', '0.3.26', VERSION)  # 0.3.26 installed 2026-10-14
+                        '0.3.20', '0.3.21', '0.3.22', '0.3.23', '0.3.25', '0.3.26', '0.3.27', VERSION)  # 0.3.27 installed 2026-10-14
 
 
 class CustodyError(ValueError): pass

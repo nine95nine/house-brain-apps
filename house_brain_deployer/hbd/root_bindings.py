@@ -7,14 +7,29 @@ Mount IDs are local to the observing mount namespace, not cross-App identities.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import errno
 import json
 import os
+import re
 import stat
 import threading
 
 
 class RootBindingError(RuntimeError):
     """A requested root cannot be pinned or its retained identity has changed."""
+
+
+_CODE = re.compile(r"ROOT_[A-Z_]{1,40}")
+
+
+def root_binding_code(error: BaseException) -> str:
+    """0.3.28: a fixed, path-free report: the ROOT_* code and, when an OS error caused it, its errno name."""
+    code = str(error) if isinstance(error, RootBindingError) and _CODE.fullmatch(str(error)) else "ROOT_UNKNOWN"
+    cause = error.__cause__
+    name = errno.errorcode.get(cause.errno) if isinstance(cause, OSError) and isinstance(cause.errno, int) else None
+    if name is None and isinstance(cause, RootBindingError) and _CODE.fullmatch(str(cause)):
+        name = str(cause)
+    return f"{code}:{name}" if name else code
 
 
 @dataclass(frozen=True)

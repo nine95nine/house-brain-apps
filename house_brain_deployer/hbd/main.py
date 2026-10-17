@@ -44,6 +44,7 @@ from .migration.deployer_startup_service import startup_hold
 from .reask import check_ledger, is_reask, parse_reask
 from .web import INGRESS_PEER, ApprovalBoard, IngressServer
 from .migration.deployer_working_journal import WorkingError
+from .root_bindings import RootBindingError, root_binding_code
 from .writer import WriterError, WriterLease
 
 
@@ -729,6 +730,9 @@ class Service:
                 LOG.info("HBD-NATIVE legacy %s result=%s", schema.split("_")[3], result.outcome)
             except (legacy_migrate.LegacyError, WriterError) as err:
                 result = Result("LEGACY_FAILED", [f"LEGACY:{err}"])
+            except RootBindingError as err:
+                # 0.3.28: name the fixed code and the OS error behind it (e.g. ROOT_UNAVAILABLE:EACCES), never a path.
+                result = Result("LEGACY_FAILED", [f"LEGACY:RootBindingError:{root_binding_code(err)}"])
             except ValueError as err:   # StoreError / CutoverError / WorkingError: fixed codes
                 result = Result("LEGACY_FAILED", [f"LEGACY:{type(err).__name__}:{str(err)[:60]}"])
             except Exception as err:  # noqa: BLE001 - fixed code only
