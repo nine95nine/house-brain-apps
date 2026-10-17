@@ -343,7 +343,8 @@ def render(pending: Pending | None, last: str, action: str, note: str = "", extr
     return PAGE.format(body=body + extra)
 
 
-def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connector=None, reask=None, inbox=None):
+def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connector=None, reask=None, inbox=None,
+                 leak=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "hbm"
         sys_version = ""
@@ -397,6 +398,14 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
             return (f'<p class="m"><a href="{html.escape(base)}/github">GitHub connection</a>: '
                     f"{html.escape(connector.status_line())}</p>")
 
+        def _leak_line(self) -> str:
+            if leak is None:
+                return ""
+            return f'<p class="m"><a href="{html.escape(self._base())}/leak">Suspected leak?</a></p>'
+
+        def _leak_page(self, status: int, note: str = "") -> None:
+            self._send(status, PAGE.format(body=leak.render(f"{self._base()}/leak", note)))
+
         def _github_page(self, status: int, note: str = "") -> None:
             body = connector.render(self.headers.get("X-Remote-User-Id", ""), self.headers.get("X-Ingress-Path", ""),
                                     self.headers.get("X-Forwarded-Host", ""),
@@ -442,10 +451,13 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
                 return None
             if route == "/reask":
                 return self._send(405, "method not allowed")   # 0.7.2: Ask me again is POST only
+            if route == "/leak" and leak is not None:          # 0.9.13: Suspected leak?
+                return self._leak_page(200)
             if route not in ("/", ""):
                 return self._send(404, "not found")
             pending, last = board.snapshot()
-            self._send(200, render(pending, last, self._action(), extra=self._extra() + self._github_line(self._base())))
+            self._send(200, render(pending, last, self._action(),
+                                   extra=self._extra() + self._github_line(self._base()) + self._leak_line()))
 
         def do_POST(self):  # noqa: N802
             if not self._peer_ok():
@@ -453,9 +465,9 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
             route = urllib.parse.urlsplit(self.path).path
             if self._github_post(route):
                 return None
-            if route not in ("/decide", "/recovery/ack", "/reask", "/inbox/confirm", "/inbox/decide") \
+            if route not in ("/decide", "/recovery/ack", "/reask", "/inbox/confirm", "/inbox/decide", "/leak") \
                     or (route == "/recovery/ack" and recovery is None) or (route == "/reask" and reask is None) \
-                    or (route.startswith("/inbox/") and inbox is None):
+                    or (route.startswith("/inbox/") and inbox is None) or (route == "/leak" and leak is None):
                 return self._send(404, "not found")
             try:
                 length = int(self.headers.get("Content-Length") or "0")
@@ -485,6 +497,13 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
                          "reject": "Declined: it is not offered again."}.get(chosen, "") if status == 200
                         else inbox_notes.get(status, ""))
                 return self._send(status, render(pending, last, self._action(), note, extra=self._extra()))
+            if route == "/leak":
+                status = leak.request(nonce, user, choice)
+                leak_notes = {200: "Started: the house keys change on the next checks, one App at a time.",
+                              403: "Only the owner account can do this.",
+                              409: "This button has expired; reload the page.",
+                              429: "Already started; it begins on the next check.", 400: "Unknown choice."}
+                return self._leak_page(status, leak_notes.get(status, ""))
             if route == "/reask":
                 status = (reask.request(nonce, user, (form.get("kind") or [""])[0], (form.get("slug") or [""])[0],
                                         (form.get("version") or [""])[0]) if choice == "reask" else 400)
@@ -522,9 +541,10 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
 
 class IngressServer:
     def __init__(self, board: ApprovalBoard, host: str = "0.0.0.0", port: int = 8099,  # noqa: S104 - ingress
-                 allowed_peer: str = INGRESS_PEER, recovery=None, connector=None, reask=None, inbox=None) -> None:
+                 allowed_peer: str = INGRESS_PEER, recovery=None, connector=None, reask=None, inbox=None,
+                 leak=None) -> None:
         self.httpd = ThreadingHTTPServer((host, port), make_handler(board, allowed_peer, recovery, connector, reask,
-                                                                    inbox))
+                                                                    inbox, leak))
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)

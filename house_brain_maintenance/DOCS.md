@@ -664,6 +664,23 @@ It also reads the relay Worker's weekly self-test of its GitHub dispatch key (op
 empty and it is derived from `liveness_url`; `off` turns it off) and uses the same ladder; a failing key or a stopped self-test is a warning
 with the exact fix path.
 
+## Suspected leak? — from 0.9.13
+
+If you think a key, token or password of the house was seen by someone else (a screenshot, a paste, a lost phone),
+open the Maintenance page and tap **Suspected leak?** at the bottom. Nothing on that page shows a secret.
+
+1. **Change the house keys now** (one tap): changes the Broker key of every App this App already changes by itself
+   (Engineering Observer, Engineering Inspector, AI Access, Inventory Scout and this App's rotation key), one App at a
+   time, each checked and undone by itself if it fails. The old key stops working within 24 hours. Nothing is asked
+   on your phone; the result is posted on the report issue. Needs `key_rotation` on (no button otherwise).
+2. **Change the rest by hand:** the page lists every other credential of the house with what to do, from the
+   repository's credential list (read once a day). For a GitHub App key: **Disconnect** it on its GitHub connection
+   page, delete that App on GitHub (github.com/settings/apps → the App → Advanced → Delete), then **Connect** again
+   (3 taps).
+
+Tell the AI which one you think leaked: it can file the changes it is allowed to make and give you the exact taps for
+the rest.
+
 ## Backups you can trust — from 0.8.5
 
 Every check reads the backup list it already reads; nothing is created, changed or deleted:

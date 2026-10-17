@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.13
+
+Suspected leak? page (Credential Autopilot follow-up, owner pop-up 2026-10-07 "Both"; Work Board #942 6235508959).
+Contains 0.9.12 unchanged otherwise.
+
+- **Suspected leak?** A new link at the bottom of the Maintenance page opens a leak checklist. Nothing on it shows a
+  secret.
+  - **Step 1, one tap:** "Change the house keys now" changes the Broker key of every App this App already changes by
+    itself (Engineering Observer, Engineering Inspector, AI Access, Inventory Scout and this App's rotation key). It
+    runs through exactly the `ROTATE_KEYS_NOW` path an AI request uses: one App at a time, each checked and undone by
+    itself if it fails, nothing asked on the phone. The result is posted on the report issue (`asked_via: page_leak`).
+    Owner only, single-use button, one at a time; a tap the loop has not taken within an hour lapses. With
+    `key_rotation` off there is no button, and a tap that arrives anyway is REFUSED (nothing queued).
+  - **Step 2, by hand:** every other credential of the house, with what to do, from the repository's credential list
+    (`contracts/house_brain_credential_inventory.v1.json`, each entry's `leak_response`). The App reads the list once
+    a day through its own GitHub sign-in; if the read fails it keeps the last good list, or links to it on GitHub.
+    Only GitHub, the Cloudflare dashboard and claude.ai become links; all list text is escaped.
+  - The tap is taken by the poll loop, never written from the page, so the key file has one writer.
+
 ## 0.9.12
 
 Reviewer watchdog and after-update tag (owner pop-up 2026-10-14: "Build both"). Contains 0.9.11 unchanged otherwise.

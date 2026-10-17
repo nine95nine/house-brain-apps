@@ -32,6 +32,8 @@ from .upgradeinfo import UpgradeInfo
 from .pifirmware import JOB as PIFW_JOB, FirmwarePolicy, PiFirmware
 from .cfrelay import RE_CONTROL_URL, CfRelay, control_url_from_broker, safe_cycle as cf_safe_cycle
 from .keys import FAILED_MANUAL as KEY_STUCK, JOB as KEY_JOB, SETUP_JOB as KEY_SETUP_JOB, KeyPolicy, KeyRotator
+from .keys import APP_NAMES as KEY_APP_NAMES, ROLES as KEY_ROLES
+from .leak import INVENTORY_PATH, LeakResponse
 from .stage import PENDING_DOC as STAGE_PENDING_DOC, StagePolicy, Stager
 from .holds import Holds
 from .aireview import AiReviews, item_app
@@ -365,6 +367,10 @@ class Service:
         self.recovery: Recovery | None = None
         self._owner_cache: str | None = None
         self.reask = ReaskQueue(self._owner_id)          # 0.7.2: the page's "Ask me again" (owner only)
+        # 0.9.13 "Suspected leak?": one owner tap queues every Broker key change; the rest is a checklist.
+        self.leak = LeakResponse(self._owner_id, KEY_ROLES, KEY_APP_NAMES, self.o.github_repo,
+                                 self.o.report_issue or None)
+        self.leak.keys_summary = lambda: self.keys.summary() if self.keys is not None else None
         # 0.9.0 Approve from the page: one inbox for every ask; a page decision wakes the poll loop at once.
         self.wake = threading.Event()
         self.inbox = Inbox(self.j.dir, self._owner_id, wake=self.wake.set)
@@ -692,6 +698,8 @@ class Service:
         if self.frozen():
             return
         if self.poll_page_reask():
+            return
+        if self.poll_page_leak():
             return
         try:
             handled = self.poll_requests()
@@ -1073,6 +1081,35 @@ class Service:
         self.finish(rid, job, digest, issue,
                     Result(out.result_outcome, out.reasons, {**out.facts, "update_request": out.request_id, **extra}))
 
+    def poll_page_leak(self) -> bool:
+        """0.9.13 "Suspected leak?": refresh the credential list once a day (read-only) and run the owner's tap
+        through the ROTATE_KEYS_NOW path for every role. True when a tap was handled."""
+        if self.leak.refresh_due():
+            try:
+                self.leak.refresh(lambda: self.gh.read_file(INVENTORY_PATH, "main"))
+            except Exception as err:  # noqa: BLE001 - the page says the list could not be read; never stops a poll
+                LOG.info("credential list read waits: %s", net.redact(str(err))[:200])
+        item, lapsed = self.leak.take()
+        if lapsed:
+            self.j.audit("page-leak", "PAGE_LEAK_EXPIRED")
+        if item is None:
+            return False
+        self.ensure_engine()
+        rid = "leak-" + time.strftime("%Y%m%d%H%M%S", time.gmtime(item["at"]))
+        issue = self.o.report_issue or None
+        if self.keys is None or not self.o.key_rotation:
+            self.finish(rid, "ROTATE_KEYS_NOW", f"page-leak:{rid}", issue, Result(REFUSED, [
+                ("automatic key changes are turned off (option key_rotation); change the keys by hand from the "
+                 "Suspected leak? page")], {"asked_via": "page_leak"}), notify=False)
+            return True
+        queued = self.keys.queue("all")
+        self.leak.started()
+        self.finish(rid, "ROTATE_KEYS_NOW", f"page-leak:{rid}", issue, Result(DONE, [
+            ("suspected leak: the owner started a change of every Broker key from the page; they run on the next "
+             "polls, one App at a time"), "the rest of the credentials are listed on the page with what to do"],
+            {"asked_via": "page_leak", "queue": queued}), notify=False)
+        return True
+
     def poll_page_reask(self) -> bool:
         """0.7.2 "Ask me again" (the page): at most one queued owner request, run through exactly the
         ASK_UPDATE_NOW path (every refusal applies) and counted against max_approval_requests_per_day. A queued
@@ -1168,7 +1205,7 @@ def start_ingress(service: Service) -> IngressServer | None:
         peer = os.environ.get("HBM_INGRESS_PEER", INGRESS_PEER)
     server = IngressServer(service.board, port=port, allowed_peer=peer, recovery=service.recovery,
                            connector=getattr(service, "connector", None), reask=getattr(service, "reask", None),
-                           inbox=getattr(service, "inbox", None))
+                           inbox=getattr(service, "inbox", None), leak=getattr(service, "leak", None))
     server.start()
     return server
 
