@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.12)
+## What it does (0.9.14)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -323,13 +323,16 @@ use a key to talk to the Maintenance Broker. This App changes those keys by itse
    checked against the Broker.
 5. **Commit.** The Broker makes the new key the current one. The old key keeps working for 24 hours (7 days after
    the very first change), so nothing that still uses it is cut off mid-change.
+   For this App's own rotation key the Broker may still answer "not allowed" for a few seconds (each Broker
+   instance keeps its key list for 30 seconds); from 0.9.14 that answer is retried for up to 90 seconds.
 
 **If something fails.** Anything before step 5 is undone:
 - the old key goes back into the App (restarted again only if it was running);
 - the Broker forgets the new key;
 - the old key works throughout.
 
-One failed night is simply tried again the next night. Two failures in a row send you one message and appear in the
+One failed night is simply tried again the next night. An App without a Broker key (reported "SKIPPED") is looked at
+once per key cycle, not every night (0.9.14). Two failures in a row send you one message and appear in the
 morning summary. If something besides the App still uses an old key after a change, you get one message too.
 
 **What you are asked.** Once, in the daytime, before the very first change: "Start automatic key changes?"

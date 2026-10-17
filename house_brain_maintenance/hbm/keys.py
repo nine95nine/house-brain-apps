@@ -318,6 +318,8 @@ class KeyRotator:
                 continue
             if now - float(rec.get("last_at") or 0) < RETRY_AFTER_FAILURE:
                 continue
+            if rec.get("last") == SKIPPED and now - float(rec.get("last_at") or 0) < self.p.rotate_days * 86400:
+                continue                        # 0.9.14: an App without a key is looked at once per key cycle
             if not isinstance(at, (int, float)) or now - at >= self.p.rotate_days * 86400:
                 out.append(role)
         return out
@@ -468,13 +470,27 @@ class KeyRotator:
         facts.update(old_prefix=fingerprint(old)[:12], new_prefix=fingerprint(new)[:12])
         try:
             broker.rotate(old, "rotation", fingerprint(new))
-            broker.commit(new, "rotation", fingerprint(new))       # proof of possession: signed with the new key
+            self._commit_self(broker, new)                          # proof of possession: signed with the new key
         except (BrokerError, net.NetError) as err:
             return self._recover(self._doc(), reason=f"rotation-key change failed ({err})")
         doc = self._doc()
         doc["rotation_key"], doc["rotation_fp"] = new, fingerprint(new)
         doc.pop("inflight", None)
         return self._record(doc, "rotation", rid, DONE, "this App's rotation key was changed", facts, rotated=True)
+
+    def _commit_self(self, broker: Broker, new: str) -> None:
+        """0.9.14 (live 2026-10-17, #454 6232092258: HTTP 401): another Broker instance may still hold the registry
+        from before the rotate for up to 30 s (its per-isolate cache), so it does not know the new key yet. A 401 is
+        retried until ``probe_wait``; any other answer, or a 401 after it, ends the change (then rolled back)."""
+        deadline = self.clock() + self.p.probe_wait
+        while True:
+            try:
+                broker.commit(new, "rotation", fingerprint(new))
+                return
+            except BrokerError as err:
+                if err.status != 401 or self.clock() >= deadline:
+                    raise
+            self.sleep(self.p.poll)
 
     def _await_probe(self, broker: Broker, key: str, role: str) -> bool:
         deadline = self.clock() + self.p.probe_wait

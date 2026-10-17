@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.14
+
+Automatic key changes: two fixes (owner pop-up 2026-10-17 "Build 0.9.13", renumbered 0.9.14; Work Board #942
+claim 6235517779). Contains 0.9.13 unchanged otherwise. The "Suspected leak?" one-tap change of the house keys
+runs through the same path, so it gets the same retry.
+
+- **This App's own rotation key.** Live 2026-10-17 (#454 6232092258) its change ended ROLLED_BACK with "Broker HTTP
+  401"; the old key stayed and worked. The Broker keeps its key list in a 30-second cache per instance, and the
+  change's proof (signed with the new key) can reach an instance that has not seen the new key yet. A 401 there is
+  now retried every few seconds for up to 90 seconds, like the other key changes already wait. Any other answer
+  still stops and rolls back at once.
+- **An App without a Broker key** (AI Access today) was looked at, and reported "SKIPPED", every night. It is now
+  looked at once per key cycle (90 days by default); "Rotate keys now" still reaches it at once.
+
 ## 0.9.13
 
 Suspected leak? page (Credential Autopilot follow-up, owner pop-up 2026-10-07 "Both"; Work Board #942 6235508959).
