@@ -23,6 +23,11 @@ An AI can also ask to **look something up** (for example current sensor readings
 **"approve lookup?"** showing the exact read-only template; after you approve, the result is posted to
 the GitHub issue. Lookups can never change anything.
 
+From 0.3.29 a lookup can also read the **Z-Wave settings** (configuration parameters) of one device, named by
+one of its entities. The approval message says so and names the entity. The Deployer asks Z-Wave JS for the
+values it already holds (no message is sent to the device, nothing is written) and posts only each parameter's
+number, name, value, unit and default.
+
 ## What it can and cannot do
 
 - Generic deployments write only `/config/packages/<name>.yaml` files and keep the old copy as `<name>.yaml[.tag].bak`.

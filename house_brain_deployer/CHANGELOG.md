@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.29 — 2026-10-18 (read-only Z-Wave configuration lookup; owner pop-up "This chat builds it")
+
+- Why: the evap auto-off design (#912) needs the ZEN16 timer parameters 6–11 and 15–20. Home Assistant exposes
+  no configuration entities for it (lookup #140 6198135273 found none), and no record holds the values.
+- An owner-approved lookup (`house_brain_lookup_request.v1`) may add `zwave_config_entity` (an entity id). After the
+  owner's Approve, and only then, the Deployer resolves that entity's device through the read-only template
+  `device_id()` and sends exactly one WebSocket command, `zwave_js/get_config_parameters`, for that device.
+  Z-Wave JS answers from the values it already holds: no radio traffic, no write.
+- The WebSocket allowlist gains only that command, with exactly `type` and one 32-hex `device_id`. Every Z-Wave
+  write or refresh command stays refused (`set_config_parameter`, `set_raw_config_parameter`,
+  `refresh_node_values`, ...).
+- Output is projected to parameter number (and sub-key), label, value, unit and default; descriptions and all
+  other metadata are dropped; at most 200 parameters. The approval message names the entity.
+- Unknown entity: reported as "no device found", no Z-Wave read. Without the new field a lookup is exactly 0.3.28.
+- Tests: L1 guard/parse/projection, L4 mimic (approved read changes nothing; reject, no answer and a forged user
+  read nothing; unknown entity reads nothing); mutants ZC01–ZC07.
+
 ## 0.3.28 — 2026-10-17 (AppArmor reads for the history move; owner pop-up "Build 0.3.28")
 
 - M4 attempt 3 on 0.3.27 passed every history check and the owner's Approve, then ended

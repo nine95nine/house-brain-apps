@@ -7,8 +7,8 @@
     },
     "house_brain_deployer": {
       "files": 63,
-      "source_manifest_sha256": "1db459d771f53890e2a2f87549e06dc8df5dadaf7eb4e4b506893f5383a18fad",
-      "version": "0.3.28"
+      "source_manifest_sha256": "40616331cbe89cd905f0535a749bba3ef4a48a8a232fdb327d43875535217fbf",
+      "version": "0.3.29"
     },
     "house_brain_engineering_inspector": {
       "files": 18,
@@ -32,6 +32,6 @@
     }
   },
   "schema_version": "house_brain_apps_store_manifest.v1",
-  "source_commit": "aa1069229f8b8838cc0ea24d293fb1415b9a6c40",
+  "source_commit": "43144f189f3cb3d2133f3d742c94a39a71b54359",
   "source_repository": "private engineering repository"
 }

@@ -37,7 +37,9 @@ _HTTP_ALLOW: tuple[tuple[str, re.Pattern], ...] = (
     ("POST", re.compile(r"^/core/api/states/" + re.escape(STATUS_ENTITY) + r"$")),
 )
 _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "system_log/list", "config/auth/list",
-                       "http/config", "repairs/list_issues"})
+                       "http/config", "repairs/list_issues",
+                       "zwave_js/get_config_parameters"})  # 0.3.29: read-only, one device per owner-approved lookup
+RE_DEVICE_ID = re.compile(r"^[0-9a-f]{32}$")
 APPROVAL_EVENT = "mobile_app_notification_action"
 
 
@@ -70,6 +72,10 @@ def _ws_guard(msg: dict) -> None:
         raise ForbiddenCall("ws subscribe to non-approval event")
     if kind in ("http/config", "repairs/list_issues") and set(msg) != {"type"}:
         raise ForbiddenCall("ws read takes no parameters")
+    if kind == "zwave_js/get_config_parameters" and (
+            set(msg) != {"type", "device_id"} or not isinstance(msg.get("device_id"), str)
+            or not RE_DEVICE_ID.fullmatch(msg["device_id"])):
+        raise ForbiddenCall("ws zwave config read takes exactly one device id")
 
 
 class HomeAssistant:
@@ -221,6 +227,18 @@ class HomeAssistant:
             return sock.command({"type": "http/config"})
         finally:
             sock.close()
+
+    def zwave_config_parameters(self, device_id: str) -> dict:
+        """0.3.29: ``zwave_js/get_config_parameters`` for one device. Read-only: Z-Wave JS answers from the
+        values it already holds (no radio traffic, no write). The caller projects the result."""
+        sock = self.ws()
+        try:
+            result = sock.command({"type": "zwave_js/get_config_parameters", "device_id": device_id})
+        finally:
+            sock.close()
+        if not isinstance(result, dict):
+            raise HAError("ZWAVE_CONFIG_SHAPE")
+        return result
 
     def http_repair_ids(self) -> set[str]:
         sock = self.ws()
