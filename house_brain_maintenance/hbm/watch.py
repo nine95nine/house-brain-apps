@@ -167,6 +167,7 @@ class Watcher:
                     # bridge kept deliberately non-running) is never restarted or started by a fix.
                     rows.append((a.slug, a.name, a.state, self.ha.app_boot(a.slug)))
             findings += I.from_apps(rows)
+            findings += I.from_skipped_apps(getattr(self.ha, "apps_skipped", {}))   # 0.9.15
         except (HAError, net.NetError, ForbiddenCall):
             failed.append("apps")
         self.disk_now = None

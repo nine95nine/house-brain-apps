@@ -371,6 +371,19 @@ def from_apps(rows: list[tuple[str, str, str, str]]) -> list[Finding]:
     return out
 
 
+def from_skipped_apps(skipped: dict) -> list[Finding]:
+    """0.9.15: installed Apps this App could not read (a slug it does not accept): they are not watched or updated."""
+    n = sum(v for v in (skipped or {}).values() if isinstance(v, int) and v > 0)
+    if not n:
+        return []
+    return [Finding("apps:unreadable", "app", WARNING,
+                    f"{n} installed App(s) could not be read, so they are not watched or updated",
+                    steps=("Nothing is broken by this; every other App is checked as usual.",
+                           "An assistant can see the reason in the status sensor (apps_skipped) and fix the check."),
+                    link=APPS_LINK, facts={"skipped": {k: v for k, v in sorted(skipped.items())
+                                                       if k in ("row", "slug") and isinstance(v, int)}})]
+
+
 def needs_network_check(entries: list[dict]) -> bool:
     """True when an integration waits for a network announcement (worth one read of what HA hears)."""
     return any(_upnp_not_discovered(e) and not e.get("disabled") for e in entries)

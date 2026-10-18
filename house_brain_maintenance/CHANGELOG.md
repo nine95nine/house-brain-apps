@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.15
+
+Installed-App list fix (live 2026-10-18; Work Board #942 claim 6245993918). Contains 0.9.14 unchanged otherwise.
+
+- **What broke.** From 02:18 UTC every job failed "preflight: APPS_SHAPE" (#454 6244651291): one App in the
+  Supervisor's list had a name (slug) this App did not accept, and that one row failed the whole list. Update
+  discovery, the problem watch, staging and key changes could not see any App.
+- **Now.** Slugs with a hyphen are read, as the Supervisor allows them. Any other row this App cannot read is
+  skipped and counted; every other App is watched and updated as usual. While a row is skipped, one problem says
+  how many ("could not be read, so they are not watched or updated") and the status sensor shows `apps_skipped`
+  by reason. The App's name is never shown. "APPS_SHAPE" now says why when the whole list is missing.
+
 ## 0.9.14
 
 Automatic key changes: two fixes (owner pop-up 2026-10-17 "Build 0.9.13", renumbered 0.9.14; Work Board #942

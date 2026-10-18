@@ -113,7 +113,7 @@ from .manifest import STAGE_APPS
 
 STATUS_ENTITY = "sensor.house_brain_maintenance_status"
 APPROVAL_EVENT = "mobile_app_notification_action"
-RE_SLUG = re.compile(r"^[a-z0-9][a-z0-9_]{0,99}$")
+RE_SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,99}$")      # 0.9.15: hyphens too, as the Supervisor allows (live APPS_SHAPE)
 RE_BACKUP_SLUG = re.compile(r"^[a-f0-9]{8,64}$")
 RE_APP_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:-]{0,63}$")
 RE_UUID_HEX = re.compile(r"^[a-f0-9]{32}$")
@@ -720,6 +720,7 @@ class HomeAssistant:
         self.scout = scout_slug
         self.observer = observer_slug
         self.inspector = INSPECTOR_SLUG           # 0.9.9: the store Inspector after an owner-approved switch
+        self.apps_skipped: dict[str, int] = {}    # 0.9.15: rows of the last App list read that were skipped
         self._token = token
         net.register_secret(token)
         self._scout_move: str | None = None       # 0.9.3: the store Scout, only inside copy_scout_to
@@ -1369,17 +1370,22 @@ class HomeAssistant:
 
     # -- update discovery (read-only, projected) -----------------------------------
     def installed_apps(self) -> list[InstalledApp]:
+        """0.9.15 (live 2026-10-18, #454 6244651291: every job failed "APPS_SHAPE"): one row this App cannot read is
+        skipped and counted in ``apps_skipped`` (by reason, never its text) instead of failing the whole list."""
         data = self._supervisor("GET", "/addons")
         rows = data.get("addons") if isinstance(data, dict) else None
         if not isinstance(rows, list):
-            raise HAError("APPS_SHAPE")
-        out = []
+            raise HAError("APPS_SHAPE", "no App list")
+        out: list[InstalledApp] = []
+        skipped: dict[str, int] = {}
         for row in rows[:256]:
             if not isinstance(row, dict):
-                raise HAError("APPS_SHAPE")
+                skipped["row"] = skipped.get("row", 0) + 1
+                continue
             slug, version, latest = row.get("slug"), row.get("version"), row.get("version_latest")
             if not isinstance(slug, str) or not RE_SLUG.fullmatch(slug):
-                raise HAError("APPS_SHAPE")
+                skipped["slug"] = skipped.get("slug", 0) + 1
+                continue
             out.append(InstalledApp(
                 slug=slug,
                 name=str(row.get("name") or slug)[:60],
@@ -1390,6 +1396,7 @@ class HomeAssistant:
                 stage=str(row.get("stage") or "")[:16],
                 repository=str(row.get("repository") or "")[:40],
             ))
+        self.apps_skipped = skipped
         return out
 
     def app_detail(self, slug: str) -> AppDetail:

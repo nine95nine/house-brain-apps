@@ -831,8 +831,13 @@ class Service:
                 LOG.warning("AI problem review read waits: %s", net.redact(str(err))[:200])
         summary = self.watcher.check()
         self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary, **self._ledger_attrs(),
-                                 **self._writer_attrs(),
+                                 **self._writer_attrs(), **self._skipped_attrs(),
                                  **self._waiting_attrs(), **self._keys_attrs()})
+
+    def _skipped_attrs(self) -> dict:
+        """0.9.15: installed-App rows the last list read skipped, by reason ({} when none)."""
+        skipped = getattr(self.ha, "apps_skipped", None) if self.ha is not None else None
+        return {"apps_skipped": dict(skipped)} if isinstance(skipped, dict) and skipped else {}
 
     def _waiting_attrs(self) -> dict:
         """0.7.2: updates asked and not answered (or reviewed and waiting for the lead time), from this App's own

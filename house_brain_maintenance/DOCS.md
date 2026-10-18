@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.14)
+## What it does (0.9.15)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -300,6 +300,13 @@ back and the store is refreshed. The result is posted on the tracking issue.
 Reject is final for that version. No answer changes nothing; ask again with a new request. It counts toward
 `max_approval_requests_per_day`. The App needs the folder permissions `addons` and `share` (read-write) for this;
 its AppArmor profile lets it write only those three App folders and the backup folder.
+
+## Installed Apps it cannot read — from 0.9.15
+
+If the Supervisor lists an App whose name (slug) this App does not accept, that one App is skipped and counted.
+Every other App is still watched and updated. You get one problem, "N installed App(s) could not be read, so they
+are not watched or updated", and the status sensor shows `apps_skipped`. Nothing about that App is shown. Before
+0.9.15 one such App stopped every job ("APPS_SHAPE", live 2026-10-18).
 
 ## Automatic Broker keys — from 0.8.0
 
