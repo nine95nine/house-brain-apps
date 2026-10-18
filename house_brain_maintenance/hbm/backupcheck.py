@@ -73,7 +73,11 @@ def completeness(inventory: list[dict], running: list[str], names: dict[str, str
                              "every device).",
                              "Settings -> System -> Backups -> Backup settings: include all Apps in automatic backups, "
                              "or make a full backup now."),
-                      link=I.BACKUPS_LINK, facts={"missing": missing[:20], "backup_date": full["date"][:25]})]
+                      link=I.BACKUPS_LINK, facts={"missing": missing[:20], "backup_date": full["date"][:25]},
+                      done="Nothing: I never change your backup settings.",
+                      todo=("Settings -> System -> Backups -> Backup settings: include all Apps, or make a full "
+                            "backup now.",),
+                      if_ignored="After a restore those Apps would start empty.")]
 
 
 def radio_freshness(inventory: list[dict], installed: list[str], names: dict[str, str], now: float,
@@ -92,7 +96,10 @@ def radio_freshness(inventory: list[dict], installed: list[str], names: dict[str
                              steps=(f"{name} holds your device network; without a recent backup a dead stick or SD "
                                     "card means re-pairing every device.",
                                     "Include it in the automatic backups (Settings -> System -> Backups)."),
-                             link=I.BACKUPS_LINK, facts={"app": slug}))
+                             link=I.BACKUPS_LINK, facts={"app": slug},
+                             done="Nothing: I never change your backup settings.",
+                             todo=("Include it in the automatic backups (Settings -> System -> Backups).",),
+                             if_ignored="A dead stick or SD card would mean re-pairing every device."))
     return out
 
 
@@ -109,13 +116,19 @@ def automatic_health(auto: dict | None, now: float) -> list[I.Finding]:
                                     "unreachable backup location).",
                                     "The next automatic backup is tried at its usual time."),
                              link=I.BACKUPS_LINK, facts={"last_attempted": str(auto.get("last_attempted"))[:25],
-                                                         "last_completed": str(auto.get("last_completed"))[:25]}))
+                                                         "last_completed": str(auto.get("last_completed"))[:25]},
+                             done="Nothing: the next automatic backup is tried at its usual time.",
+                             todo=("Settings -> System -> Backups shows why it failed.",),
+                             if_ignored="If the cause stays, the next one fails too."))
     for agent in sorted(auto.get("agent_errors") or [])[:5]:
         out.append(I.Finding(f"backup:agent:{agent}", "backup", I.WARNING,
                              f"A backup location cannot be read: {agent}"[:160],
                              steps=("Backups stored there may be missing or unreachable.",
                                     "Check that location under Settings -> System -> Backups -> Locations."),
-                             link=I.BACKUPS_LINK, facts={"agent": agent}))
+                             link=I.BACKUPS_LINK, facts={"agent": agent},
+                             done="Nothing: I never change backup locations.",
+                             todo=("Check that location under Settings -> System -> Backups -> Locations.",),
+                             if_ignored="Backups stored there may be missing when you need them."))
     return out
 
 

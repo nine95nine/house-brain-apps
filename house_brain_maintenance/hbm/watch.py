@@ -117,6 +117,7 @@ class Watcher:
         # 0.9.12 reviewer watchdog: (name, first offered) of waiting updates without an AI review, None when not known
         self.review_waits: Callable[[], list | None] | None = None
         self.queued: list[str] = []                           # 0.9.12: problem keys in the queue line being posted
+        self.messenger = None                                 # 0.9.18: kept messages + pushes (set by the Service)
 
     # -- state -------------------------------------------------------------------------
     def _state(self) -> dict:
@@ -305,6 +306,7 @@ class Watcher:
                 continue
             if f.action and not self.s.dry_run:
                 rec["alerted"] = True           # announced through the fix offer below
+                self._keep(f)                   # 0.9.18: kept in the Messages list too
             elif f.severity == I.CRITICAL or f.source in PUSH_ONCE_SOURCES:
                 push_now.append(f)
                 if f.source in PUSH_ONCE_SOURCES:
@@ -320,6 +322,7 @@ class Watcher:
                     st["log_reported"][f.key] = now
                 st["summary"].append(self._summary_item(f))
                 rec["alerted"] = True
+                self._keep(f)                   # 0.9.18: in the morning summary and kept in the Messages list
         for key in list(st["open"]):
             rec = st["open"][key]
             if key in current or self._source_of(rec) in skipped_sources:
@@ -329,6 +332,8 @@ class Watcher:
             del st["open"][key]
             st["declined"].pop(key, None)
             st["asked"].pop(key, None)
+            if self.messenger is not None:      # 0.9.18: its message says "resolved" (no new push)
+                self.messenger.store.resolve(key)
         for f in push_now[:MAX_PUSH_PER_CHECK]:
             self._alert(f)
             st["open"][f.key]["alerted"] = True
@@ -341,6 +346,7 @@ class Watcher:
         self._maybe_backup_report(now)
         self._maybe_health_score(now)
         self._maybe_housekeeping_report(now)
+        self._messages_tick()                                  # 0.9.18
         open_count = sum(1 for r in self._state()["open"].values() if r.get("alerted"))
         return {"open_problems": open_count, "unreadable": sorted(failed), "fix": outcome}
 
@@ -379,7 +385,7 @@ class Watcher:
                 self.ai_activity_now = None
             else:
                 self.ai_activity_now = st.get("attrs") or {}
-                out += I.from_activity(self.ai_activity_now.get("flags"))
+                out += I.from_activity(self.ai_activity_now.get("flags"), self.ai_activity_now.get("providers"))
         if self.key_findings is not None:
             try:
                 out += self.key_findings()
@@ -456,9 +462,14 @@ class Watcher:
             st["open"][k]["escalated"] = True
         self.j.save_doc(DOC, st)
         names = "; ".join(str(r.get("title", k))[:60] for k, r, _ in due[:4])
-        approval.inform(self.ha, self.s.notify_service, "Maintenance: still not fixed after a week",
-                        f"{len(due)} open {PR.ESCALATE_DAYS}+ days: {names}. Open the Maintenance page or GitHub "
-                        "for the fix.", url=getattr(self.s, "open_url", None))
+        old = (f"{len(due)} open {PR.ESCALATE_DAYS}+ days: {names}. Open the Maintenance page or GitHub "
+               "for the fix.")
+        self._say("summary", "Maintenance: still not fixed after a week",
+                  happened=f"{len(due)} open {PR.ESCALATE_DAYS}+ days: {names}.",
+                  done="Nothing new: each one is in your Messages list with its steps.",
+                  todo=("Open each one in your Messages list and follow its steps.",),
+                  if_ignored="They stay open and are listed again each Sunday.", old_text=old,
+                  url=getattr(self.s, "open_url", None))
         self.j.audit("issues", "PROBLEM_ESCALATED", items=len(due))
 
     def _maybe_still_open(self, now: float) -> None:
@@ -475,7 +486,10 @@ class Watcher:
         text, phone = PR.digest_text(items, self.problem_ai, VERSION)
         self.queued = [n["key"] for n in PR.queue_entries([(k, str(r.get("title", k)), "") for k, r, _ in items],
                                                           self.problem_ai)]
-        approval.inform(self.ha, self.s.notify_service, "Maintenance: still open this week", phone)
+        opened = len(self.messenger.store.open_items()) if self.messenger is not None else None
+        self._say("summary", "Maintenance: still open this week",
+                  happened=phone + (f"\nOpen messages: {opened} (Maintenance page -> Messages)." if opened else ""),
+                  done="Nothing new: this is the weekly list.", old_text=phone)
         self.j.audit("issues", "STILL_OPEN_DIGEST", items=len(items))
         self._post(I.scrub(text, 60000))
 
@@ -528,12 +542,57 @@ class Watcher:
         self.j.save_doc(PR.INSTALLS_DOC, {"installs": PR.note_install(installs if isinstance(installs, list) else [],
                                                                       item, apps, domains, self.clock())})
 
+    def _say(self, kind: str, title: str, *, happened: str = "", done: str = "", todo=(), if_ignored: str = "",
+             severity: str = "info", key: str = "", link: str = "", detail=(), push: bool = True,
+             old_text: str = "", url: str | None = None) -> None:
+        """0.9.18: keep the message, then push it (its own tag, a tap opens the Messages list). Without a message
+        store (older wiring) the push is the one before 0.9.18 (``old_text``)."""
+        m = self.messenger
+        if m is None:
+            if push:
+                approval.inform(self.ha, self.s.notify_service, title[:120], (old_text or happened)[:900], url=url)
+            return
+        msg = m.store.add(kind, title, happened=happened, done=done, todo=todo, if_ignored=if_ignored,
+                          severity=severity, key=key, link=link, detail=detail)
+        if push:
+            m.send(msg, critical=severity == I.CRITICAL)
+
+    def _keep(self, f: I.Finding) -> None:
+        """0.9.18: a problem that goes only into the morning summary (or a fix offer) is still kept as a message."""
+        if self.messenger is not None:
+            self._say(self._kind(f), f"Problem: {f.title}", **self._parts(f), push=False)
+
+    @staticmethod
+    def _kind(f: I.Finding) -> str:
+        return "ai" if f.source in ("ai_activity", "credential_connector") else "problem"
+
+    @staticmethod
+    def _parts(f: I.Finding) -> dict:
+        return {"happened": f.detail[0] if f.detail else "", "done": I.done_text(f), "todo": I.owner_steps(f),
+                "if_ignored": f.if_ignored, "severity": f.severity, "key": f.key, "link": f.link or "",
+                "detail": f.detail}
+
+    def _messages_tick(self) -> None:
+        """0.9.18: handled marks, the overnight hold, repeats of unhandled CRITICAL problems and the bell."""
+        m = self.messenger
+        if m is None or self.s.dry_run:
+            return
+        for step in (m.store.apply_handled, m.flush_held, m.repeat_critical, m.sync_bell):
+            try:
+                step()
+            except Exception as err:  # noqa: BLE001 - messages never stop the problem watch
+                self.j.audit("messages", "MESSAGES_FAILED", step=step.__name__, error=type(err).__name__)
+
     def _alert(self, f: I.Finding) -> None:
         item = self._summary_item(f)
         steps = " ".join(f.steps[:2])
         extra = f" Fix available: {f.action.label} (practice mode: not offered)." if f.action else ""
-        approval.inform(self.ha, self.s.notify_service, f"Problem: {f.title}"[:120],
-                        (steps + extra + (f"\n{f.link}" if f.link else ""))[:900])
+        parts = self._parts(f)
+        if extra:                       # practice mode: the fix is not offered, so it is never claimed
+            parts["done"] = f"Nothing: practice mode is on, so I do not offer the fix ({f.action.label})."
+            parts["detail"] = tuple(parts["detail"]) + (extra.strip(),)
+        self._say(self._kind(f), f"Problem: {f.title}", **parts,
+                  old_text=steps + extra + (f"\n{f.link}" if f.link else ""))
         self.j.audit(f.key[:80], "PROBLEM_ALERT", severity=f.severity, source=f.source)
         self._post(self._markdown("problem found", [item]))
 
@@ -631,7 +690,8 @@ class Watcher:
         doc["month"] = f"{lt.tm_year:04d}-{lt.tm_mon:02d}"
         self.j.save_doc(K.DOC, doc)
         self.j.audit("housekeeping", "HOUSEKEEPING_REPORT")
-        approval.inform(self.ha, self.s.notify_service, "Maintenance: monthly housekeeping report", phone)
+        self._say("summary", "Maintenance: monthly housekeeping report", happened=phone,
+                  done="Nothing: this is a report.", old_text=phone)
         self._post(text)
 
     def _maybe_health_score(self, now: float) -> None:
@@ -652,7 +712,8 @@ class Watcher:
         doc["scores"] = (history + [[doc["score_day"], score]])[-12:]
         self.j.save_doc(P.DOC, doc)
         self.j.audit("health", "HEALTH_SCORE", score=score)
-        approval.inform(self.ha, self.s.notify_service, "Maintenance: weekly health score", phone)
+        self._say("summary", "Maintenance: weekly health score", happened=phone, done="Nothing: this is a report.",
+                  old_text=phone)
         self._post(text)
 
     def _maybe_backup_report(self, now: float) -> None:
@@ -672,7 +733,8 @@ class Watcher:
         lt = time.localtime(now)
         self.j.save_doc(B.REPORT_DOC, {"month": f"{lt.tm_year:04d}-{lt.tm_mon:02d}", "at": now})
         self.j.audit("backups", "BACKUP_REPORT")
-        approval.inform(self.ha, self.s.notify_service, "Maintenance: monthly backup report", phone)
+        self._say("summary", "Maintenance: monthly backup report", happened=phone, done="Nothing: this is a report.",
+                  old_text=phone)
         self._post(text)
 
     def _maybe_summary(self, now: float) -> None:
@@ -696,7 +758,10 @@ class Watcher:
         if cleared:
             lines.append(f"Fixed/cleared: {len(cleared)} ({'; '.join(c[:40] for c in cleared[:3])})")
         title = f"Maintenance: {total} to look at" if items else "Maintenance: problems cleared"
-        approval.inform(self.ha, self.s.notify_service, title, "\n".join(lines)[:900])
+        self._say("summary", title, happened="\n".join(lines)[:600],
+                  done="Nothing new: each item is in your Messages list with its own steps.",
+                  todo=("Open your Messages list and follow each item's steps.",) if items else (),
+                  old_text="\n".join(lines)[:900])
         self.j.audit("issues", "PROBLEM_SUMMARY", items=len(items), cleared=len(cleared))
         self._post(self._markdown("morning summary", items, cleared))
 
@@ -761,7 +826,10 @@ class Watcher:
         self.j.audit(rid, "FIX_" + outcome, fix=f.action.kind, note=note[:200])
         title = f"Maintenance: {'fixed' if outcome == FIXED else 'not fixed'}"
         body = f"{f.title}\n{note}" + ("" if outcome == FIXED else "\nNext: " + " ".join(f.steps[:2]))
-        approval.inform(self.ha, self.s.notify_service, title, body[:900])
+        self._say("result", title, happened=f.title,
+                  done=f"I ran {f.action.label} (you approved): {note}"[:400],
+                  todo=() if outcome == FIXED else I.owner_steps(f),
+                  if_ignored="" if outcome == FIXED else f.if_ignored, old_text=body)
         item = self._summary_item(f)
         self._post(self._markdown(f"fix {outcome.lower().replace('_', ' ')} ({f.action.label})",
                                   [item | {"detail": item["detail"] + [note]}]))
@@ -841,10 +909,16 @@ class Watcher:
 
     def _plug_left_off(self, entity: str) -> None:
         self.j.audit("fix-power", "POWER_LEFT_OFF", entity=entity)
-        approval.inform(self.ha, self.s.notify_service, "URGENT: pool Wi-Fi extender may be off",
-                        "The power cycle could not confirm the plug is back on. Open Home Assistant and turn on "
-                        f"{entity} (IAquaLink WiFi plug), or plug the extender straight into the wall.\n"
-                        "https://my.home-assistant.io/redirect/entities/")
+        old = ("The power cycle could not confirm the plug is back on. Open Home Assistant and turn on "
+               f"{entity} (IAquaLink WiFi plug), or plug the extender straight into the wall.\n"
+               "https://my.home-assistant.io/redirect/entities/")
+        self._say("problem", "URGENT: pool Wi-Fi extender may be off",
+                  happened="The power cycle could not confirm the plug is back on.",
+                  done="I turned the plug off and on (you approved); it did not report back on.",
+                  todo=(f"Open Home Assistant and turn on {entity} (IAquaLink WiFi plug).",
+                        "Or plug the extender straight into the wall."),
+                  if_ignored="The pool system stays offline.", severity=I.CRITICAL,
+                  link="https://my.home-assistant.io/redirect/entities/", old_text=old)
 
     def _verify(self, f: I.Finding, seconds: float | None = None) -> tuple[str, str]:
         a = f.action

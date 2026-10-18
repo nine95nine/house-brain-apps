@@ -206,7 +206,10 @@ def stalled(waits: list[tuple[str, float]], now: float) -> list[I.Finding]:
                "Nothing installs by itself and your phone is not asked before a review. After 48 hours your phone is "
                "asked about each update anyway.",
                "This clears by itself once the reviews are posted."),
-        facts={"waiting": len(late)})]
+        facts={"waiting": len(late)},
+        done="Nothing installs and your phone is not asked before a review; after 48 hours you are asked anyway.",
+        todo=("Open the \"House Brain Maintenance reviewers\" chat and check its last runs.",),
+        if_ignored="Updates wait up to 48 hours, then your phone asks about each one.")]
 
 
 # -- 0.9.12 after-update tag ----------------------------------------------------------------------------------------

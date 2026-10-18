@@ -102,6 +102,7 @@ class Options:
     digest_hour: int = 8
     recovery_report: bool = True
     safety_notify_services: tuple[str, ...] = ()
+    quiet_hours: str = "22-7"                   # 0.9.18: warning pushes wait until the morning ("" = off)
     liveness_url: str = ""
     liveness_key: str = ""
     liveness_interval_minutes: int = 2
@@ -197,6 +198,7 @@ def load_options(path: str) -> Options:
         recovery_report=raw.get("recovery_report", True) if isinstance(raw.get("recovery_report", True), bool)
         else _bad("recovery_report"),
         safety_notify_services=_safety(raw.get("safety_notify_services", [])),
+        quiet_hours=_quiet(raw.get("quiet_hours", "22-7")),
         **_liveness(raw),
         liveness_interval_minutes=i("liveness_interval_minutes", 2, 30) if "liveness_interval_minutes" in raw else 2,
         extender_plug_entity=_plug(raw.get("extender_plug_entity", "")),
@@ -255,6 +257,18 @@ def _relay_url(value, liveness_url: str = "") -> str:
     if not isinstance(value, str) or not RE_RELAY_CREDENTIAL_URL.fullmatch(value):
         raise OptionsError("relay_credential_url")
     return value
+
+
+def _quiet(value) -> str:
+    """0.9.18: "22-7" (start-end hour, local time), "" or "off" = no quiet hours."""
+    from .messages import parse_quiet
+    if not isinstance(value, str):
+        _bad("quiet_hours")
+    try:
+        parse_quiet(value)
+    except ValueError:
+        _bad("quiet_hours")
+    return value.strip().lower()
 
 
 def _safety(value) -> tuple[str, ...]:
@@ -375,6 +389,22 @@ class Service:
         self.wake = threading.Event()
         self.inbox = Inbox(self.j.dir, self._owner_id, wake=self.wake.set)
         approval.INBOX = self.inbox
+        # 0.9.18 Messages: every push kept (page + bell), own tags, quiet hours, "Handled" (owner pop-ups 2026-10-18)
+        from .messages import Messages, Messenger, parse_quiet
+        self.messages = Messages(self.j)
+        self.messages.owner = self._owner_id
+        self.messenger = Messenger(self.ha, self.messages, self.o.notify_service, open_url=self._open_url,
+                                   quiet=parse_quiet(self.o.quiet_hours))
+
+    def _open_url(self) -> str:
+        """The tap link of every push: the Maintenance page (its Messages list)."""
+        return f"homeassistant://navigate/{self.ha.self_slug()}?server=default"
+
+    def _update_note(self, title: str, message: str) -> None:
+        """0.8.9 "updates waiting" line, 0.9.18: kept in the Messages list with its own tag."""
+        msg = self.messages.add("update", title, happened=message, done="Nothing is installed yet.",
+                                todo=("Nothing yet: your phone asks when an update is ready for your OK.",))
+        self.messenger.send(msg)
 
     def _owner_id(self) -> str | None:
         """The owner's Home Assistant user id (for the page's "Got it"); resolved once, None on failure."""
@@ -465,6 +495,7 @@ class Service:
                                 backup_report=self.o.backup_report, pi_health=self.o.pi_health,
                                 housekeeping=self.o.housekeeping)
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
+            self.watcher.messenger = self.messenger                       # 0.9.18
             if self.o.report_issue and self.o.ai_review:                  # 0.9.6: AI problem reviews
                 from .problems import ProblemReviews
                 self.watcher.problem_ai = ProblemReviews(self.gh, self.j, self.o.report_issue)
@@ -483,8 +514,7 @@ class Service:
                 self.ai = AiReviews(self.gh, self.j, self.o.report_issue)
                 for engine in (self.updater, self.system, self.entities):
                     engine.ai = self.ai
-                self.update_queue = UpdateQueue(self.j, self.report_text, lambda title, msg: approval.inform(
-                    self.ha, self.o.notify_service, title, msg))
+                self.update_queue = UpdateQueue(self.j, self.report_text, self._update_note)
                 self.watcher.review_waits = self.review_waits          # 0.9.12: reviewer watchdog
             for engine in (self.updater, self.system):
                 engine.on_done = self.after.start
@@ -587,9 +617,15 @@ class Service:
         self.j.audit(request_id, "OUTCOME", job=job, outcome=result.outcome, reasons=result.reasons[:5])
         self.status(result.outcome, {"request_id": request_id, "job": job, "version": VERSION,
                                      "dry_run": self.o.dry_run})
-        if notify:
-            approval.inform(self.ha, self.o.notify_service, f"Maintenance: {result.outcome}",
-                            f"{request_id} ({job})\n" + "\n".join(str(r)[:120] for r in result.reasons[:3]))
+        if notify:                                      # 0.9.18: kept in the Messages list, own tag
+            reasons = "; ".join(str(r)[:120] for r in result.reasons[:3])
+            failed = result.outcome in (FAILED, FAILED_MANUAL)
+            msg = self.messages.add(
+                "result", f"Maintenance: {result.outcome}", happened=f"{request_id} ({job})",
+                done=f"{result.outcome}: {reasons}" if reasons else result.outcome,
+                todo=((f"Details are on GitHub issue #{issue}." if issue else "Details are in the App log."),)
+                if failed else (), severity="warning" if failed else "info")
+            self.messenger.send(msg)
         if issue:
             try:
                 self.gh.comment(issue, report_markdown(request_id, job, result, self.o.dry_run))
@@ -1224,7 +1260,8 @@ def start_ingress(service: Service) -> IngressServer | None:
         peer = os.environ.get("HBM_INGRESS_PEER", INGRESS_PEER)
     server = IngressServer(service.board, port=port, allowed_peer=peer, recovery=service.recovery,
                            connector=getattr(service, "connector", None), reask=getattr(service, "reask", None),
-                           inbox=getattr(service, "inbox", None), leak=getattr(service, "leak", None))
+                           inbox=getattr(service, "inbox", None), leak=getattr(service, "leak", None),
+                           messages=getattr(service, "messages", None))
     server.start()
     return server
 
@@ -1256,6 +1293,9 @@ def main() -> int:
         start_ingress(service)
     except OSError as err:
         LOG.warning("approval page unavailable: %s", err)
+    if not service.o.dry_run:                       # 0.9.18: the push button "Handled" (marks a message only)
+        from .messages import HandledListener
+        HandledListener(service.ha, service.messages, service._owner_id, lambda: service.stop).start()
     LOG.info("House Brain Maintenance %s started (dry_run=%s)", VERSION, service.o.dry_run)
     LOG.info("HBM-NATIVE writer_lock %s", " ".join(f"{k}={v}" for k, v in service.writer.identity().items()))
     service.status("STARTED", {"version": VERSION, "dry_run": service.o.dry_run})

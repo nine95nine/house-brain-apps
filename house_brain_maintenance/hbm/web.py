@@ -244,6 +244,8 @@ h1{{font-size:20px}} pre{{white-space:pre-wrap;background:#1d1d1d;padding:12px;b
 button{{width:100%;padding:18px;margin:8px 0;font-size:20px;border:0;border-radius:12px}}
 .a{{background:#2e7d32;color:#fff}} .r{{background:#8e2424;color:#fff}} .m{{color:#aaa;font-size:14px}}
 .card{{background:#1a1a1a;border-radius:12px;padding:12px;margin:12px 0}} a{{color:#8ab4f8}}
+.msg{{background:#1a1a1a;border-radius:12px;padding:4px 12px;margin:12px 0;border-left:4px solid #555}}
+.msg.critical{{border-left-color:#c62828}} .msg.warning{{border-left-color:#f9a825}}
 </style></head><body>{body}</body></html>"""
 
 
@@ -322,6 +324,52 @@ def render_recovery(incidents: list[dict], nonce: str, action: str, labels: dict
     return "".join(out)
 
 
+MESSAGES_SHOWN = 60
+STATE_TEXT = {"open": "open", "handled": "handled by you", "resolved": "resolved", "info": "for your information"}
+
+
+def render_messages(items: list[dict], nonce: str, action: str, base: str, show: str = "all") -> str:
+    """0.9.18 Messages: every push this App sent, newest first, with who does what. "I've handled this" only marks
+    the message; it never switches anything."""
+    e = html.escape
+    if show == "open":
+        items = [m for m in items if m.get("state") == "open"]
+    links = (f'<a href="{e(base)}/?show=open">Open only</a> · <a href="{e(base)}/">All</a>')
+    if not items:
+        return f'<h2 id="messages">Messages</h2><p class="m">{links}</p><p class="m">No messages.</p>'
+    out = [f'<h2 id="messages">Messages</h2><p class="m">{links} · newest first, kept 90 days</p>']
+    for m in items[:MESSAGES_SHOWN]:
+        state = str(m.get("state") or "info")
+        when = _when(float(m.get("at") or 0))
+        sev = str(m.get("severity") or "info")
+        out.append(f'<div id="msg-{e(str(m.get("id", "")))}" class="msg {e(sev)}"><p><b>{e(str(m.get("title", "")))}'
+                   f'</b><br><span class="m">{e(when)} · {e(STATE_TEXT.get(state, state))}</span></p>')
+        if m.get("happened"):
+            out.append(f"<p>{e(str(m['happened']))}</p>")
+        for d in m.get("detail") or []:
+            out.append(f'<p class="m">{e(str(d))}</p>')
+        if m.get("done"):
+            out.append(f"<p><b>Already done:</b> {e(str(m['done']))}</p>")
+        todo = m.get("todo") or []
+        if todo:
+            out.append("<p><b>What you need to do:</b></p><ol>" + "".join(f"<li>{e(str(s))}</li>" for s in todo)
+                       + "</ol>")
+        elif m.get("key") or m.get("done"):
+            out.append("<p><b>What you need to do:</b> nothing; this is for your information.</p>")
+        if m.get("if_ignored"):
+            out.append(f"<p><b>If you do nothing:</b> {e(str(m['if_ignored']))}</p>")
+        if isinstance(m.get("link"), str) and m["link"].startswith("https://"):
+            out.append(f'<p class="m"><a href="{e(m["link"])}" target="_blank" rel="noopener">More</a></p>')
+        if state in ("open", "info") and m.get("key"):
+            out.append(f'<form method="post" action="{e(action)}"><input type="hidden" name="nonce" value="{e(nonce)}">'
+                       f'<input type="hidden" name="id" value="{e(str(m.get("id", "")))}">'
+                       '<button class="a" name="choice" value="handled">I\'ve handled this</button></form>')
+        out.append("</div>")
+    if len(items) > MESSAGES_SHOWN:
+        out.append(f'<p class="m">and {len(items) - MESSAGES_SHOWN} older ones (kept, not shown).</p>')
+    return "".join(out)
+
+
 def render(pending: Pending | None, last: str, action: str, note: str = "", extra: str = "") -> str:
     if pending is None or pending.decision is not None:
         body = "<h1>House Brain Maintenance</h1><p>Nothing is waiting for your approval.</p>"
@@ -344,7 +392,7 @@ def render(pending: Pending | None, last: str, action: str, note: str = "", extr
 
 
 def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connector=None, reask=None, inbox=None,
-                 leak=None):
+                 leak=None, messages=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "hbm"
         sys_version = ""
@@ -383,8 +431,16 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
             items, queued, nonce = reask.snapshot()
             return render_waiting(items, queued, nonce, f"{self._base()}/reask")
 
+        def _messages(self) -> str:
+            if messages is None:
+                return ""
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            show = "open" if (query.get("show") or [""])[0] == "open" else "all"
+            return render_messages(messages.items(), messages.nonce, f"{self._base()}/messages/handled",
+                                   self._base(), show)
+
         def _extra(self) -> str:
-            waiting = self._waiting()
+            waiting = self._waiting() + self._messages()
             if recovery is None:
                 return waiting
             from .recovery import CHECK_LABELS
@@ -465,9 +521,11 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
             route = urllib.parse.urlsplit(self.path).path
             if self._github_post(route):
                 return None
-            if route not in ("/decide", "/recovery/ack", "/reask", "/inbox/confirm", "/inbox/decide", "/leak") \
+            if route not in ("/decide", "/recovery/ack", "/reask", "/inbox/confirm", "/inbox/decide", "/leak",
+                             "/messages/handled") \
                     or (route == "/recovery/ack" and recovery is None) or (route == "/reask" and reask is None) \
-                    or (route.startswith("/inbox/") and inbox is None) or (route == "/leak" and leak is None):
+                    or (route.startswith("/inbox/") and inbox is None) or (route == "/leak" and leak is None) \
+                    or (route == "/messages/handled" and messages is None):
                 return self._send(404, "not found")
             try:
                 length = int(self.headers.get("Content-Length") or "0")
@@ -497,6 +555,20 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
                          "reject": "Declined: it is not offered again."}.get(chosen, "") if status == 200
                         else inbox_notes.get(status, ""))
                 return self._send(status, render(pending, last, self._action(), note, extra=self._extra()))
+            if route == "/messages/handled":           # 0.9.18: marks the message only, never switches anything
+                try:
+                    owner_fn = getattr(messages, "owner", None)
+                    owner = owner_fn() if callable(owner_fn) else None
+                except Exception:  # noqa: BLE001 - unknown owner: nobody may mark
+                    owner = None
+                status = (messages.request_handled(nonce, user, owner, (form.get("id") or [""])[0])
+                          if choice == "handled" else 400)
+                pending, last = board.snapshot()
+                notes = {200: "Marked as handled.", 403: "Only the owner account can do this.",
+                         409: "This button has expired; reload the page.", 404: "That message is gone; reload.",
+                         400: "Unknown choice."}
+                return self._send(status, render(pending, last, self._action(), notes.get(status, ""),
+                                                 extra=self._extra()))
             if route == "/leak":
                 status = leak.request(nonce, user, choice)
                 leak_notes = {200: "Started: the house keys change on the next checks, one App at a time.",
@@ -542,9 +614,9 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
 class IngressServer:
     def __init__(self, board: ApprovalBoard, host: str = "0.0.0.0", port: int = 8099,  # noqa: S104 - ingress
                  allowed_peer: str = INGRESS_PEER, recovery=None, connector=None, reask=None, inbox=None,
-                 leak=None) -> None:
+                 leak=None, messages=None) -> None:
         self.httpd = ThreadingHTTPServer((host, port), make_handler(board, allowed_peer, recovery, connector, reask,
-                                                                    inbox, leak))
+                                                                    inbox, leak, messages))
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)

@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.17)
+## What it does (0.9.18)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -252,6 +252,42 @@ Tap **Got it** on the page when you have read it. It only reads; it never fixes 
 | Check the Broker (0.5.3, no approval) | Reads the Broker's public health page and reports its version. Nothing is sent, started or changed. |
 | Install a House Brain App source (0.7.4, one approval) | See "One-tap install of a House Brain App" below. |
 | App log window (0.5.4, no approval) | Reads one House Brain App's log for one boot (this boot or up to 5 before), keeps only the lines in a UTC time window (at most 6 hours) that contain one of up to 5 words, removes secrets, addresses and long ids, and posts at most 200 lines to the tracking issue. Only Apps named `local_house_brain_…` or `<store>_house_brain_…` that are installed; never this App. Nothing is written to any App. |
+
+## Your messages — from 0.9.18
+
+Owner request 2026-10-18: "I want all the messages that I get somehow available for me to view within Home Assistant
+once I click them on my pop-up ... with the solution that the AI took, or with the solution that I need to take."
+
+**Every message says who does what.** Each push and each kept message has:
+- **What happened**: one line.
+- **Done**: what this App or the system already did, or "Nothing yet". It never claims an action that was not taken.
+- **You**: what you need to do, or "Nothing: this is for your information".
+- **If you do nothing**: what happens then, when that matters.
+
+**Where to find them.**
+- **Tap any Maintenance push.** It opens the Maintenance page. Its **Messages** list shows every message from the last
+  90 days, newest first (at most 500). "Open only" shows the problems still open.
+- **The bell.** Each open problem is also a Home Assistant notification (the bell, on your phone and computer). It
+  goes away by itself when the problem clears or when you mark it handled. At most 20 are shown at once. If you
+  dismiss one in the bell, or Home Assistant restarts, it stays in the Messages list.
+- Warnings that only go into the morning summary are kept too, so you can read each one in full.
+
+**Handled.** A problem push has a **Handled** button, and each open problem on the page has **I've handled this**.
+- Either one only marks the message (and removes it from the bell).
+- It never switches, fixes or changes anything.
+- Only your owner account counts.
+
+**Pushes no longer replace each other.** Each push has its own tag, and pushes are grouped on your phone by area
+(problems, AI, summaries, results, updates).
+
+**Quiet hours** (option `quiet_hours`, default `22-7`; `off` or empty turns them off).
+- Between those hours (local time) warnings are kept but not pushed. In the morning you get one push: "N message(s)
+  while you slept".
+- Critical problems always come through at once.
+
+**Repeats.** A critical problem you have not marked handled is pushed again every 4 hours, at most 3 times.
+
+**Sunday.** The weekly "still open" push adds "Open messages: N".
 
 ## What it can never do
 

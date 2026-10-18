@@ -205,7 +205,10 @@ class KeyRotator:
                                      f"Automatic key change for {name} did not finish; its old key still works",
                                      steps=(str(rec.get("note") or "")[:200] or "Details are on GitHub issue #454.",
                                             "Nothing to do: it is tried again the next night."),
-                                     facts={"role": role, "last": rec.get("last")}))
+                                     facts={"role": role, "last": rec.get("last")},
+                                     done="The change was undone; the old key keeps working. It is tried again "
+                                          "the next night.", info_only=True,
+                                     if_ignored="It keeps being tried each night; nothing stops working."))
             holder = rec.get(UNKNOWN_HOLDER)
             if isinstance(holder, (int, float)) and now - holder < 7 * 86400:
                 out.append(I.Finding(f"keys:{role}:holder", "credential_keys", I.WARNING,
@@ -213,21 +216,30 @@ class KeyRotator:
                                      steps=("The old key stops working when its grace time ends; whatever still uses "
                                             "it will stop reading or sending then.",
                                             "Details are on GitHub issue #454."),
-                                     facts={"role": role}, announce_clear=False))
+                                     facts={"role": role}, announce_clear=False,
+                                     done=f"{name} itself already uses its new key.",
+                                     todo=("Ask an assistant to look at #454 and find what still uses the old key.",),
+                                     if_ignored="Whatever still uses the old key stops when its grace time ends."))
             at = rec.get("rotated_at")
             if doc.get("first_approved") and isinstance(at, (int, float)) \
                     and now - at > 2 * self.p.rotate_days * 86400:
                 out.append(I.Finding(f"keys:{role}:overdue", "credential_keys", I.WARNING,
                                      f"{name}'s Broker key was not changed for {int((now - at) / 86400)} days",
                                      steps=("Automatic key changes keep failing or are paused; details on #454.",),
-                                     facts={"role": role}))
+                                     facts={"role": role},
+                                     done="The old key keeps working; changes are tried each night.",
+                                     todo=("Ask an assistant to look at #454.",),
+                                     if_ignored="The key stays in use longer than planned."))
         created = doc.get("created_at")
         if not doc.get("enrolled") and isinstance(created, (int, float)) and now - created > 3 * 86400:
             out.append(I.Finding("keys:not_enrolled", "credential_keys", I.WARNING,
                                  "Automatic key changes are not set up yet",
                                  steps=("Waiting for the Broker update that knows this App's rotation key "
                                         "(an AI files it; you tap Promote once).",),
-                                 facts={"rotation_fingerprint_prefix": str(doc.get("rotation_fp", ""))[:12]}))
+                                 facts={"rotation_fingerprint_prefix": str(doc.get("rotation_fp", ""))[:12]},
+                                 done="Nothing changes until the Broker knows this App's rotation key.",
+                                 todo=("When the Broker update is offered, tap Promote once.",),
+                                 if_ignored="Keys are not changed automatically."))
         return out
 
     # -- requests ---------------------------------------------------------------------------------------

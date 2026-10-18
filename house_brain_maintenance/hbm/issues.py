@@ -176,6 +176,41 @@ class Finding:
     action: Action | None = None
     announce_clear: bool = True
     facts: dict = field(default_factory=dict, compare=False, hash=False)
+    # 0.9.18 (owner 2026-10-18: "with the solution that the AI took, or with the solution that I need to take"):
+    # every message says what was already done, what the owner needs to do (or nothing) and what happens if not.
+    done: str = ""                       # what this App (or the system) already did; "" = default_done()
+    todo: tuple[str, ...] | None = None  # the owner's steps; None = ``steps``
+    if_ignored: str = ""                 # the consequence of doing nothing ("" = not stated)
+    info_only: bool = False              # nothing for the owner to do
+
+
+NOTHING_DONE = "Nothing yet: I only noticed it."
+NOTHING_TO_DO = "Nothing: this is for your information."
+
+
+def done_text(f: Finding) -> str:
+    """0.9.18: what was already done. Never claims an action that was not taken."""
+    if f.done:
+        return f.done
+    if f.action is not None:
+        return f"Nothing yet. I can {f.action.label} for you: I ask you first."
+    return NOTHING_DONE
+
+
+def owner_steps(f: Finding) -> tuple[str, ...]:
+    """0.9.18: what the owner needs to do; () = nothing."""
+    if f.info_only:
+        return ()
+    return tuple(f.todo if f.todo is not None else f.steps)
+
+
+def push_text(f: Finding, limit: int = 300) -> str:
+    """0.9.18: the phone text: what I did, what you do (first step), what happens if you do nothing."""
+    steps = owner_steps(f)
+    lines = [f"Done: {done_text(f)}", f"You: {steps[0] if steps else NOTHING_TO_DO}"]
+    if f.if_ignored:
+        lines.append(f"If you do nothing: {f.if_ignored}")
+    return "\n".join(lines)[:limit]
 
 
 # Log errors that only say "the internet/DNS was unreachable" (live summary 2026-10-02: Sense, NWS, ecobee and
@@ -239,6 +274,20 @@ def scrub(text: str, limit: int = 600) -> str:
     for pattern, repl in _SCRUB:
         out = pattern.sub(repl, out)
     return out[:limit]
+
+
+def scrub_message(text: str, limit: int = 600) -> str:
+    """0.9.18: the same scrub for a kept message, minus the keyword rule: this App's own words ("GitHub token expires
+    in 29 days") stay readable. Secret shapes (``net.redact``), addresses and long identifiers are still removed."""
+    out = RE_TOKEN_SHAPES.sub("[redacted]", net.redact(str(text)))
+    for pattern, repl in _SCRUB[1:]:
+        out = pattern.sub(repl, out)
+    return out[:limit]
+
+
+# 0.9.18: token shapes removed from a kept message whatever surrounds them (GitHub tokens, JWTs, bearer values).
+RE_TOKEN_SHAPES = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+                             r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})")
 
 
 # -- detectors --------------------------------------------------------------------------
@@ -378,6 +427,8 @@ def from_skipped_apps(skipped: dict) -> list[Finding]:
         return []
     return [Finding("apps:unreadable", "app", WARNING,
                     f"{n} installed App(s) could not be read, so they are not watched or updated",
+                    done="Every other App is still checked and updated as usual.",
+                    if_ignored="That App is not watched or updated by Maintenance.",
                     steps=("Nothing is broken by this; every other App is checked as usual.",
                            "An assistant can see the reason in the status sensor (apps_skipped) and fix the check."),
                     link=APPS_LINK, facts={"skipped": {k: v for k, v in sorted(skipped.items())
@@ -790,7 +841,9 @@ def from_stopped_apps(stopped_since: dict[str, float], names: dict[str, str], no
                                       " space. Nothing is removed by this App.",
                                       "Kept stopped on purpose (like a commissioning bridge)? Ignore this; it is"
                                       " said only once."),
-                               link=APPS_LINK, announce_clear=False, facts={"stopped_days": days}))
+                               link=APPS_LINK, announce_clear=False, facts={"stopped_days": days},
+                               done="Nothing: I never start, stop or remove an App by myself.",
+                               if_ignored="Nothing changes; it keeps using its disk space."))
     return out
 
 
@@ -827,10 +880,17 @@ def from_credentials(app: str, summary: dict | None) -> list[Finding]:
         out.append(Finding(f"cred:{app}:app:{error}", source, WARNING if fallback or transient else CRITICAL,
                            f"{name}: GitHub App sign-in failing ({error})"
                            + (" - the old token is standing in" if fallback else ""),
-                           steps=(text, f"Open the {page} for the exact fix."), facts={"code": error}))
+                           steps=(text, f"Open the {page} for the exact fix."), facts={"code": error},
+                           done=("The old token is standing in, so nothing has stopped." if fallback else
+                                 "Nothing: I keep trying to sign in on every check."),
+                           info_only=transient,
+                           if_ignored=("This clears by itself." if transient else
+                                       f"{name} cannot read or write GitHub requests until it is fixed.")))
     if not summary.get("app_connected") and not summary.get("pat_set"):
         out.append(Finding(f"cred:{app}:none", source, CRITICAL, f"{name}: not connected to GitHub",
-                           steps=(f"Open the {page} and tap Connect to GitHub.",)))
+                           steps=(f"Open the {page} and tap Connect to GitHub.",),
+                           done="Nothing: only you can connect it.",
+                           if_ignored=f"{name} cannot read or write GitHub requests."))
     days = summary.get("pat_days_left")
     if summary.get("pat_set") and not app_ok and isinstance(days, int) and not isinstance(days, bool):
         step = credential_step(days)
@@ -844,7 +904,10 @@ def from_credentials(app: str, summary: dict | None) -> list[Finding]:
                                       "Read-only; Issues: Read and write) and paste it into the App's Configuration "
                                       "-> github_token. Never screenshot that page."),
                                link=PAT_SETTINGS_LINK, announce_clear=False,
-                               facts={"days_left": days, "expires": when}))
+                               facts={"days_left": days, "expires": when},
+                               done="Nothing: only you can renew or replace it.",
+                               if_ignored=(f"{name} cannot read or write GitHub requests." if step == 0 else
+                                           f"On {when} {name} stops reading and writing GitHub requests.")))
     return out
 
 
@@ -893,7 +956,9 @@ def from_connectors(providers: dict | None) -> list[Finding]:
                                f"{label} connector: its House Brain sign-in was refused, so {label} cannot read "
                                "the house",
                                steps=(f"Open {link} and reconnect House Brain (read-only); sign in when asked.",),
-                               link=link, facts={"connector": name}))
+                               link=link, facts={"connector": name},
+                               done="Nothing: only you can sign in again.",
+                               if_ignored=f"{label} cannot read the house until you reconnect."))
             continue
         days = row.get("days_left")
         if state != "EXPIRING_SOON" or not isinstance(days, int):
@@ -910,7 +975,11 @@ def from_connectors(providers: dict | None) -> list[Finding]:
                      f"If {label} asks you to reconnect, open {link} and sign in again.")
         out.append(Finding(f"connector:{name}:{step}", "credential_connector", CRITICAL if step <= 7 else WARNING,
                            title, steps=steps, link=link, announce_clear=False,
-                           facts={"connector": name, "days_left": days, "expires_on": row.get("expires_on")}))
+                           facts={"connector": name, "days_left": days, "expires_on": row.get("expires_on")},
+                           done="Nothing: only you can keep the sign-in alive.",
+                           if_ignored=(f"{label} cannot read the house until you reconnect." if step == 0 else
+                                       f"In {days} day{'s' if days != 1 else ''} {label} can no longer read the "
+                                       "house until you reconnect.")))
     return out
 
 
@@ -933,8 +1002,29 @@ ACTIVITY_FLAG_TEXT = {
 AI_KILL_SWITCH_TILE = "input_select.house_brain_ai_kill_switch"
 
 
-def from_activity(flags: list | None) -> list[Finding]:
-    """``flags``: the projected flags of sensor.house_brain_ai_activity (``ha.project_activity``)."""
+# 0.9.18: what the system already did for each flag, and what doing nothing means.
+ACTIVITY_DONE = {
+    "MANY_REFUSED": "The refused requests were blocked. {label} still has read-only access; nothing was widened.",
+    "RATE_LIMITED": "The extra requests were slowed down by the per-minute limit. {label} still has read-only "
+                    "access; nothing was widened.",
+    "NEW_AI": "Nothing was blocked: {label} has read-only access, as every connected AI does.",
+}
+ACTIVITY_IF_IGNORED = "{label} keeps read-only access; this clears by itself when a week looks normal again."
+ACTIVITY_COUNT_WORDS = (("requests", "requests"), ("refused", "refused"), ("rate_limited", "rate-limited"))
+
+
+def activity_counts(row: dict | None) -> str:
+    """0.9.18: "755 requests, 120 refused" for one AI from the projected counts ("" when unknown)."""
+    if not isinstance(row, dict):
+        return ""
+    parts = [f"{row[k]} {w}" for k, w in ACTIVITY_COUNT_WORDS
+             if isinstance(row.get(k), int) and not isinstance(row.get(k), bool) and (row[k] or k == "requests")]
+    return ", ".join(parts)
+
+
+def from_activity(flags: list | None, providers: dict | None = None) -> list[Finding]:
+    """``flags``: the projected flags of sensor.house_brain_ai_activity (``ha.project_activity``); 0.9.18:
+    ``providers`` (the projected per-AI counts) puts this week's counts into the message."""
     out: list[Finding] = []
     for f in sorted(flags or [], key=lambda f: (f.get("provider", ""), f.get("flag", ""))):
         name, flag = f.get("provider"), f.get("flag")
@@ -942,9 +1032,14 @@ def from_activity(flags: list | None) -> list[Finding]:
             continue
         label = CONNECTOR_NAMES[name]
         title, step = ACTIVITY_FLAG_TEXT[flag]
+        counts = activity_counts((providers or {}).get(name) if isinstance(providers, dict) else None)
         out.append(Finding(f"ai_activity:{name}:{flag.lower()}", "ai_activity", WARNING, title.format(label=label),
+                           detail=(f"This week ({label}): {counts}.",) if counts else (),
                            steps=(step.format(label=label),), announce_clear=False,
-                           facts={"provider": name, "flag": flag}))
+                           facts={"provider": name, "flag": flag},
+                           done=ACTIVITY_DONE[flag].format(label=label),
+                           todo=(f"If this is unexpected: set the AI kill switch tile in Home Assistant to FULL_STOP.",),
+                           if_ignored=ACTIVITY_IF_IGNORED.format(label=label)))
     return out
 
 

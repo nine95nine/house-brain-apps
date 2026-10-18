@@ -175,6 +175,7 @@ RECOVERY_READ_ENTITIES = frozenset({
 # 0.9.11: the one other entity it may read (credential heads-up), kept apart from the Recovery Report's own list.
 CREDENTIAL_READ_ENTITIES = frozenset({AI_CONNECTORS_ENTITY, AI_ACTIVITY_ENTITY})  # 0.9.17: + weekly AI activity
 RECOVERY_NOTIFICATION_ID = "hbm_recovery_report"
+RE_MESSAGE_NOTIFICATION = re.compile(r"hbm_msg_[a-f0-9]{12}")    # 0.9.18: one per open problem (Messages)
 # 0.5.3: the Google Drive Backup App (sabeechen/hassio-google-drive-backup) copies backups to Google Drive
 # outside Home Assistant's own backup locations and reports it on this one entity (read-only, projected).
 DRIVE_BACKUP_ENTITY = "sensor.backup_state"
@@ -2072,15 +2073,20 @@ class HomeAssistant:
         data = self._call("GET", path, timeout=20, raw=True, query=f"?lines={min(max(lines, 2), 2000)}")
         return bytes(data or b"")[:524288].decode("utf-8", "replace")
 
+    @staticmethod
+    def _note_id_ok(notification_id: str) -> bool:
+        return notification_id == RECOVERY_NOTIFICATION_ID or (
+            isinstance(notification_id, str) and RE_MESSAGE_NOTIFICATION.fullmatch(notification_id) is not None)
+
     def persistent_note(self, notification_id: str, title: str, message: str) -> None:
-        if notification_id != RECOVERY_NOTIFICATION_ID:
+        if not self._note_id_ok(notification_id):
             raise ForbiddenCall("notification id")
         self._call("POST", "/core/api/services/persistent_notification/create",
                    body={"notification_id": notification_id, "title": title[:120], "message": message[:900]},
                    timeout=15)
 
     def persistent_dismiss(self, notification_id: str) -> None:
-        if notification_id != RECOVERY_NOTIFICATION_ID:
+        if not self._note_id_ok(notification_id):
             raise ForbiddenCall("notification id")
         self._call("POST", "/core/api/services/persistent_notification/dismiss",
                    body={"notification_id": notification_id}, timeout=15)

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.18
+
+Your messages (owner 2026-10-18: "I got something but I clicked it and it disappeared"; owner pop-ups "Messages
+list on Maintenance page", "Home Assistant bell", "'Handled' button on the push", "Quiet hours", "Repeat unhandled
+critical", "Sunday line: open messages"; Work Board #942 claim 6251789151). Contains 0.9.17 unchanged otherwise.
+
+- **Every message says who does what**: what happened, what was already done, what you need to do (or nothing),
+  and what happens if you do nothing. AI activity messages name the AI, this week's counts and what was already
+  blocked. With practice mode on, a fix is never claimed as offered.
+- **Kept and viewable**: every push is kept for 90 days (at most 500) in a new Messages list on the Maintenance page.
+  A tap on any push opens it. Warnings that only go into the morning summary are kept too.
+- **The bell**: each open problem is also a Home Assistant notification, removed when it clears or is handled
+  (at most 20).
+- **No more overwriting**: each push has its own tag, grouped on the phone by area.
+- **Handled**: a button on problem pushes and on the page. It only marks the message, never switches anything.
+- **Quiet hours** (`quiet_hours`, default `22-7`): warnings wait for one morning push; critical always comes through.
+- **Repeats**: an unhandled critical problem is pushed again every 4 hours, at most 3 times.
+- **Sunday**: the weekly still-open push says how many messages are open.
+
 ## 0.9.17
 
 Weekly AI activity (owner pop-up 2026-10-18 "Build all 4 parts (Recommended)", Work Board #942 row 72; renumbered
