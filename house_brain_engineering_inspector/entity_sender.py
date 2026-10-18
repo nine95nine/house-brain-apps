@@ -47,7 +47,7 @@ SENDER_SCHEMA: Final = "house_brain_engineering_inspector.entity_sender.v1"
 # 0.2.3 (live 2026-10-06): Cloudflare's edge answered 403 (error 1010) to Python's default "Python-urllib"
 # user agent before the Broker ran (ENTITY_SNAPSHOT_BROKER_HTTP_ERROR). The POST now names the App, like the
 # Maintenance App 0.5.1, the Scout and the Observer. Keep it equal to config.yaml ``version``.
-APP_VERSION: Final = "0.2.10"
+APP_VERSION: Final = "0.2.11"
 USER_AGENT: Final = f"house-brain-engineering-inspector/{APP_VERSION}"
 OPTIONS_PATH: Final = Path("/data/options.json")
 APP_DIR: Final = Path(__file__).resolve().parent
