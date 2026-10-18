@@ -134,6 +134,17 @@ state instead of `NOT_CONNECTED`. No Home Assistant YAML change is needed.
   loosen it (`HA_BRIDGE_STORE_FAIL_CLOSED`). Restart the App, or use `kill_switch_repair`.
 - If writing the sensor fails, nothing changes on the AI side.
 
+**Weekly AI activity (0.1.6-dev, needs AI perimeter 0.4.5).**
+- **The sensor.** With `ha_bridge` on, the App also writes `sensor.house_brain_ai_activity`: how many requests
+  each AI (Claude, ChatGPT, Grok) made in the last 7 days, how many were answered, refused or rate-limited.
+  Counts only, never what was read.
+  - `UNUSUAL`: many refused requests, the per-minute limit was hit, or an AI read for the first time.
+  - `NORMAL`: AI reads, nothing unusual.
+  - `QUIET`: no AI request in 7 days.
+  - `UNKNOWN`: no answer from the perimeter for three hours.
+- **The phone message:** the Maintenance App sends a Sunday line and a push when it is `UNUSUAL`.
+- **What the App does not do:** call any service, and nothing it writes changes AI access.
+
 **AI connector heads-up (0.1.5-dev, needs AI perimeter 0.4.4).**
 - **The sensor.** With `ha_bridge` on, the App also writes `sensor.house_brain_ai_connectors`, built from
   the perimeter's reply to the App's own heartbeat:

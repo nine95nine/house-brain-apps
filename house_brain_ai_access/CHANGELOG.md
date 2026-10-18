@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.6-dev
+
+Weekly AI activity (owner pop-up 2026-10-18 "Build all 4 parts (Recommended)", Work Board #942 row 72). With
+`ha_bridge` on, this App now also publishes `sensor.house_brain_ai_activity`:
+- **Source.** AI perimeter 0.4.5 answers each accepted heartbeat with the header `X-HB-Activity`: per AI
+  (Claude, ChatGPT, Grok) the last 7 days' requests, answered, refused, rate-limited, tool calls and items.
+  Counts only: no sensor id, value, prompt or answer.
+- **States:**
+  - `UNUSUAL`: at least one flag below.
+  - `NORMAL`: AI reads this week, no flag.
+  - `QUIET`: no AI request in 7 days.
+  - `UNKNOWN`: no fresh perimeter answer for three hours.
+- **Flags** (attribute `flags`, one per AI):
+  - `MANY_REFUSED`: at least 10 and at least a fifth of that AI's requests refused (for example the kill
+    switch or a limit).
+  - `RATE_LIMITED`: the per-minute cap was hit.
+  - `NEW_AI`: that AI read for the first time, for 7 days after. The first summary after the upgrade records
+    the AIs already reading without flagging them (`/data/ai_activity_seen.json`).
+- **Attributes:** the window (`from`, `to`), `total_requests` and per active AI its counts. They change at most
+  hourly.
+- **Phone:** the Maintenance App sends the Sunday line and a push when the state is `UNUSUAL`.
+- **Bridge allowlist:** one more (method, path) pair, `POST /core/api/states/sensor.house_brain_ai_activity`,
+  for four in all. Still no service call and no other entity; nothing on the AI side changes.
+- **Unchanged:** the heartbeat body, signature, key, cadence and the 204 check. An older perimeter sends no
+  header, and then the sensor is simply not written.
+- **Version:** the User-Agent is `house-brain-ai-access/0.1.6-dev`.
+
 ## 0.1.5-dev
 
 AI connector heads-up (owner pop-up 2026-10-13 "Approve, alerts via Maintenance"). The claude.ai connector

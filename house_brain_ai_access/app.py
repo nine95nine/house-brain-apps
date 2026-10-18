@@ -72,7 +72,9 @@ HA_SELECTOR_ENTITY = 'input_select.house_brain_ai_kill_switch'
 # sign-in summary (expiry, refused refresh) that the perimeter returns on the heartbeat reply. Still no service
 # call and no other entity; the Maintenance App turns this sensor into the phone heads-up.
 HA_CONNECTORS_PATH = '/core/api/states/sensor.house_brain_ai_connectors'
-HA_BRIDGE_ALLOWED = frozenset({('GET', HA_SELECTOR_PATH), ('POST', HA_EFFECTIVE_PATH), ('POST', HA_CONNECTORS_PATH)})
+HA_ACTIVITY_PATH = '/core/api/states/sensor.house_brain_ai_activity'
+HA_BRIDGE_ALLOWED = frozenset({('GET', HA_SELECTOR_PATH), ('POST', HA_EFFECTIVE_PATH), ('POST', HA_CONNECTORS_PATH),
+                               ('POST', HA_ACTIVITY_PATH)})
 HA_BRIDGE_INTERVAL = 30.0
 HA_BRIDGE_TIMEOUT = 5.0
 HA_BRIDGE_MAX_BYTES = 65536
@@ -341,7 +343,7 @@ class _NoHeartbeatRedirect(urlrequest.HTTPRedirectHandler):
         return None
 
 
-HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.5-dev'
+HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.6-dev'
 
 # 0.1.5-dev connector heads-up. Perimeter 0.4.4 answers an accepted heartbeat with `X-HB-Connectors`
 # (house_brain_ai_connectors.v1): per provider the last good sign-in/refresh, its expiry (90 days idle) and the
@@ -420,6 +422,112 @@ def connectors_payload(raw: str | None, received_at: float | None, now: float) -
     return {'state': overall, 'attributes': attributes}
 
 
+# 0.1.6-dev weekly AI activity (owner pop-up 2026-10-18 "Build all 4 parts (Recommended)", Work Board #942 row 72).
+# Perimeter 0.4.5 answers an accepted heartbeat with `X-HB-Activity` (house_brain_ai_activity.v1): per provider the
+# last 7 days' request counts (counts only: no sensor id, value, prompt or answer). The newest value is kept here
+# (bounded text, never logged) and published as sensor.house_brain_ai_activity by the HA bridge.
+ACTIVITY_HEADER = 'X-HB-Activity'
+ACTIVITY_SCHEMA = 'house_brain_ai_activity.v1'
+ACTIVITY_MAX_BYTES = 1024
+ACTIVITY_STALE_S = 3 * 3600   # the perimeter refreshes hourly; three hours without a fresh reply is UNKNOWN
+ACTIVITY_COUNTS = ('requests', 'answered', 'refused', 'rate_limited', 'tool_calls', 'items')
+ACTIVITY_REFUSED_MIN = 10     # "many refused": at least 10 and at least a fifth of the week's requests
+ACTIVITY_SEEN = DATA / 'ai_activity_seen.json'
+_activity_lock = threading.Lock()
+_activity_latest: dict[str, Any] = {'raw': None, 'at': None}
+
+
+def remember_activity(value: Any, now: float) -> None:
+    """Keep the newest X-HB-Activity value (text, bounded). Anything else is ignored."""
+    if type(value) is not str or not 0 < len(value.encode('utf-8', 'replace')) <= ACTIVITY_MAX_BYTES:
+        return
+    with _activity_lock:
+        _activity_latest['raw'], _activity_latest['at'] = value, float(now)
+
+
+def latest_activity() -> tuple[str | None, float | None]:
+    with _activity_lock:
+        return _activity_latest['raw'], _activity_latest['at']
+
+
+def update_seen(seen: Any, active: list[str], now: float) -> tuple[dict[str, Any], list[str]]:
+    """The providers the house has seen reading, and which of `active` are new this week.
+
+    The first summary ever seeds the record silently (first_seen 0 = "already reading before 0.1.6-dev"), so
+    an upgrade raises no alarm. A provider is NEW for 7 days after it first reads."""
+    record = seen if type(seen) is dict and type(seen.get('providers')) is dict and seen.get('v') == 1 else None
+    if record is None:
+        return {'v': 1, 'providers': {p: 0 for p in active}}, []
+    providers = {p: t for p, t in record['providers'].items() if p in CONNECTOR_PROVIDERS and type(t) in (int, float)}
+    for p in active:
+        providers.setdefault(p, int(now))
+    new = sorted(p for p in active if providers[p] > 0 and now - providers[p] < 7 * 86400)
+    return {'v': 1, 'providers': providers}, new
+
+
+def activity_payload(raw: str | None, received_at: float | None, now: float,
+                     new_providers: list[str] | None = None) -> dict[str, Any]:
+    """The body POSTed to sensor.house_brain_ai_activity. States: UNUSUAL (a flag below), NORMAL (reads, no
+    flag), QUIET (no AI request in 7 days), UNKNOWN (no fresh perimeter answer). Flags: MANY_REFUSED (>= 10 and
+    >= 20 % of a provider's requests refused, e.g. kill switch or limits), RATE_LIMITED (the per-minute cap hit),
+    NEW_AI (a provider reading for the first time this week). Counts change at most hourly."""
+    attributes: dict[str, Any] = {'friendly_name': 'House Brain AI Activity (7 days)', 'schema': ACTIVITY_SCHEMA,
+                                  'from': None, 'to': None, 'total_requests': 0, 'providers': {}, 'flags': []}
+    value = None
+    if type(raw) is str and isinstance(received_at, (int, float)) and now - received_at <= ACTIVITY_STALE_S:
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            value = None
+    if (type(value) is not dict or value.get('schema') != ACTIVITY_SCHEMA
+            or type(value.get('providers')) is not dict):
+        return {'state': 'UNKNOWN', 'attributes': attributes}
+    for key in ('from', 'to'):
+        day = value.get(key)
+        attributes[key] = day if type(day) is str and len(day) == 10 and day[4] == '-' and day[7] == '-' else None
+    new = set(new_providers or ())
+    for provider in CONNECTOR_PROVIDERS:
+        item = value['providers'].get(provider)
+        if type(item) is not dict:
+            continue
+        counts = {k: item[k] if type(item.get(k)) is int and item[k] >= 0 else 0 for k in ACTIVITY_COUNTS}
+        if not counts['requests']:
+            continue
+        attributes['providers'][provider] = {'name': CONNECTOR_LABELS[provider], **counts}
+        attributes['total_requests'] += counts['requests']
+        if counts['refused'] >= ACTIVITY_REFUSED_MIN and counts['refused'] * 5 >= counts['requests']:
+            attributes['flags'].append({'provider': provider, 'flag': 'MANY_REFUSED'})
+        if counts['rate_limited'] > 0:
+            attributes['flags'].append({'provider': provider, 'flag': 'RATE_LIMITED'})
+        if provider in new:
+            attributes['flags'].append({'provider': provider, 'flag': 'NEW_AI'})
+    state = 'UNUSUAL' if attributes['flags'] else 'NORMAL' if attributes['total_requests'] else 'QUIET'
+    return {'state': state, 'attributes': attributes}
+
+
+def activity_sensor(raw: str | None, received_at: float | None, now: float, seen_path: Path | None = None) -> dict[str, Any]:
+    """activity_payload with the persisted seen-providers record. A record that cannot be read or written only
+    drops the NEW_AI flag; it never changes the counts or the other flags."""
+    seen_path = ACTIVITY_SEEN if seen_path is None else seen_path
+    payload = activity_payload(raw, received_at, now)
+    if payload['state'] == 'UNKNOWN':
+        return payload
+    active = sorted(payload['attributes']['providers'])
+    try:
+        try:
+            seen = json.loads(seen_path.read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            seen = None
+        record, new = update_seen(seen, active, now)
+        if record != seen:
+            tmp = seen_path.with_name(seen_path.name + '.tmp')
+            tmp.write_text(json.dumps(record, sort_keys=True), encoding='utf-8')
+            os.replace(tmp, seen_path)
+    except Exception:
+        return payload
+    return activity_payload(raw, received_at, now, new) if new else payload
+
+
 def post_heartbeat(url: str, key: str, heartbeat: dict[str, Any], *, opener: Any = None) -> int:
     """One signed POST. Returns the HTTP status (0 on transport failure). Never raises, never logs bodies."""
     body = json.dumps(heartbeat, sort_keys=True, separators=(',', ':')).encode('ascii')
@@ -440,6 +548,10 @@ def post_heartbeat(url: str, key: str, heartbeat: dict[str, Any], *, opener: Any
                     remember_connectors(response.headers.get(CONNECTORS_HEADER), time.time())
                 except Exception:
                     pass  # bookkeeping only: never changes the heartbeat result
+                try:  # 0.1.6-dev: perimeter 0.4.5 activity counts (absent from older perimeters)
+                    remember_activity(response.headers.get(ACTIVITY_HEADER), time.time())
+                except Exception:
+                    pass
             return status
     except urlerror.HTTPError as exc:
         return int(exc.code)
@@ -685,6 +797,15 @@ def ha_bridge_cycle(ceiling: str, *, publish_view: bool = True, http: Any = None
                 result['connectors_status'] = ha_bridge_call(http, 'POST', HA_CONNECTORS_PATH, connectors)[0]
             except HaBridgeUnavailableError:
                 result['connectors_status'] = 0
+        # 0.1.6-dev: the weekly AI activity counts, once the perimeter has answered at least once.
+        raw, received_at = latest_activity()
+        if raw is not None:
+            activity = activity_sensor(raw, received_at, clock, store_dir.parent / ACTIVITY_SEEN.name)
+            result['activity'] = activity['state']
+            try:
+                result['activity_status'] = ha_bridge_call(http, 'POST', HA_ACTIVITY_PATH, activity)[0]
+            except HaBridgeUnavailableError:
+                result['activity_status'] = 0
     except HaBridgeAllowlistError:
         raise
     except Exception:
@@ -694,7 +815,8 @@ def ha_bridge_cycle(ceiling: str, *, publish_view: bool = True, http: Any = None
 
 def _bridge_log_key(result: dict[str, Any]) -> tuple[Any, ...]:
     status = result.get('publish_status')
-    return (result.get('reason'), result.get('effective'), status in (200, 201), result.get('connectors'))
+    return (result.get('reason'), result.get('effective'), status in (200, 201), result.get('connectors'),
+            result.get('activity'))
 
 
 def _emit_bridge(result: dict[str, Any]) -> None:
@@ -703,6 +825,8 @@ def _emit_bridge(result: dict[str, Any]) -> None:
          published='YES' if status in (200, 201) else f'NO_{status if type(status) is int else 0}')
     if result.get('connectors') is not None:  # 0.1.5-dev: the summary state only, never times or links
         emit('AI_CONNECTORS', state=str(result['connectors']))
+    if result.get('activity') is not None:  # 0.1.6-dev: the weekly state only, never counts or providers
+        emit('AI_ACTIVITY', state=str(result['activity']))
 
 
 def ha_bridge_loop(stop: threading.Event, ceiling: str, *, publish_view: bool = True, cycle: Any = None,
