@@ -16,7 +16,7 @@
     {
       "flat": "embedded.contracts.house_brain_privacy_data_classes.v1.json",
       "path": "contracts/house_brain_privacy_data_classes.v1.json",
-      "sha256": "805a311be8c77103ff3e8fd3d993d410c950d66263792602e596f5a6820d57bd"
+      "sha256": "e5e110525bc401530100046a710c51724656eeaa6723090db3d660cc2813a19f"
     },
     {
       "flat": "embedded.tools.build_house_brain_entity_snapshot.py",

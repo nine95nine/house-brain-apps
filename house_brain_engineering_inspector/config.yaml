@@ -1,5 +1,5 @@
 name: "House Brain Engineering Inspector"
-version: "0.2.9"
+version: "0.2.10"
 slug: "house_brain_engineering_inspector"
 description: >-
   Owner-private, read-only Home Assistant engineering inspection App.

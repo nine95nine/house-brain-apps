@@ -1009,6 +1009,19 @@
       "default_class": "PRIVATE",
       "note": "#126 shore-power / EV preconditioning advisory input: a departure time and vehicle plugged-in/readiness state are a household routine and presence side channel, so the contract is PRIVATE even though it carries no person, VIN, location, GPS or credential field. Local processor only; not an AI-facing surface."
     },
+    "house_brain_energy_ai_context.v1.schema.json": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "ANALYSIS",
+      "default_class": "PRIVATE",
+      "note": "Energy AI (PR #1135) reviewed private context read only inside the local App: Sense stable-ID bindings, billing-cycle bank kWh, shadow job windows/deadlines and evidence refs. Job windows and EV/appliance deadlines are a household routine side channel (same reasoning as Which car tonight?), so the contract is PRIVATE although it has no credential or location field. Local processor only; never sent to an AI provider.",
+      "fields": {
+        "reviewed_by": {
+          "class": "PRIVATE",
+          "rationale": "Free-text reviewer attribution may name a household member (person identifier, policy minimum PRIVATE)."
+        }
+      }
+    },
     "house_brain_energy_which_car_tonight_input.v1.schema.json": {
       "role": "INPUT",
       "destination": "LOCAL_PROCESSOR",
