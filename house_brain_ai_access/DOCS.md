@@ -145,6 +145,9 @@ state instead of `NOT_CONNECTED`. No Home Assistant YAML change is needed.
 - **Which AI, and why (0.1.7-dev).** `flag_summary` names each AI and reason, for example `claude:MANY_REFUSED`
   (`none` when nothing is unusual), and `claude_requests`, `claude_refused`, `claude_rate_limited` (the same for
   `chatgpt` and `grok`) give the counts as plain numbers.
+- **Which refusals (0.1.8-dev, needs AI perimeter 0.4.7).** `claude_top_refused` (and the same for `chatgpt` and
+  `grok`) names up to three reasons with counts, for example `KS_EDGE_STALE:12` (the house heartbeat was late, so
+  the edge refused, as designed) or `HISTORY_NOT_AVAILABLE:9` (asked for history of a sensor not on your list).
 - **The phone message:** the Maintenance App sends a Sunday line and a push when it is `UNUSUAL`.
 - **What the App does not do:** call any service, and nothing it writes changes AI access.
 

@@ -343,7 +343,7 @@ class _NoHeartbeatRedirect(urlrequest.HTTPRedirectHandler):
         return None
 
 
-HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.7-dev'
+HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.8-dev'
 
 # 0.1.5-dev connector heads-up. Perimeter 0.4.4 answers an accepted heartbeat with `X-HB-Connectors`
 # (house_brain_ai_connectors.v1): per provider the last good sign-in/refresh, its expiry (90 days idle) and the
@@ -432,6 +432,8 @@ ACTIVITY_MAX_BYTES = 1024
 ACTIVITY_STALE_S = 3 * 3600   # the perimeter refreshes hourly; three hours without a fresh reply is UNKNOWN
 ACTIVITY_COUNTS = ('requests', 'answered', 'refused', 'rate_limited', 'tool_calls', 'items')
 ACTIVITY_SCALAR_COUNTS = ('requests', 'refused', 'rate_limited')  # 0.1.7-dev: flat per-AI copies for the snapshot
+ACTIVITY_TOP_REFUSED = 3          # 0.1.8-dev: perimeter 0.4.7 top refusal reason codes per AI
+ACTIVITY_CODE_RE = re.compile(r'^[A-Z][A-Z0-9_]{1,47}$')
 ACTIVITY_REFUSED_MIN = 10     # "many refused": at least 10 and at least a fifth of the week's requests
 ACTIVITY_SEEN = DATA / 'ai_activity_seen.json'
 _activity_lock = threading.Lock()
@@ -476,13 +478,19 @@ def activity_payload(raw: str | None, received_at: float | None, now: float,
     0.1.7-dev (owner pop-up 2026-10-18 "Both of the above", Work Board #942 row 72 follow-up, row 74): the same facts
     also as flat scalars, so the privacy-filtered snapshot (which exports scalar attributes only) can say which AI and
     which flag: flag_summary ("claude:MANY_REFUSED, grok:NEW_AI", "none", or None while UNKNOWN) and, per known AI,
-    <ai>_requests, <ai>_refused and <ai>_rate_limited. The nested providers and flags stay as they were."""
+    <ai>_requests, <ai>_refused and <ai>_rate_limited. The nested providers and flags stay as they were.
+
+    0.1.8-dev (owner pop-up 2026-10-18 "Show the reasons (Recommended)", Work Board #942 row 74): perimeter 0.4.7 adds
+    each AI's largest refusal reason codes; they are published flat as <ai>_top_refused, for example
+    "KS_EDGE_STALE:120, HISTORY_NOT_AVAILABLE:40" ("none" when there were none, None while UNKNOWN or from an older
+    perimeter). Only plain codes with positive integer counts are kept, at most three."""
     attributes: dict[str, Any] = {'friendly_name': 'House Brain AI Activity (7 days)', 'schema': ACTIVITY_SCHEMA,
                                   'from': None, 'to': None, 'total_requests': 0, 'providers': {}, 'flags': [],
                                   'flag_summary': None}
     for provider in CONNECTOR_PROVIDERS:
         for key in ACTIVITY_SCALAR_COUNTS:
             attributes[f'{provider}_{key}'] = 0
+        attributes[f'{provider}_top_refused'] = None
     value = None
     if type(raw) is str and isinstance(received_at, (int, float)) and now - received_at <= ACTIVITY_STALE_S:
         try:
@@ -500,6 +508,12 @@ def activity_payload(raw: str | None, received_at: float | None, now: float,
         item = value['providers'].get(provider)
         if type(item) is not dict:
             continue
+        top = item.get('top_refused')
+        if type(top) is list:
+            pairs = [f'{p[0]}:{p[1]}' for p in top[:ACTIVITY_TOP_REFUSED]
+                     if type(p) is list and len(p) == 2 and type(p[0]) is str and ACTIVITY_CODE_RE.match(p[0])
+                     and type(p[1]) is int and p[1] > 0]
+            attributes[f'{provider}_top_refused'] = ', '.join(pairs) or 'none'
         counts = {k: item[k] if type(item.get(k)) is int and item[k] >= 0 else 0 for k in ACTIVITY_COUNTS}
         if not counts['requests']:
             continue

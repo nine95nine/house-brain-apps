@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.8-dev
+
+Which refusals (owner pop-up 2026-10-18 "Show the reasons (Recommended)", Work Board #942 row 74). After AI perimeter
+0.4.6 stopped counting MCP handshake steps, the week still read as many refused, for reasons only the owner page
+showed. With perimeter 0.4.7, `sensor.house_brain_ai_activity` also carries, per AI, `<ai>_top_refused`: up to three
+refusal reason codes with counts, for example `KS_EDGE_STALE:12, HISTORY_NOT_AVAILABLE:9`. It reads `none` when
+there were none, and is empty (null) while `UNKNOWN` or with an older perimeter.
+- Only plain reason codes (`^[A-Z][A-Z0-9_]{1,47}$`) with positive whole counts are kept, so no sensor name, value,
+  prompt or answer can appear.
+- **Unchanged:** the state, the thresholds, the nested `providers` and `flags` (the Maintenance App reads those), the
+  other flat attributes, the four-pair bridge allowlist and the heartbeat.
+- Showing it to AI assistants also needs Inspector 0.2.13.
+- **Version:** the User-Agent is `house-brain-ai-access/0.1.8-dev`.
+
 ## 0.1.7-dev
 
 Explain an `UNUSUAL` week (owner pop-up 2026-10-18 "Both of the above", Work Board #942 row 74). The privacy-filtered
