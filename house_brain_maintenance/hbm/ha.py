@@ -175,6 +175,10 @@ RECOVERY_READ_ENTITIES = frozenset({
 # 0.9.11: the one other entity it may read (credential heads-up), kept apart from the Recovery Report's own list.
 CREDENTIAL_READ_ENTITIES = frozenset({AI_CONNECTORS_ENTITY, AI_ACTIVITY_ENTITY})  # 0.9.17: + weekly AI activity
 RECOVERY_NOTIFICATION_ID = "hbm_recovery_report"
+# 0.9.20: the Deployer's own safety backup before each deploy (Home Assistant only, no database, no password;
+# apps/house_brain_deployer/hbd/engine.py "HBD <request_id> pre-deploy") is a partial backup, never the owner's full
+# one: it no longer decides "not password-protected", "misses running Apps" or "no recent full backup".
+RE_DEPLOYER_SAFETY_BACKUP = re.compile(r"HBD [A-Za-z0-9._:-]{1,120} pre-deploy")
 RE_MESSAGE_NOTIFICATION = re.compile(r"hbm_msg_[a-f0-9]{12}")    # 0.9.18: one per open problem (Messages)
 # 0.5.3: the Google Drive Backup App (sabeechen/hassio-google-drive-backup) copies backups to Google Drive
 # outside Home Assistant's own backup locations and reports it on this one entity (read-only, projected).
@@ -1619,10 +1623,12 @@ class HomeAssistant:
         for row in ((data.get("backups") or []) if isinstance(data, dict) else [])[:500]:
             if isinstance(row, dict) and isinstance(row.get("date"), str):
                 content = row.get("content") if isinstance(row.get("content"), dict) else {}
+                name = row.get("name") if isinstance(row.get("name"), str) else ""
                 kind = "full" if row.get("type") == "full" or content.get("homeassistant") is True else "partial"
+                if kind == "full" and row.get("type") != "full" and RE_DEPLOYER_SAFETY_BACKUP.fullmatch(name):
+                    kind = "partial"     # 0.9.20: the Deployer's settings-only copy never stands in for a full backup
                 # 0.6.6 (R2): password protection, from the same answer. Only a flag and "made by this App"
                 # are kept; the name itself is dropped.
-                name = row.get("name") if isinstance(row.get("name"), str) else ""
                 protected = row.get("protected") if isinstance(row.get("protected"), bool) else None
                 protection.append((row["date"][:40], protected, kind == "full", name.startswith("hbm-pre-")))
                 size_b, size_mb = row.get("size_bytes"), row.get("size")

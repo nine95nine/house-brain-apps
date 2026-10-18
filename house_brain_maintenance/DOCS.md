@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.19)
+## What it does (0.9.20)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -804,7 +804,12 @@ Reject is final for that version; no answer asks again after `update_reask_hours
 
 Backups hold every App's data, including the GitHub App keys. When the newest full backup (not this App's own
 pre-update backups) is **not password-protected**, this App warns once with the fix: Google Drive Backup → Open web UI
-→ Settings → backup password. It reads only Home Assistant's "protected" flag, never a backup's contents or name.
+→ Settings → backup password. It reads Home Assistant's "protected" flag and checks a backup's name only to recognise
+a House Brain safety copy; it never reads a backup's contents and never keeps a name.
+
+From 0.9.20 the Deployer's own safety copy before each install ("HBD … pre-deploy": Home Assistant settings only, no
+password) counts as a partial backup. It never decides "not password-protected", "misses running Apps" or "no recent
+full backup"; only your own full backups do (live 2026-10-18: the warning came back after every Deployer install).
 
 ## Deployer switch to the store — from 0.6.6
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.20
+
+Deployer safety copies are not your full backups (owner pop-up 2026-10-18 "Build 0.9.20", from the reviewer chat;
+Work Board #942 claim 6254848461). Contains 0.9.19 unchanged otherwise.
+
+- **Live 2026-10-18:** "Backups are not password-protected" cleared, then came back after each Deployer install
+  (16:18Z and 17:11Z). Before every install the Deployer makes a quick safety copy ("HBD <request> pre-deploy":
+  Home Assistant settings only, no database, no password). Because it includes Home Assistant, it was counted as
+  your newest full backup.
+- **Now:** that copy counts as a partial backup. It no longer decides "not password-protected", "misses running
+  Apps" or "no recent full backup". A daily Deployer copy also can no longer hide a missing real full backup.
+  Only the exact Deployer name counts, and only for a partial backup. The Deployer is unchanged.
+
 ## 0.9.19
 
 AI problem reviews (owner pop-up 2026-10-18 "Build both as 0.9.19", from the reviewer chat's audit of #454; Work Board
