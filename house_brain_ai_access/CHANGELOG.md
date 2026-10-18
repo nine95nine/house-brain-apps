@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.7-dev
+
+Explain an `UNUSUAL` week (owner pop-up 2026-10-18 "Both of the above", Work Board #942 row 74). The privacy-filtered
+snapshot that AI assistants read exports only single values (text or numbers), so they could see `UNUSUAL` but not
+which AI or why. `sensor.house_brain_ai_activity` now also carries the same facts as flat attributes:
+- `flag_summary`: for example `claude:MANY_REFUSED`, several joined with `, `; `none` when nothing is unusual;
+  empty (null) while `UNKNOWN`.
+- Per AI (`claude`, `chatgpt`, `grok`): `<ai>_requests`, `<ai>_refused`, `<ai>_rate_limited`, 0 when that AI did
+  not read.
+- **Unchanged:** the state, the thresholds, the nested `providers` and `flags` (the Maintenance App reads those),
+  the bridge allowlist (still four pairs), the heartbeat and every other sensor.
+- Showing the new attributes to AI assistants also needs Inspector 0.2.12 (read policy allowlist).
+- **Version:** the User-Agent is `house-brain-ai-access/0.1.7-dev`.
+
 ## 0.1.6-dev
 
 Weekly AI activity (owner pop-up 2026-10-18 "Build all 4 parts (Recommended)", Work Board #942 row 72). With

@@ -343,7 +343,7 @@ class _NoHeartbeatRedirect(urlrequest.HTTPRedirectHandler):
         return None
 
 
-HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.6-dev'
+HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.7-dev'
 
 # 0.1.5-dev connector heads-up. Perimeter 0.4.4 answers an accepted heartbeat with `X-HB-Connectors`
 # (house_brain_ai_connectors.v1): per provider the last good sign-in/refresh, its expiry (90 days idle) and the
@@ -431,6 +431,7 @@ ACTIVITY_SCHEMA = 'house_brain_ai_activity.v1'
 ACTIVITY_MAX_BYTES = 1024
 ACTIVITY_STALE_S = 3 * 3600   # the perimeter refreshes hourly; three hours without a fresh reply is UNKNOWN
 ACTIVITY_COUNTS = ('requests', 'answered', 'refused', 'rate_limited', 'tool_calls', 'items')
+ACTIVITY_SCALAR_COUNTS = ('requests', 'refused', 'rate_limited')  # 0.1.7-dev: flat per-AI copies for the snapshot
 ACTIVITY_REFUSED_MIN = 10     # "many refused": at least 10 and at least a fifth of the week's requests
 ACTIVITY_SEEN = DATA / 'ai_activity_seen.json'
 _activity_lock = threading.Lock()
@@ -470,9 +471,18 @@ def activity_payload(raw: str | None, received_at: float | None, now: float,
     """The body POSTed to sensor.house_brain_ai_activity. States: UNUSUAL (a flag below), NORMAL (reads, no
     flag), QUIET (no AI request in 7 days), UNKNOWN (no fresh perimeter answer). Flags: MANY_REFUSED (>= 10 and
     >= 20 % of a provider's requests refused, e.g. kill switch or limits), RATE_LIMITED (the per-minute cap hit),
-    NEW_AI (a provider reading for the first time this week). Counts change at most hourly."""
+    NEW_AI (a provider reading for the first time this week). Counts change at most hourly.
+
+    0.1.7-dev (owner pop-up 2026-10-18 "Both of the above", Work Board #942 row 72 follow-up, row 74): the same facts
+    also as flat scalars, so the privacy-filtered snapshot (which exports scalar attributes only) can say which AI and
+    which flag: flag_summary ("claude:MANY_REFUSED, grok:NEW_AI", "none", or None while UNKNOWN) and, per known AI,
+    <ai>_requests, <ai>_refused and <ai>_rate_limited. The nested providers and flags stay as they were."""
     attributes: dict[str, Any] = {'friendly_name': 'House Brain AI Activity (7 days)', 'schema': ACTIVITY_SCHEMA,
-                                  'from': None, 'to': None, 'total_requests': 0, 'providers': {}, 'flags': []}
+                                  'from': None, 'to': None, 'total_requests': 0, 'providers': {}, 'flags': [],
+                                  'flag_summary': None}
+    for provider in CONNECTOR_PROVIDERS:
+        for key in ACTIVITY_SCALAR_COUNTS:
+            attributes[f'{provider}_{key}'] = 0
     value = None
     if type(raw) is str and isinstance(received_at, (int, float)) and now - received_at <= ACTIVITY_STALE_S:
         try:
@@ -494,6 +504,8 @@ def activity_payload(raw: str | None, received_at: float | None, now: float,
         if not counts['requests']:
             continue
         attributes['providers'][provider] = {'name': CONNECTOR_LABELS[provider], **counts}
+        for key in ACTIVITY_SCALAR_COUNTS:
+            attributes[f'{provider}_{key}'] = counts[key]
         attributes['total_requests'] += counts['requests']
         if counts['refused'] >= ACTIVITY_REFUSED_MIN and counts['refused'] * 5 >= counts['requests']:
             attributes['flags'].append({'provider': provider, 'flag': 'MANY_REFUSED'})
@@ -501,6 +513,7 @@ def activity_payload(raw: str | None, received_at: float | None, now: float,
             attributes['flags'].append({'provider': provider, 'flag': 'RATE_LIMITED'})
         if provider in new:
             attributes['flags'].append({'provider': provider, 'flag': 'NEW_AI'})
+    attributes['flag_summary'] = ', '.join(f"{f['provider']}:{f['flag']}" for f in attributes['flags']) or 'none'
     state = 'UNUSUAL' if attributes['flags'] else 'NORMAL' if attributes['total_requests'] else 'QUIET'
     return {'state': state, 'attributes': attributes}
 
