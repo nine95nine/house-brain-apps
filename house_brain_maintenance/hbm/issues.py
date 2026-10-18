@@ -914,6 +914,54 @@ def from_connectors(providers: dict | None) -> list[Finding]:
     return out
 
 
+# -- 0.9.17: weekly AI activity (owner pop-up 2026-10-18 "Build all 4 parts (Recommended)", Work Board #942 row 72).
+# AI Access 0.1.6-dev publishes sensor.house_brain_ai_activity from the perimeter's own 7-day counts (0.4.5): per AI
+# the request counts and flags. A flag becomes one problem (push once, morning summary); counts go in the Sunday line.
+ACTIVITY_FLAG_TEXT = {
+    "MANY_REFUSED": ("{label}: many House Brain requests were refused this week",
+                     "The kill switch, the owner stop or a limit refused them. If you did not stop AI access, look "
+                     "at the AI kill switch tile in Home Assistant."),
+    "RATE_LIMITED": ("{label}: hit the per-minute House Brain read limit this week",
+                     "Something asked the house very often. If it was not you, set the AI kill switch tile in Home "
+                     "Assistant to FULL_STOP."),
+    "NEW_AI": ("{label}: read House Brain for the first time this week",
+               "If you did not connect {label}, set the AI kill switch tile in Home Assistant to FULL_STOP and "
+               "disconnect House Brain in {label}'s connector settings."),
+}
+# No link: the AI owner page's address names the Cloudflare account, which a store copy must never contain. The kill
+# switch tile (input_select.house_brain_ai_kill_switch, AI Access ha_bridge) stops AI reads from Home Assistant.
+AI_KILL_SWITCH_TILE = "input_select.house_brain_ai_kill_switch"
+
+
+def from_activity(flags: list | None) -> list[Finding]:
+    """``flags``: the projected flags of sensor.house_brain_ai_activity (``ha.project_activity``)."""
+    out: list[Finding] = []
+    for f in sorted(flags or [], key=lambda f: (f.get("provider", ""), f.get("flag", ""))):
+        name, flag = f.get("provider"), f.get("flag")
+        if name not in CONNECTOR_NAMES or flag not in ACTIVITY_FLAG_TEXT:
+            continue
+        label = CONNECTOR_NAMES[name]
+        title, step = ACTIVITY_FLAG_TEXT[flag]
+        out.append(Finding(f"ai_activity:{name}:{flag.lower()}", "ai_activity", WARNING, title.format(label=label),
+                           steps=(step.format(label=label),), announce_clear=False,
+                           facts={"provider": name, "flag": flag}))
+    return out
+
+
+def activity_line(projected: dict | None) -> str | None:
+    """The Sunday line: per AI with requests, its reads; refused and limited counts when not zero. None if unknown."""
+    if not isinstance(projected, dict):
+        return None
+    parts = []
+    for name in ("claude", "chatgpt", "grok"):
+        p = (projected.get("providers") or {}).get(name)
+        if not p or not p.get("requests"):
+            continue
+        extra = [f"{p[k]} {w}" for k, w in (("refused", "refused"), ("rate_limited", "rate-limited")) if p.get(k)]
+        parts.append(f"{CONNECTOR_NAMES[name]} {p['requests']} requests" + (f" ({', '.join(extra)})" if extra else ""))
+    return "AI this week: " + ("; ".join(parts) if parts else "no AI requests")
+
+
 # -- 0.6.3: the relay's GitHub dispatch key (weekly self-test on the relay Worker, read once a day) ---------------
 RELAY_SECRETS_STEPS = ("Cloudflare dashboard -> Workers & Pages -> house-brain-live-read-relay -> Settings -> Variables "
                        "and Secrets -> GITHUB_DISPATCH_TOKEN: replace it with a new fine-grained token (this repository "

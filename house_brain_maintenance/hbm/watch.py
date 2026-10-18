@@ -27,7 +27,7 @@ from typing import Callable
 
 from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issues as I, net
 from . import problems as PR
-from .ha import AI_CONNECTORS_ENTITY, DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
+from .ha import AI_ACTIVITY_ENTITY, AI_CONNECTORS_ENTITY, DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
 
 LOG = logging.getLogger("hbm")
@@ -43,7 +43,8 @@ DISK_SAMPLE_SECONDS = 12 * 3600
 DISK_SAMPLES_KEPT = 40
 CREDENTIAL_SOURCES = ("credential", "credential_deployer", "credential_relay",   # 0.6.3 Credential Autopilot
                       "credential_keys",                                         # 0.8.0 automatic Broker keys
-                      "credential_connector")                                    # 0.9.11 AI connector sign-ins
+                      "credential_connector",                                    # 0.9.11 AI connector sign-ins
+                      "ai_activity")                                             # 0.9.17 weekly AI activity flags
 PUSH_ONCE_SOURCES = CREDENTIAL_SOURCES + (PR.STALL_SOURCE,)                      # 0.9.12 reviewer watchdog
 RELAY_DOC = "relay_credential"
 RELAY_READ_EVERY = 20 * 3600       # the relay self-tests weekly; one read a day is plenty
@@ -368,6 +369,17 @@ class Watcher:
             failed.append("credential_connector")       # unreadable: keep what is open, never a false clear
         else:
             out += I.from_connectors(((st or {}).get("attrs") or {}).get("providers"))
+        try:                                            # 0.9.17: weekly AI activity (AI Access 0.1.6-dev sensor)
+            st = self.ha.entity_state(AI_ACTIVITY_ENTITY)
+        except (HAError, net.NetError, ForbiddenCall):
+            failed.append("ai_activity")                # unreadable or not published yet: keep what is open
+        else:
+            if st is None or (st.get("state") or "UNKNOWN") == "UNKNOWN":
+                failed.append("ai_activity")            # no fresh perimeter answer: never a false clear
+                self.ai_activity_now = None
+            else:
+                self.ai_activity_now = st.get("attrs") or {}
+                out += I.from_activity(self.ai_activity_now.get("flags"))
         if self.key_findings is not None:
             try:
                 out += self.key_findings()
@@ -634,7 +646,8 @@ class Watcher:
         score, parts = P.health_score(self._state()["open"])
         history = doc.get("scores") or []
         text, phone = P.weekly_text(score, parts, history, self.pi_now.get("temp"), self.pi_now.get("rate"),
-                                    self.pi_now.get("throttled"), VERSION, dict(self.sysfs.why))
+                                    self.pi_now.get("throttled"), VERSION, dict(self.sysfs.why),
+                                    ai=I.activity_line(getattr(self, "ai_activity_now", None)))  # 0.9.17
         doc["score_day"] = time.strftime("%Y-%m-%d", time.localtime(now))
         doc["scores"] = (history + [[doc["score_day"], score]])[-12:]
         self.j.save_doc(P.DOC, doc)

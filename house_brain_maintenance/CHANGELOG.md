@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.17
+
+Weekly AI activity (owner pop-up 2026-10-18 "Build all 4 parts (Recommended)", Work Board #942 row 72; renumbered
+from 0.9.15 and 0.9.16 (owner pop-up "Mine becomes 0.9.17"), which the installed-App list fix and the AI review
+pickup took). Contains 0.9.16 unchanged otherwise.
+
+- **Source.** AI Access 0.1.6-dev publishes `sensor.house_brain_ai_activity` from AI perimeter 0.4.5: per AI
+  (Claude, ChatGPT, Grok) the last 7 days' requests, answered, refused, rate-limited, tool calls and items, plus
+  flags. Counts only. This App reads it like the connector sensor (one more allowlisted GET, projected: only the
+  integer counts, the known flags and the window are kept).
+- **Problems.** Each flag is one problem `ai_activity:<ai>:<flag>` (a warning, pushed once, in the morning summary):
+  - `MANY_REFUSED`: many requests were refused this week (the kill switch, the owner stop or a limit).
+  - `RATE_LIMITED`: the per-minute read limit was hit.
+  - `NEW_AI`: an AI read the house for the first time.
+  Each says how to stop AI reads with the AI kill switch tile in Home Assistant (no link: the owner page's address
+  names the Cloudflare account, which a store copy never contains). When the sensor is unreadable or `UNKNOWN`, open
+  problems are kept (never a false clear).
+- **Sunday line.** The weekly health message (GitHub and phone) adds "AI this week: Claude N requests (...)".
+
 ## 0.9.16
 
 AI reviews show up sooner (owner pop-up 2026-10-18 "All of the above"; Work Board #942 claim 6246316716). Contains

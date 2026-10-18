@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.16)
+## What it does (0.9.17)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -160,6 +160,9 @@ New in 0.5.1, all read-only:
   reconnected. From the AI Access sensor `sensor.house_brain_ai_connectors` it warns 14, 7 and 1 day ahead (Claude's
   alert links to https://claude.ai/customize/connectors) and at once when a sign-in was refused. The Cloudflare
   control's token warnings on #454 (30/14/7/1 days) are pushed to the phone too.
+- **Unusual AI activity (0.9.17)**: from the AI Access sensor `sensor.house_brain_ai_activity` (the last 7 days of
+  AI requests, counts only). One push when an AI had many refused requests, hit the per-minute limit, or read the
+  house for the first time; the AI kill switch tile in Home Assistant (`FULL_STOP`) stops AI reads. The Sunday weekly health message also carries one line: each AI's requests that week.
 - **Kept local Observer / Inspector (0.9.10)**: after a store switch, the local Engineering Observer or Inspector
   is stopped on purpose as the rollback. Home Assistant shows it as "error" after that stop, but it is not reported
   as a problem while the store one is in use. If an undo puts the local one back in use, it is watched again.

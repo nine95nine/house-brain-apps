@@ -164,6 +164,7 @@ SHARED_WS_BACKOFF_MAX = 60.0
 FORENSICS_ENTITY = "sensor.house_brain_connection_forensics_last_restart"
 DEPLOYER_STATUS_ENTITY = "sensor.house_brain_deployer_status"      # 0.5.2: PLANNED vs UNPLANNED_CLEAN join
 AI_CONNECTORS_ENTITY = "sensor.house_brain_ai_connectors"        # 0.9.11: AI Access 0.1.5-dev connector sign-ins
+AI_ACTIVITY_ENTITY = "sensor.house_brain_ai_activity"            # 0.9.17: AI Access 0.1.6-dev weekly AI activity
 RECOVERY_READ_ENTITIES = frozenset({
     FORENSICS_ENTITY, DEPLOYER_STATUS_ENTITY,
     "sensor.house_brain_network_outage_class", "sensor.house_brain_network_outage_summary",
@@ -172,7 +173,7 @@ RECOVERY_READ_ENTITIES = frozenset({
     "sensor.sense_51446_l1_voltage", "sensor.enphase_solar_power_now",
 })
 # 0.9.11: the one other entity it may read (credential heads-up), kept apart from the Recovery Report's own list.
-CREDENTIAL_READ_ENTITIES = frozenset({AI_CONNECTORS_ENTITY})
+CREDENTIAL_READ_ENTITIES = frozenset({AI_CONNECTORS_ENTITY, AI_ACTIVITY_ENTITY})  # 0.9.17: + weekly AI activity
 RECOVERY_NOTIFICATION_ID = "hbm_recovery_report"
 # 0.5.3: the Google Drive Backup App (sabeechen/hassio-google-drive-backup) copies backups to Google Drive
 # outside Home Assistant's own backup locations and reports it on this one entity (read-only, projected).
@@ -285,6 +286,8 @@ def project_attrs(entity_id: str, attrs: Any) -> dict:
                 else None}
     if entity_id == AI_CONNECTORS_ENTITY:
         return {"providers": project_connectors(attrs.get("providers"))}
+    if entity_id == AI_ACTIVITY_ENTITY:
+        return project_activity(attrs)
     return {}
 
 
@@ -308,6 +311,28 @@ def project_connectors(raw: Any) -> dict:
                      else None,
                      "expires_on": end if isinstance(end, str) and RE_CONNECTOR_DAY.fullmatch(end) else None}
     return out
+
+
+ACTIVITY_COUNTS = ("requests", "answered", "refused", "rate_limited", "tool_calls", "items")
+ACTIVITY_FLAGS = frozenset({"MANY_REFUSED", "RATE_LIMITED", "NEW_AI"})
+
+
+def project_activity(attrs: Any) -> dict:
+    """0.9.17: per known provider only its integer counts, the known flags and the window; anything else dropped."""
+    attrs = attrs if isinstance(attrs, dict) else {}
+    raw, providers = attrs.get("providers"), {}
+    for name in CONNECTOR_PROVIDERS:
+        row = raw.get(name) if isinstance(raw, dict) else None
+        if not isinstance(row, dict):
+            continue
+        providers[name] = {k: v if isinstance(v := row.get(k), int) and not isinstance(v, bool) and 0 <= v < 10**9
+                           else 0 for k in ACTIVITY_COUNTS}
+    flags = []
+    for f in attrs.get("flags") if isinstance(attrs.get("flags"), list) else []:
+        if isinstance(f, dict) and f.get("provider") in CONNECTOR_PROVIDERS and f.get("flag") in ACTIVITY_FLAGS:
+            flags.append({"provider": f["provider"], "flag": f["flag"]})
+    days = {k: d if isinstance(d := attrs.get(k), str) and RE_CONNECTOR_DAY.fullmatch(d) else None for k in ("from", "to")}
+    return {"providers": providers, "flags": flags, **days}
 
 RE_INSTANCE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 

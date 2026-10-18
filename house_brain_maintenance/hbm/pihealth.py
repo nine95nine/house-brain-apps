@@ -241,7 +241,7 @@ def remember_undervoltage(doc: dict, value: int | None, now: float) -> int | Non
 
 
 def weekly_text(score: int, parts: dict, history: list, temp: float | None, rate: float | None,
-                throttled: int | None, version: str, why: dict | None = None) -> tuple[str, str]:
+                throttled: int | None, version: str, why: dict | None = None, ai: str | None = None) -> tuple[str, str]:
     last = history[-1][1] if history else None
     trend = "" if last is None else f" (last week {last})"
     lines = ["### House Brain Maintenance: weekly health score", "",
@@ -254,8 +254,9 @@ def weekly_text(score: int, parts: dict, history: list, temp: float | None, rate
                                                   ", ".join(THROTTLE_BITS[b] for b in sorted(THROTTLE_BITS)
                                                             if throttled & (1 << b)) or "none"),
              "- Disk writes: " + (f"{rate:g} GB/day" if rate is not None else "not measured yet"),
+             *([f"- {ai}"] if ai else []),                     # 0.9.17: the weekly AI activity line
              f"- **App:** `{version}`", "",
              "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._"]
     phone = f"Health score {score}/100{trend}: {parts['critical']} critical, " \
-            f"{parts['hardware_backup'] + parts['warnings']} warnings open"
+            f"{parts['hardware_backup'] + parts['warnings']} warnings open" + (f". {ai}" if ai else "")
     return "\n".join(lines), phone[:200]
