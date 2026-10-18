@@ -26,10 +26,23 @@ and left it without any AI review while the reviewer routines were failing silen
   ``MAX_INSTALLS``): the App, the Apps that need its services and the integrations it provides. A problem first seen
   in that window about one of them carries ``"after_update": "<item>"`` in its queue entry (the newest such install).
 
+0.9.19 (owner pop-up 2026-10-18 "Build both as 0.9.19"; reviewer chat audit of #454). Live findings:
+
+* **Stale review reuse.** A review was matched by the problem key only, so the 2026-10-13 review of
+  ``backup:incomplete`` (the local Observer, stopped on purpose) was shown on 2026-10-18 next to the same key about a
+  different App (ESPHome Device Builder). Now each problem has a fingerprint of what it says (its title with numbers
+  masked: "ends in 12 days" and "ends in 11 days" are the same problem, "misses Observer" and "misses ESPHome" are
+  not). When it changes, a review posted before the change no longer counts and the problem is queued again.
+* **Late queueing.** Problems first alerted before the queue line existed, or cut from a long morning summary,
+  reached the queue only on Sunday (Assist Microphone after 12 days). Now every alerted open problem without a
+  counting review that no posted queue line has named since its facts last changed is named in a short "problems
+  waiting for AI review" post (at most every ``QUEUE_POST_HOURS``).
+
 ``CONTROL_AUTHORITY=NONE``. Cost: the review read shares the update reviews' paged read cadence; $0.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -59,6 +72,9 @@ AFTER_UPDATE_HOURS = 24
 MAX_INSTALLS = 20
 RE_DOMAIN = re.compile(r"^[a-z0-9_]{1,64}$")
 RE_AFTER = re.compile(r'"after_update":"[^"\\]*"')
+FP_DOC_KEY = "fps"                 # 0.9.19: watch state {problem key: [fingerprint, since]} (kept after a clear)
+MAX_FPS = 500
+QUEUE_POST_HOURS = 1.0
 
 
 def parse(comment: dict, owner: str) -> list[dict]:
@@ -89,8 +105,37 @@ def parse(comment: dict, owner: str) -> list[dict]:
     return out
 
 
+def fingerprint(title: str) -> str:
+    """0.9.19: what a problem says, numbers masked (counts and days change daily; names and kinds do not)."""
+    norm = re.sub(r"\d+", "#", " ".join(str(title or "").lower().split()))
+    return hashlib.sha256(norm.encode()).hexdigest()[:12]
+
+
+def note_fingerprint(fps: dict, key: str, title: str, now: float, existed: bool) -> float:
+    """Record ``key``'s fingerprint; returns since when its facts are as they are now. A key first fingerprinted while
+    it was already open (before 0.9.19) counts as changed now, so an old review is checked once more."""
+    fp = fingerprint(title)
+    prev = fps.get(key)
+    if isinstance(prev, list) and len(prev) == 2 and prev[0] == fp:
+        return float(prev[1])
+    since = now if (prev is not None or existed) else 0.0
+    fps[key] = [fp, since]
+    if len(fps) > MAX_FPS:
+        for old in sorted(fps, key=lambda k: float(fps[k][1]) if isinstance(fps[k], list) else 0.0)[:len(fps) - MAX_FPS]:
+            fps.pop(old, None)
+    return since
+
+
 class ProblemReviews(A.AiReviews):
     DOC = DOC
+    since: dict = {}                    # 0.9.19: problem key -> when its facts last changed (set by the watcher)
+
+    def get(self, item: str) -> dict | None:
+        """0.9.19: a review counts only when it was posted after the problem's facts last changed."""
+        r = super().get(item)
+        if r is not None and float(r.get("at") or 0) < float((self.since or {}).get(item, 0) or 0):
+            return None
+        return r
 
     @staticmethod
     def _parse(comment: dict, owner: str) -> list[dict]:
@@ -180,12 +225,31 @@ def problem_waits(open_recs: dict, queued: dict, reviews) -> list[tuple[str, flo
     return out
 
 
-def note_queued(doc: dict, keys: list[str], open_keys: set[str], now: float) -> dict:
-    """The watch doc with ``keys`` (just posted in a queue line) added; problems no longer open are dropped."""
+def note_queued(doc: dict, keys: list[str], open_keys: set[str], now: float, since: dict | None = None) -> dict:
+    """The watch doc with ``keys`` (just posted in a queue line) added; problems no longer open are dropped. 0.9.19:
+    a key queued before its facts last changed (``since``) is queued anew (the watchdog counts from now)."""
     queued = {k: t for k, t in ((doc or {}).get("queued") or {}).items() if k in open_keys}
+    since = since or {}
     for key in keys:
-        queued.setdefault(key, now)
+        if key not in queued or float(queued[key]) < float(since.get(key, 0) or 0):
+            queued[key] = now
     return {"queued": dict(sorted(queued.items(), key=lambda kv: kv[1])[-MAX_QUEUED_KEPT:])}
+
+
+def need_queue(open_recs: dict, queued: dict, reviews, since: dict | None = None) -> list[tuple[str, str, str]]:
+    """0.9.19: (key, title, source) of each alerted open problem without a counting review that no posted queue line
+    has named since its facts last changed (never the reviewer watchdog itself)."""
+    since = since or {}
+    out = []
+    for key, rec in sorted(open_recs.items(), key=lambda kv: float((kv[1] or {}).get("first") or 0)):
+        if key == STALL_KEY or not isinstance(rec, dict) or not rec.get("alerted") or not RE_KEY.fullmatch(key):
+            continue
+        if reviews.get(key) is not None:
+            continue
+        if key in queued and float(queued[key]) >= float(since.get(key, 0) or 0):
+            continue
+        out.append((key, str(rec.get("title", key)), str(rec.get("source", ""))))
+    return out[:MAX_QUEUE]
 
 
 def stalled(waits: list[tuple[str, float]], now: float) -> list[I.Finding]:

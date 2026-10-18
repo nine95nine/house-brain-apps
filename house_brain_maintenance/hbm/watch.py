@@ -118,6 +118,7 @@ class Watcher:
         self.review_waits: Callable[[], list | None] | None = None
         self.queued: list[str] = []                           # 0.9.12: problem keys in the queue line being posted
         self.messenger = None                                 # 0.9.18: kept messages + pushes (set by the Service)
+        self.queue_posts = True                               # 0.9.19: "problems waiting for AI review" posts
 
     # -- state -------------------------------------------------------------------------
     def _state(self) -> dict:
@@ -132,7 +133,15 @@ class Watcher:
         st.setdefault("disk_samples", [])
         st.setdefault("device_sweep", {"at": 0, "rows": []})
         st.setdefault("stopped_since", {})
+        st.setdefault(PR.FP_DOC_KEY, {})               # 0.9.19: problem fingerprints (what each one says)
         return st
+
+    def _since(self, st: dict) -> dict:
+        """0.9.19: problem key -> when its facts last changed; a review posted before that no longer counts."""
+        since = {k: float(v[1]) for k, v in st.get(PR.FP_DOC_KEY, {}).items() if isinstance(v, list) and len(v) == 2}
+        if self.problem_ai is not None:
+            self.problem_ai.since = since
+        return since
 
     # -- collection --------------------------------------------------------------------
     def kept_rollbacks(self) -> set[str]:
@@ -250,6 +259,7 @@ class Watcher:
     def check(self) -> dict:
         now = self.clock()
         st = self._state()
+        self._since(st)                                         # 0.9.19: before any review is looked at
         first_seen = {k: v["first"] for k, v in st["open"].items()}
         findings, failed = self.collect(first_seen, now)
         findings += self._device_findings(st, now, failed)
@@ -288,6 +298,7 @@ class Watcher:
         installs = None
         for f in findings:
             rec = st["open"].setdefault(f.key, {"first": now, "polls": 0, "alerted": False})
+            PR.note_fingerprint(st[PR.FP_DOC_KEY], f.key, f.title, now, existed=bool(rec["polls"]))   # 0.9.19
             if not rec["polls"]:                # 0.9.12: first seen now; within 24 h after an install about it?
                 if installs is None:
                     installs = (self.j.load_doc(PR.INSTALLS_DOC, {}) or {}).get("installs") or []
@@ -339,10 +350,12 @@ class Watcher:
             st["open"][f.key]["alerted"] = True
         st["log_reported"] = {k: t for k, t in st["log_reported"].items() if now - t < LOG_REPORT_SECONDS}
         self.j.save_doc(DOC, st)
+        self._since(st)                                         # 0.9.19: this check's fingerprints
         outcome = self._offer_fix(st, current, now)
         self._maybe_escalate(now)                              # 0.9.6: open 7 days -> one push
         self._maybe_summary(now)
         self._maybe_still_open(now)                            # 0.9.6: weekly still-open list
+        self._maybe_queue_post(now)                            # 0.9.19: every problem reaches the AI review
         self._maybe_backup_report(now)
         self._maybe_health_score(now)
         self._maybe_housekeeping_report(now)
@@ -493,6 +506,32 @@ class Watcher:
         self.j.audit("issues", "STILL_OPEN_DIGEST", items=len(items))
         self._post(I.scrub(text, 60000))
 
+    def _maybe_queue_post(self, now: float) -> None:
+        """0.9.19: alerted open problems without a counting AI review that no posted queue line named since their
+        facts last changed are named in one short post (at most every PR.QUEUE_POST_HOURS)."""
+        ai = self.problem_ai
+        if ai is None or not ai.enabled or not self.queue_posts:
+            return
+        st = self._state()
+        if now - float(st.get("queue_post_at") or 0) < PR.QUEUE_POST_HOURS * 3600:
+            return
+        queued = (self.j.load_doc(PR.WATCH_DOC, {}) or {}).get("queued") or {}
+        rows = PR.need_queue(st["open"], queued, ai, self._since(st))
+        if not rows:
+            return
+        st["queue_post_at"] = now
+        self.j.save_doc(DOC, st)
+        from . import VERSION
+        lines = ["### House Brain Maintenance: problems waiting for AI review", ""]
+        lines += [f"- **{I.scrub(t, 160)}** (`{k}`)" for k, t, _ in rows]
+        lines += ["", "Each one is new to the review, or what it says changed since its last AI review (an older "
+                      "review no longer counts for it).", "", f"- **App:** `{VERSION}`", "",
+                  "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._", "",
+                  PR.queue_line(rows, ai, PR.after_tags(st["open"]))]
+        self.queued = [n["key"] for n in PR.queue_entries(rows, ai)]
+        self.j.audit("issues", "PROBLEM_QUEUE_POSTED", items=len(rows))
+        self._post(I.scrub("\n".join(lines), 60000))
+
     def _markdown(self, heading: str, items: list[dict], cleared: list[str] = ()) -> str:
         lines = [f"### House Brain Maintenance: {heading}", ""]
         for it in items:
@@ -532,8 +571,9 @@ class Watcher:
             return
         if queued:                                  # 0.9.12: the reviewer watchdog counts from the first post
             doc = self.j.load_doc(PR.WATCH_DOC, {})
+            st = self._state()
             self.j.save_doc(PR.WATCH_DOC, PR.note_queued(doc if isinstance(doc, dict) else {}, queued,
-                                                         set(self._state()["open"]), self.clock()))
+                                                         set(st["open"]), self.clock(), self._since(st)))
 
     def note_install(self, item: str, apps, domains) -> None:
         """0.9.12: remember an installed update for PR.AFTER_UPDATE_HOURS (the problem queue's after_update tag)."""

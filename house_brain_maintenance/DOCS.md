@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.18)
+## What it does (0.9.19)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -502,6 +502,14 @@ them once and never again. Now:
 - **After an update (0.9.12).** For 24 hours after an App update is installed, a new problem with that App, an App
   that needs it (Zigbee2MQTT needs Mosquitto) or an integration it provides (MQTT) carries `"after_update":
   "<item>"` in the review list, so the reviewer looks at the update first.
+
+**AI problem reviews, from 0.9.19.**
+- **A review only counts for the problem it was written about.** If what a problem says changes (for example the
+  backup now misses a different App), the older review no longer counts, and the problem goes back for review.
+  Changing numbers, like "ends in 12 days" and then "11 days", do not count as a change.
+- **Every problem reaches the review the first time it is reported.** A short "problems waiting for AI review" post
+  on the tracking issue names each one at most once an hour; it no longer waits for the Sunday list.
+- After updating to 0.9.19, problems that were already open are reviewed once more.
 
 ## Moving the old Deployer's history — from 0.9.5
 

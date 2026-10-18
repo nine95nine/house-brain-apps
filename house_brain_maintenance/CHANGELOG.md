@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.19
+
+AI problem reviews (owner pop-up 2026-10-18 "Build both as 0.9.19", from the reviewer chat's audit of #454; Work Board
+#942 claim 6252353111). Contains 0.9.18 unchanged otherwise.
+
+- **Stale review reuse.** On 2026-10-18 the morning summary showed "Your newest full backup misses ... ESPHome Device
+  Builder" next to the 2026-10-13 review of the same problem key about a different App. A review now counts only
+  for what the problem said when the review was posted. Each problem keeps a fingerprint of its text with numbers
+  masked, so "ends in 12 days" and "ends in 11 days" stay the same problem. When it changes, the problem goes back
+  into the review queue, and the reviewer watchdog counts from that new post.
+- **Late queueing.** Assist Microphone (open 12 days) and the large database (7 days) first reached the review queue
+  in the Sunday list. Now every alerted open problem without a counting review is named in a short "problems
+  waiting for AI review" post on the tracking issue, at most once an hour, the first time it is reported or
+  changes.
+- After updating, problems that were already open are checked once more by the AI reviewer.
+
 ## 0.9.18
 
 Your messages (owner 2026-10-18: "I got something but I clicked it and it disappeared"; owner pop-ups "Messages
