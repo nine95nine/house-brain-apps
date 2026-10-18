@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.15)
+## What it does (0.9.16)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -612,6 +612,9 @@ route stays for old pages.
 - `ai_review: false` switches the list and the gate off, and every update behaves as in 0.8.8.
 - From 0.9.0 each read takes every page of the issue's comments (at most 1,000). In 0.8.9 the first read took only the
   oldest 100, so a review could be found hours late.
+- From 0.9.16 new reviews are read on every poll, at most every 10 minutes, so the Maintenance page shows a posted
+  review within about 10 minutes (before: at the next hourly update check). Asks and installs still wait for the
+  update check.
 
 ## Updates waiting and "Ask me again" — from 0.7.2
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.16
+
+AI reviews show up sooner (owner pop-up 2026-10-18 "All of the above"; Work Board #942 claim 6246316716). Contains
+0.9.15 unchanged otherwise.
+
+- A posted AI update review used to be read only at the hourly update check, so the page could say "AI review:
+  not posted yet" for up to an hour after it was posted (live 2026-10-17: posted 14:29 UTC, still "not posted yet"
+  at 15:28). Reviews are now read on every poll, at most every 10 minutes (about 6 GitHub reads an hour, $0), and
+  the page shows them within about 10 minutes. Asking on the phone and installing still happen at the update check,
+  as before.
+
 ## 0.9.15
 
 Installed-App list fix (live 2026-10-18; Work Board #942 claim 6245993918). Contains 0.9.14 unchanged otherwise.

@@ -717,6 +717,7 @@ class Service:
         if not self.poll_after_update():                # an after-update check is open: no new update starts,
             self.poll_updates()                         # but the problem watch keeps running (it skips the
         self.poll_update_queue()                        # 0.8.9: the "updates waiting" list (only when it changed)
+        self.poll_reviews()                             # 0.9.16: new AI reviews reach the page within READ_EVERY
         if self.engine is not None:                     # 0.9.0: the page's "Needs your decision" list
             self.inbox.set_offered(self.offered_rows())
         self.poll_issues()                              # integrations the check is handling)
@@ -858,6 +859,19 @@ class Service:
             return self.recovery.status_attrs()
         except Exception:  # noqa: BLE001 - visibility only
             return {}
+
+    def poll_reviews(self) -> None:
+        """0.9.16 (owner pop-up 2026-10-18 "All of the above"): read new AI update reviews on every poll, not only at the
+        hourly update check, so the page stops saying "AI review: not posted yet" for up to an hour after one was
+        posted (live 2026-10-17: posted 14:29Z, still "not posted yet" at 15:28Z). ``refresh`` itself reads at most
+        every READ_EVERY (10 minutes): about 6 GitHub reads an hour. Asks and installs still wait for the update
+        check, as before."""
+        if self.engine is None or self.ai is None:
+            return
+        try:
+            self.ai.refresh()
+        except net.NetError as err:
+            LOG.warning("AI review read waits (the last reviews read stand): %s", net.redact(str(err))[:200])
 
     def poll_updates(self) -> None:
         if time.monotonic() - self.last_update_check < self.o.update_check_minutes * 60 and self.last_update_check \
