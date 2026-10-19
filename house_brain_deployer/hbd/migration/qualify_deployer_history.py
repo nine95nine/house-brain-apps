@@ -23,7 +23,10 @@ OUTCOMES = {"SUCCEEDED", "DRY_RUN_OK", "DRY_RUN_BLOCKED", "ALREADY_APPLIED", "RE
             # Owner-approved lookups recorded by published 0.3.19-0.3.22 and by 0.3.23 itself: the live store
             # history already holds them (#561 6125839870, 6138174545), so a merge must accept them.
             "WRITER_ENROLLED", "WRITER_PROBE_ACQUIRED", "WRITER_PROBE_BUSY",
-            "LEGACY_PREPARED", "LEGACY_SELECTED", "LEGACY_UNSELECTED", "LEGACY_FAILED", "LEGACY_RESET"}
+            "LEGACY_PREPARED", "LEGACY_SELECTED", "LEGACY_UNSELECTED", "LEGACY_FAILED", "LEGACY_RESET",
+            # 0.3.33: the Companion requests of 0.3.30 record these; the live moved history holds them (#561
+            # 2026-10-19), and without them every start after 0.3.30 was held with STARTUP_REFUSED.
+            "COMPANION_KEY_READY", "COMPANION_SETUP_DONE", "COMPANION_SETUP_FAILED", "COMPANION_ALREADY_SET_UP"}
 STAGES = {"DEPLOY", "DRYRUN", "RESTART", "ROLLBACK", "LOOKUP"}
 UNKNOWN_DIGEST = "unknown"   # main.recover / _raw_digest when the request could not be read again
 

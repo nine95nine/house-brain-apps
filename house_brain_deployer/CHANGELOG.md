@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.33 — 2026-10-19 (startup hotfix: the moved history admits the Companion outcomes; owner "fix it")
+
+- Live fault: from the 0.3.31 update (2026-10-19 21:25Z) every start was held with `STARTUP_REFUSED` (#454 log reads
+  `log-deployer-2026-10-19-crash`, `-crash-b`), also on 0.3.32. Nothing in Home Assistant changed; no request ran.
+- Cause: 0.3.30 added the Companion outcomes `COMPANION_KEY_READY`, `COMPANION_SETUP_DONE`, `COMPANION_SETUP_FAILED`
+  and `COMPANION_ALREADY_SET_UP` but not to the history validator (`migration/qualify_deployer_history.OUTCOMES`). Its own
+  requests wrote two of them into the moved history (#561 `2026-10-19-companion-key`, `-key-2`, `-setup-1`), and the
+  moved-history startup re-validates the whole history, so every later start refused it.
+- Fix: the four outcomes are admitted. Nothing else in the validator changed; any other unknown outcome still refuses.
+- Guard: a test parses every `Result(<outcome>, ...)` in the App and requires each outcome to be in the validator's
+  list, so a future request kind cannot hold the Deployer the same way.
+
 ## 0.3.32 — 2026-10-19 (Companion set-up: config flow ids are ULIDs; owner pop-up "0.3.32, after 0.3.31")
 
 - Why: the first live set-up (`2026-10-19-companion-setup-1`, #561 6275794350) stopped at its first step with
