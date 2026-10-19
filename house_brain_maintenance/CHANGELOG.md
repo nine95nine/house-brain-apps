@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.23
+
+Messages that solve (owner pop-up 2026-10-19 "Build 0.9.23", from the reviewer chat; Work Board #942 claim
+6270906867). Contains 0.9.22 unchanged otherwise.
+
+- **Owner, 2026-10-19:** "Some of the updates tell me to go back to the messages; I need links to those messages, or
+  better yet the House Brain messaging page actually provides the actual solution, or has a button where I can click
+  and the AI actually fixes the issue itself."
+- **The AI review on each problem:** the verdict in words, its summary, the AI's numbered steps (the reviewer's new
+  `house_brain_ai_problem_steps.v1` line) and a "Full AI review" link.
+- **Fix it:** a problem with a built-in fix has a "Fix it" button. It uses the same confirm screen as "Needs your
+  decision"; your tap is the approval, and the result ("Fixed" / "The fix did not help") shows on the message. A fix
+  you approved on the page now runs before other fixes that wait.
+- **Links:** a failed job, the morning summary and the Sunday list link to their GitHub report; summaries link each
+  problem they name on the page; key-change notes link the tracking issue.
+- **Busy sensors named:** long entity ids in the large-database details are shown (digit runs of 6 or more as `[n]`).
+
 ## 0.9.22
 
 Apps with a hyphen in their slug, and checks that keep running (owner pop-up 2026-10-19 "Fix + keep checks running";

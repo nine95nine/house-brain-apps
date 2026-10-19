@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.22)
+## What it does (0.9.23)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -288,6 +288,22 @@ once I click them on my pop-up ... with the solution that the AI took, or with t
 **Repeats.** A critical problem you have not marked handled is pushed again every 4 hours, at most 3 times.
 
 **Sunday.** The weekly "still open" push adds "Open messages: N".
+
+**From 0.9.23: the solution is on the message.**
+- **The AI review.** Each problem shows the AI review in words (for example "approve the offered fix" or "needs a
+  step by you"), its summary, the AI's numbered steps and a **Full AI review** link. Links go only to github.com.
+  A review counts only for the facts it was written about (from 0.9.19).
+- **Fix it.** A problem that has a built-in fix (restart or start an App, reload an integration, apply a Repairs
+  suggestion, correct a statistics label) has a **Fix it: …** button. It opens the same confirm screen as "Needs your
+  decision"; after **Yes, approve** the fix runs within seconds with its usual checks, and the message shows
+  "Fixed: …" or "The fix did not help: …". The button alone changes nothing, and only your owner account counts.
+  "The AI recommends this fix" is shown when the AI says so. The extender power cycle stays on your phone only.
+- **Links instead of "see GitHub".** A failed job, the morning summary and the Sunday list link to their report on
+  GitHub. A summary lists the problems it names, each one a tap away on the same page.
+- **One message first.** The page address with `?msg=<message id>` shows that message at the top. A push still opens
+  the Maintenance page with the newest message first.
+- **Names of busy sensors.** Long sensor names (entity ids) in the large-database details are no longer hidden.
+  Runs of 6 or more digits in them (serial numbers) show as `[n]`.
 
 ## What it can never do
 

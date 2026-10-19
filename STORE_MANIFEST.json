@@ -22,8 +22,8 @@
     },
     "house_brain_maintenance": {
       "files": 51,
-      "source_manifest_sha256": "bb4417a28f20404cb31bd474a037e28a4fa5bf216bf9cdfbb3180cebccdb1591",
-      "version": "0.9.22"
+      "source_manifest_sha256": "e4c655d3c1d891e410b5dd7f1f49dba8881b70c2b8ff041b48267310a22ed5a9",
+      "version": "0.9.23"
     },
     "house_brain_maintenance_inventory_scout": {
       "files": 7,
@@ -32,6 +32,6 @@
     }
   },
   "schema_version": "house_brain_apps_store_manifest.v1",
-  "source_commit": "883ede4a83a19738a83ac19874eb0eee16c34279",
+  "source_commit": "693eec0cbe1da35abcfbeaff96139bfc6133de13",
   "source_repository": "private engineering repository"
 }

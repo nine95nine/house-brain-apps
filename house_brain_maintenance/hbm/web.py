@@ -328,12 +328,64 @@ MESSAGES_SHOWN = 60
 STATE_TEXT = {"open": "open", "handled": "handled by you", "resolved": "resolved", "info": "for your information"}
 
 
-def render_messages(items: list[dict], nonce: str, action: str, base: str, show: str = "all") -> str:
-    """0.9.18 Messages: every push this App sent, newest first, with who does what. "I've handled this" only marks
-    the message; it never switches anything."""
+RE_MSG_ID = re.compile(r"[a-f0-9]{12}")
+VERDICT_STYLE = {"FIX_NOW": "#81c784", "OWNER_ACTION": "#ffb74d", "WATCH": "#aaa", "IGNORE": "#aaa"}
+
+
+def _gh(url) -> bool:
+    return isinstance(url, str) and url.startswith("https://github.com/")
+
+
+def _ai_block(review: dict | None) -> str:
+    """0.9.23: the AI review of a problem: the verdict in words, its summary, its numbered steps, the full review."""
+    if not review:
+        return ""
     e = html.escape
+    color = VERDICT_STYLE.get(review.get("verdict"), "#aaa")
+    out = [f'<p><b>AI review:</b> <span style="color:{color}">{e(str(review.get("words", "")))}</span>'
+           + (f": {e(str(review['summary']))}" if review.get("summary") else "") + "</p>"]
+    steps = [s for s in review.get("steps") or [] if isinstance(s, str) and s]
+    if steps:
+        out.append("<p><b>The AI's steps:</b></p><ol>" + "".join(f"<li>{e(s)}</li>" for s in steps[:6]) + "</ol>")
+    if _gh(review.get("url")):
+        out.append(f'<p class="m"><a href="{e(review["url"])}" target="_blank" rel="noopener">Full AI review</a></p>')
+    return "".join(out)
+
+
+def _fix_block(row: dict | None, fix_nonce: str, fix_action: str, verdict: str) -> str:
+    """0.9.23 "Fix it": the existing two-step Approve (confirm screen, then it runs through the normal fix path)."""
+    if not row:
+        return ""
+    e = html.escape
+    label = str(row.get("label") or row.get("title") or "Fix")
+    if row.get("decision"):
+        word = {"approve": "approved", "reject": "declined"}.get(str(row["decision"]), str(row["decision"]))
+        return f'<p><b>Fix {e(word)}</b> ({e(label)}); it runs on the next check (seconds).</p>'
+    rec = '<p style="color:#81c784">The AI recommends this fix.</p>' if verdict == "FIX_NOW" else ""
+    return (f'{rec}<form method="post" action="{e(fix_action)}"><input type="hidden" name="nonce" value="{e(fix_nonce)}">'
+            f'<input type="hidden" name="key" value="{e(str(row.get("key", "")))}">'
+            f'<button class="a" name="choice" value="approve">Fix it: {e(label)}…</button></form>')
+
+
+def render_messages(items: list[dict], nonce: str, action: str, base: str, show: str = "all", *,
+                    review=None, fixes: dict | None = None, fix_nonce: str = "", fix_action: str = "",
+                    focus: str = "") -> str:
+    """0.9.18 Messages: every push this App sent, newest first, with who does what. "I've handled this" only marks
+    the message; it never switches anything. 0.9.23: each problem shows its AI review (verdict, steps, link), a
+    problem with a built-in fix has "Fix it" (the usual confirm step; the owner's tap is the approval), summaries
+    link the problems they name, and ``?msg=<id>`` shows that message first."""
+    e = html.escape
+    fixes = fixes or {}
+    every = list(items)
     if show == "open":
         items = [m for m in items if m.get("state") == "open"]
+    if RE_MSG_ID.fullmatch(focus or ""):
+        first = [m for m in every if m.get("id") == focus]
+        items = first + [m for m in items if m.get("id") != focus]
+    anchor = {}                                       # problem key -> its newest message (summaries link to it)
+    for m in every:
+        if m.get("key") and m["key"] not in anchor:
+            anchor[m["key"]] = m
     links = (f'<a href="{e(base)}/?show=open">Open only</a> · <a href="{e(base)}/">All</a>')
     if not items:
         return f'<h2 id="messages">Messages</h2><p class="m">{links}</p><p class="m">No messages.</p>'
@@ -358,8 +410,27 @@ def render_messages(items: list[dict], nonce: str, action: str, base: str, show:
             out.append("<p><b>What you need to do:</b> nothing; this is for your information.</p>")
         if m.get("if_ignored"):
             out.append(f"<p><b>If you do nothing:</b> {e(str(m['if_ignored']))}</p>")
+        refs = [anchor[k] for k in m.get("refs") or [] if k in anchor and anchor[k].get("id") != m.get("id")]
+        if refs:                                      # 0.9.23: each problem a summary names, one tap away
+            out.append("<p><b>The problems:</b></p><ul>" + "".join(
+                f'<li><a href="#msg-{e(str(r.get("id", "")))}">{e(str(r.get("title", "")))}</a>'
+                f' <span class="m">({e(STATE_TEXT.get(str(r.get("state")), str(r.get("state"))))})</span></li>'
+                for r in refs) + "</ul>")
         if isinstance(m.get("link"), str) and m["link"].startswith("https://"):
-            out.append(f'<p class="m"><a href="{e(m["link"])}" target="_blank" rel="noopener">More</a></p>')
+            label = "The report on GitHub" if _gh(m["link"]) else "More"
+            out.append(f'<p class="m"><a href="{e(m["link"])}" target="_blank" rel="noopener">{label}</a></p>')
+        review_doc = None
+        if m.get("key") and callable(review):
+            try:
+                review_doc = review(m["key"])
+            except Exception:  # noqa: BLE001 - the message shows without its review
+                review_doc = None
+            out.append(_ai_block(review_doc))
+        if m.get("fix_result"):
+            out.append(f"<p><b>Fix result:</b> {e(str(m['fix_result']))}</p>")
+        if state == "open" and m.get("key"):
+            out.append(_fix_block(fixes.get(f"fix-{m['key']}"[:80]), fix_nonce, fix_action,
+                                  (review_doc or {}).get("verdict", "")))
         if state in ("open", "info") and m.get("key"):
             out.append(f'<form method="post" action="{e(action)}"><input type="hidden" name="nonce" value="{e(nonce)}">'
                        f'<input type="hidden" name="id" value="{e(str(m.get("id", "")))}">'
@@ -436,8 +507,17 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, recovery=None, connect
                 return ""
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             show = "open" if (query.get("show") or [""])[0] == "open" else "all"
+            fixes = {}
+            if inbox is not None and callable(getattr(messages, "fixes", None)):
+                try:
+                    fixes = messages.fixes()
+                except Exception:  # noqa: BLE001 - the page shows without "Fix it"
+                    fixes = {}
             return render_messages(messages.items(), messages.nonce, f"{self._base()}/messages/handled",
-                                   self._base(), show)
+                                   self._base(), show, review=getattr(messages, "review", None), fixes=fixes,
+                                   fix_nonce=inbox.nonce if inbox is not None else "",
+                                   fix_action=f"{self._base()}/inbox/confirm",
+                                   focus=(query.get("msg") or [""])[0])
 
         def _extra(self) -> str:
             waiting = self._waiting() + self._messages()

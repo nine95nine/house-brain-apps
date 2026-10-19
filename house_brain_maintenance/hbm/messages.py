@@ -41,6 +41,8 @@ GROUPS = {"problem": "maintenance-problems", "ai": "maintenance-ai", "summary": 
           "result": "maintenance-results", "update": "maintenance-updates"}
 SEVERITIES = ("critical", "warning", "info")
 MAX_TEXT = 600
+MAX_REFS = 12                       # 0.9.23: problems a summary message links to on the page
+RE_REF = re.compile(r"[a-z_]{1,24}:[A-Za-z0-9_.:@/+-]{1,200}")
 
 
 def _clean(text, limit: int = MAX_TEXT) -> str:
@@ -100,7 +102,7 @@ class Messages:
 
     # -- writes (poll loop) ---------------------------------------------------------------------------------
     def add(self, kind: str, title: str, *, happened: str = "", done: str = "", todo=(), if_ignored: str = "",
-            severity: str = "info", key: str = "", link: str = "", detail=()) -> dict:
+            severity: str = "info", key: str = "", link: str = "", detail=(), refs=()) -> dict:
         """Keep one message. A problem (``key``) that is still open is updated, never kept twice."""
         now = self.clock()
         doc = self._doc()
@@ -110,6 +112,8 @@ class Messages:
                     m.update(title=_clean(title, 160), done=_clean(done) or m.get("done", ""),
                              todo=[_clean(s) for s in todo][:6], if_ignored=_clean(if_ignored),
                              detail=[_clean(d, 300) for d in detail][:3], seen_at=now)
+                    if _https(link):
+                        m["link"] = link
                     self._save(doc)
                     return dict(m)
         seed = f"{key or kind}|{title}|{now}|{secrets.token_hex(4)}"
@@ -118,7 +122,8 @@ class Messages:
                "title": _clean(title, 160), "happened": _clean(happened), "done": _clean(done),
                "todo": [_clean(s) for s in todo][:6], "if_ignored": _clean(if_ignored),
                "detail": [_clean(d, 300) for d in detail][:3],
-               "link": link if isinstance(link, str) and link.startswith("https://") else "",
+               "link": link if _https(link) else "",
+               "refs": [r for r in refs if isinstance(r, str) and RE_REF.fullmatch(r)][:MAX_REFS],
                "state": OPEN if key else INFO, "pushes": 0, "pushed_at": 0, "held": False}
         doc["items"].append(msg)
         self._save(doc)
@@ -130,6 +135,16 @@ class Messages:
             if m.get("id") == msg_id:
                 m.update(fields)
         self._save(doc)
+
+    def note_fix(self, key: str, text: str) -> None:
+        """0.9.23: the result of a fix run for problem ``key`` ("Fixed: …" / "The fix did not help: …") on its newest
+        message, so the page shows what happened where the owner tapped "Fix it"."""
+        doc = self._doc()
+        for m in reversed(doc["items"]):
+            if m.get("key") == key:
+                m["fix_result"] = _clean(text, 300)
+                self._save(doc)
+                return
 
     def resolve(self, key: str) -> list[dict]:
         """The problem ``key`` cleared: its open message is marked resolved (no new push)."""
@@ -191,6 +206,10 @@ class Messages:
 
     def held(self) -> list[dict]:
         return [m for m in self.items() if m.get("held")]
+
+
+def _https(link) -> bool:
+    return isinstance(link, str) and link.startswith("https://")
 
 
 def push_message(msg: dict) -> str:

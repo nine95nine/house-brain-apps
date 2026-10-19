@@ -54,6 +54,10 @@ DOC = "ai_problem_reviews"
 SCHEMA = "house_brain_ai_problem_review.v1"
 QUEUE_SCHEMA = "house_brain_problem_queue.v1"
 RE_MACHINE = re.compile(r"<!-- house_brain_ai_problem_review\.v1 (\{[^\n]*?\}) -->")
+# 0.9.23: the reviewer's numbered steps for one problem, posted next to its review line (reviewer chat 2026-10-19)
+RE_STEPS = re.compile(r"<!-- house_brain_ai_problem_steps\.v1 (\{[^\n]*?\}) -->")
+MAX_AI_STEPS = 6
+AI_STEP_CHARS = 120
 RE_KEY = re.compile(r"^[a-z_]{1,24}:[A-Za-z0-9_.:@/+-]{1,200}$")
 VERDICTS = ("FIX_NOW", "OWNER_ACTION", "WATCH", "IGNORE")
 WORDS = {"FIX_NOW": "approve the offered fix", "OWNER_ACTION": "needs a step by you", "WATCH": "wait and watch",
@@ -89,6 +93,7 @@ def parse(comment: dict, owner: str) -> list[dict]:
         return []
     url = comment.get("html_url") if isinstance(comment.get("html_url"), str) and re.fullmatch(
         r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+#issuecomment-\d+", comment["html_url"]) else ""
+    steps = parse_steps(body)
     out = []
     for raw in RE_MACHINE.findall(body)[:A.MAX_LINES_PER_COMMENT]:
         try:
@@ -101,7 +106,28 @@ def parse(comment: dict, owner: str) -> list[dict]:
         if not (isinstance(key, str) and RE_KEY.fullmatch(key)) or verdict not in VERDICTS:
             continue
         out.append({"item": key, "verdict": verdict, "summary": A._plain(doc.get("summary") or "", 200),
-                    "at": at, "url": url})
+                    "at": at, "url": url, **({"steps": steps[key]} if steps.get(key) else {})})
+    return out
+
+
+def parse_steps(body: str) -> dict[str, list[str]]:
+    """0.9.23: problem key -> the AI's steps from the same comment (closed shape ``{key, steps}``, 1 to MAX_AI_STEPS
+    plain strings of at most AI_STEP_CHARS). They count only next to a review of that key in the same comment."""
+    out: dict[str, list[str]] = {}
+    for raw in RE_STEPS.findall(body or "")[:A.MAX_LINES_PER_COMMENT]:
+        try:
+            doc = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(doc, dict) or set(doc) != {"key", "steps"}:
+            continue
+        key, steps = doc["key"], doc["steps"]
+        if not (isinstance(key, str) and RE_KEY.fullmatch(key)) or not isinstance(steps, list) \
+                or not 1 <= len(steps) <= MAX_AI_STEPS or not all(isinstance(s, str) for s in steps):
+            continue
+        clean = [A._plain(s, AI_STEP_CHARS) for s in steps]
+        if all(clean):
+            out[key] = clean
     return out
 
 
@@ -140,6 +166,17 @@ class ProblemReviews(A.AiReviews):
     @staticmethod
     def _parse(comment: dict, owner: str) -> list[dict]:
         return parse(comment, owner)
+
+    def detail(self, key: str) -> dict | None:
+        """0.9.23: what the Messages page shows for a problem: the verdict in words, the summary, the AI's steps and
+        the review's address (github.com only). None without a counting review."""
+        r = self.get(key) if self.enabled else None
+        if not r or r.get("verdict") not in WORDS:
+            return None
+        url = r.get("url") if isinstance(r.get("url"), str) and r["url"].startswith("https://github.com/") else ""
+        steps = [s for s in (r.get("steps") or []) if isinstance(s, str) and s][:MAX_AI_STEPS]
+        return {"verdict": r["verdict"], "words": WORDS[r["verdict"]], "summary": str(r.get("summary") or ""),
+                "steps": steps, "url": url}
 
     def line(self, key: str) -> str:
         """One plain line for a problem ("" without a review). Never an instruction to act."""

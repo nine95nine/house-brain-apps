@@ -264,8 +264,21 @@ _SCRUB = (
     (re.compile(r"(?i)\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}\b"), "[ip]"),
     (re.compile(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b"), "[mac]"),
     (re.compile(r"(https?://[^\s?#]+)\?[^\s]*"), r"\1?[query]"),
-    (re.compile(r"\b(?=[A-Za-z_\-]*\d)[A-Za-z0-9_\-]{32,}\b"), "[long-id]"),   # ids/keys contain digits
+    (re.compile(r"\b(?=[A-Za-z_\-]*\d)[A-Za-z0-9_\-]{32,}\b"), lambda m: _long_id(m)),   # ids/keys contain digits
 )
+# 0.9.23 (live 2026-10-19: the large-database details showed "sensor.[long-id]" three times, so the reviewer could
+# not name them): a Home Assistant entity id is a name, not a secret; its lower-case object id stays readable, with
+# any run of 6 or more digits (a device serial number) shown as "[n]" (still usable in a recorder glob: "*").
+RE_ENTITY_DOMAIN_END = re.compile(r"\b(?:sensor|binary_sensor|switch|light|script|automation|input_boolean|input_number"
+                                  r"|input_select|input_text|input_datetime|number|select|button|climate|update"
+                                  r"|device_tracker|person|cover|fan|lock|media_player|camera|weather|counter|timer"
+                                  r"|event|text|valve|water_heater)\.$")
+
+
+def _long_id(m: re.Match) -> str:
+    if re.fullmatch(r"[a-z0-9_]+", m.group(0)) and RE_ENTITY_DOMAIN_END.search(m.string[max(0, m.start() - 20):m.start()]):
+        return re.sub(r"\d{6,}", "[n]", m.group(0))
+    return "[long-id]"
 
 
 def scrub(text: str, limit: int = 600) -> str:

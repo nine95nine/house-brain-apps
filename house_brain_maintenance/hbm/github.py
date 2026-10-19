@@ -99,6 +99,13 @@ class GitHub:
         data = self._get(f"issues/{int(issue)}/comments", since=since, per_page="100", page=str(int(page)))
         return data if isinstance(data, list) else []
 
-    def comment(self, issue: int, body: str) -> None:
+    def comment(self, issue: int, body: str) -> str:
+        """Post one comment. 0.9.23: returns its address (``html_url``), "" when GitHub did not say."""
         self.calls += 1
-        self._send("POST", self._url(f"issues/{int(issue)}/comments"), body={"body": body[:60000]})
+        data = self._send("POST", self._url(f"issues/{int(issue)}/comments"), body={"body": body[:60000]})
+        url = data.get("html_url") if isinstance(data, dict) else None
+        return url if isinstance(url, str) and url.startswith("https://github.com/") else ""
+
+    def issue_url(self, issue: int) -> str:
+        """0.9.23: the tracking issue's address (a link where no comment address is known)."""
+        return f"https://github.com/{self.repo}/issues/{int(issue)}" if issue else ""

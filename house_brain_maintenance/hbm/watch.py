@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -50,6 +51,16 @@ RELAY_DOC = "relay_credential"
 RELAY_READ_EVERY = 20 * 3600       # the relay self-tests weekly; one read a day is plenty
 FIXED = "FIXED"
 NOT_FIXED = "NOT_FIXED"
+# 0.9.23: a report comment this App posted (its address is the message link)
+PAGE_FIX_KINDS = ("restart_app", "start_app", "reload_entry", "apply_suggestion", "relabel_stats")   # 0.9.23
+
+
+def fix_rid(key: str) -> str:
+    """0.9.23: the fix request id the phone ask (``_offer_fix``) and the page share."""
+    return f"fix-{key}"[:80]
+
+
+RE_COMMENT_URL = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+#issuecomment-\d+")
 
 
 @dataclass
@@ -120,6 +131,8 @@ class Watcher:
         self.queued: list[str] = []                           # 0.9.12: problem keys in the queue line being posted
         self.messenger = None                                 # 0.9.18: kept messages + pushes (set by the Service)
         self.queue_posts = True                               # 0.9.19: "problems waiting for AI review" posts
+        self.issue_url = ""                                   # 0.9.23: the tracking issue (set by the Service)
+        self.last_post_url = ""                               # 0.9.23: the newest report this App posted there
 
     # -- state -------------------------------------------------------------------------
     def _state(self) -> dict:
@@ -309,6 +322,10 @@ class Watcher:
                     rec["after_update"] = tag
             rec.update(polls=rec["polls"] + 1, title=f.title, severity=f.severity, clear=f.announce_clear,
                        source=f.source, steps=PR.detail_steps(f))           # 0.9.21: what can be done, for #454
+            if f.action:                        # 0.9.23: the page's "Fix it" button (the owner's tap approves)
+                rec["fix"] = {"kind": f.action.kind, "label": f.action.label[:80]}
+            else:
+                rec.pop("fix", None)
             diagnosis = f.facts.get("diagnosis")
             if diagnosis and diagnosis not in I.UNSURE_DIAGNOSES and rec.get("diagnosis") != diagnosis \
                     and now - rec.get("diagnosed_at", 0) >= REDIAGNOSE_SECONDS:
@@ -462,6 +479,36 @@ class Watcher:
                 "link": f.link, "detail": [I.scrub(d, 500) for d in f.detail][:3], "facts": f.facts,
                 "fix": f.action.label if f.action else None, "source": f.source}
 
+    def fix_rows(self) -> list[dict]:
+        """0.9.23 "Fix it" (owner pop-up 2026-10-19 "Build 0.9.23"): open problems with a built-in fix this App would
+        offer, as rows for the page's "Needs your decision" list (key ``FIX:fix-<key>|*``). Approve there (or on the
+        message) is the owner's decision; the fix then runs through ``_offer_fix`` with its usual checks. Never the
+        extender power cycle (phone only, with its own spacing), never in practice mode."""
+        if self.s.dry_run:
+            return []
+        st = self._state()
+        claimed = self.claimed()
+        rows = []
+        for key, rec in sorted(st["open"].items()):
+            fix = rec.get("fix") if isinstance(rec, dict) else None
+            if not isinstance(fix, dict) or fix.get("kind") not in PAGE_FIX_KINDS:
+                continue
+            if rec.get("polls", 0) < CONFIRM_POLLS or st["declined"].get(key) or key in claimed:
+                continue
+            review = None
+            try:
+                review = self.problem_ai.detail(key) if self.problem_ai is not None else None
+            except Exception:  # noqa: BLE001 - a review read problem never hides the fix
+                review = None
+            rows.append({"key": f"FIX:{fix_rid(key)}|*", "stage": "FIX", "problem": key,
+                         "title": f"{fix.get('label', 'Fix')}: {str(rec.get('title', key))[:80]}",
+                         "label": str(fix.get("label", "Fix"))[:80],
+                         "detail": "\n".join(f"- {s}" for s in (rec.get("steps") or [])[:2]),
+                         "ai": f"AI review: {review['words']}" + (f": {review['summary']}" if review["summary"] else "")
+                         if review else "", "ai_url": (review or {}).get("url", ""),
+                         "ai_verdict": (review or {}).get("verdict", "")})
+        return rows
+
     def _ai_line(self, key: str) -> str:
         try:
             return self.problem_ai.line(key) if self.problem_ai is not None else ""
@@ -483,9 +530,9 @@ class Watcher:
         self._say("summary", "Maintenance: still not fixed after a week",
                   happened=f"{len(due)} open {PR.ESCALATE_DAYS}+ days: {names}.",
                   done="Nothing new: each one is in your Messages list with its steps.",
-                  todo=("Open each one in your Messages list and follow its steps.",),
+                  todo=("Follow the steps of each problem linked below.",),
                   if_ignored="They stay open and are listed again each Sunday.", old_text=old,
-                  url=getattr(self.s, "open_url", None))
+                  url=getattr(self.s, "open_url", None), refs=[k for k, _, _ in due])   # 0.9.23: linked on the page
         self.j.audit("issues", "PROBLEM_ESCALATED", items=len(due))
 
     def _maybe_still_open(self, now: float) -> None:
@@ -502,12 +549,13 @@ class Watcher:
         text, phone = PR.digest_text(items, self.problem_ai, VERSION)
         self.queued = [n["key"] for n in PR.queue_entries([(k, str(r.get("title", k)), "") for k, r, _ in items],
                                                           self.problem_ai)]
+        url = self._post(I.scrub(text, 60000))                   # 0.9.23: first, so the message links to it
         opened = len(self.messenger.store.open_items()) if self.messenger is not None else None
         self._say("summary", "Maintenance: still open this week",
                   happened=phone + (f"\nOpen messages: {opened} (Maintenance page -> Messages)." if opened else ""),
-                  done="Nothing new: this is the weekly list.", old_text=phone)
+                  done="Nothing new: this is the weekly list.", old_text=phone, link=url or self.issue_url,
+                  refs=[k for k, _, _ in items])
         self.j.audit("issues", "STILL_OPEN_DIGEST", items=len(items))
-        self._post(I.scrub(text, 60000))
 
     def _maybe_queue_post(self, now: float) -> None:
         """0.9.19: alerted open problems without a counting AI review that no posted queue line named since their
@@ -602,18 +650,23 @@ class Watcher:
         # which can contain an e-mail address (live 2026-09-30, iAquaLink).
         return I.scrub("\n".join(lines), 60000)
 
-    def _post(self, text: str) -> None:
+    def _post(self, text: str) -> str:
+        """Post a report on the tracking issue. 0.9.23: returns its address ("" when unknown or it failed)."""
         queued, self.queued = self.queued, []
         try:
-            self.report(text)
+            url = self.report(text)
         except Exception as err:  # noqa: BLE001 - the phone push already told the owner
             self.j.audit("issues", "REPORT_FAILED", error=str(err)[:200])
-            return
+            return ""
+        url = url if isinstance(url, str) and RE_COMMENT_URL.fullmatch(url) else ""
+        if url:
+            self.last_post_url = url
         if queued:                                  # 0.9.12: the reviewer watchdog counts from the first post
             doc = self.j.load_doc(PR.WATCH_DOC, {})
             st = self._state()
             self.j.save_doc(PR.WATCH_DOC, PR.note_queued(doc if isinstance(doc, dict) else {}, queued,
                                                          set(st["open"]), self.clock(), self._since(st)))
+        return url
 
     def note_install(self, item: str, apps, domains) -> None:
         """0.9.12: remember an installed update for PR.AFTER_UPDATE_HOURS (the problem queue's after_update tag)."""
@@ -624,7 +677,7 @@ class Watcher:
 
     def _say(self, kind: str, title: str, *, happened: str = "", done: str = "", todo=(), if_ignored: str = "",
              severity: str = "info", key: str = "", link: str = "", detail=(), push: bool = True,
-             old_text: str = "", url: str | None = None) -> None:
+             old_text: str = "", url: str | None = None, refs=()) -> None:
         """0.9.18: keep the message, then push it (its own tag, a tap opens the Messages list). Without a message
         store (older wiring) the push is the one before 0.9.18 (``old_text``)."""
         m = self.messenger
@@ -633,7 +686,7 @@ class Watcher:
                 approval.inform(self.ha, self.s.notify_service, title[:120], (old_text or happened)[:900], url=url)
             return
         msg = m.store.add(kind, title, happened=happened, done=done, todo=todo, if_ignored=if_ignored,
-                          severity=severity, key=key, link=link, detail=detail)
+                          severity=severity, key=key, link=link, detail=detail, refs=refs)
         if push:
             m.send(msg, critical=severity == I.CRITICAL)
 
@@ -646,11 +699,13 @@ class Watcher:
     def _kind(f: I.Finding) -> str:
         return "ai" if f.source in ("ai_activity", "credential_connector") else "problem"
 
-    @staticmethod
-    def _parts(f: I.Finding) -> dict:
-        return {"happened": f.detail[0] if f.detail else "", "done": I.done_text(f), "todo": I.owner_steps(f),
-                "if_ignored": f.if_ignored, "severity": f.severity, "key": f.key, "link": f.link or "",
-                "detail": f.detail}
+    def _parts(self, f: I.Finding) -> dict:
+        todo = I.owner_steps(f)
+        # 0.9.23: a step that points at GitHub gets the tracking issue as the message's link (never a dead end)
+        github = not f.link and any("GitHub" in s for s in (*todo, *f.steps))
+        return {"happened": f.detail[0] if f.detail else "", "done": I.done_text(f), "todo": todo,
+                "if_ignored": f.if_ignored, "severity": f.severity, "key": f.key,
+                "link": f.link or (self.issue_url if github else ""), "detail": f.detail}
 
     def _messages_tick(self) -> None:
         """0.9.18: handled marks, the overnight hold, repeats of unhandled CRITICAL problems and the bell."""
@@ -838,12 +893,13 @@ class Watcher:
         if cleared:
             lines.append(f"Fixed/cleared: {len(cleared)} ({'; '.join(c[:40] for c in cleared[:3])})")
         title = f"Maintenance: {total} to look at" if items else "Maintenance: problems cleared"
+        url = self._post(self._markdown("morning summary", items, cleared))   # 0.9.23: first, for the link
         self._say("summary", title, happened="\n".join(lines)[:600],
                   done="Nothing new: each item is in your Messages list with its own steps.",
-                  todo=("Open your Messages list and follow each item's steps.",) if items else (),
-                  old_text="\n".join(lines)[:900])
+                  todo=("Follow each item's steps: each one is linked below.",) if items else (),
+                  old_text="\n".join(lines)[:900], link=url or self.issue_url,
+                  refs=[str(it.get("key", "")) for it in items])
         self.j.audit("issues", "PROBLEM_SUMMARY", items=len(items), cleared=len(cleared))
-        self._post(self._markdown("morning summary", items, cleared))
 
     # -- fixes ---------------------------------------------------------------------------
     def _offer_fix(self, st: dict, current: dict[str, I.Finding], now: float) -> str | None:
@@ -866,7 +922,9 @@ class Watcher:
                       and not st["declined"].get(f.key) and due(f) and f.key not in self.claimed()]
         if not candidates:
             return None
-        candidates.sort(key=lambda f: (f.severity != I.CRITICAL, f.key))
+        # 0.9.23: a fix the owner already approved on the page goes first (no phone ask in front of it)
+        candidates.sort(key=lambda f: (not approval.decided("FIX", f"fix-{f.key}"[:80]), f.severity != I.CRITICAL,
+                                       f.key))
         f = candidates[0]
         if len(st["asks"]) >= self.p.max_fix_asks_per_day and not approval.decided("FIX", f"fix-{f.key}"[:80]):
             # Daily limit reached: tell (once) instead of asking.
@@ -904,6 +962,9 @@ class Watcher:
             self.j.save_doc(DOC, st)
         outcome, note = self.run_fix(f)
         self.j.audit(rid, "FIX_" + outcome, fix=f.action.kind, note=note[:200])
+        if self.messenger is not None:          # 0.9.23: the result on the problem's own message too
+            self.messenger.store.note_fix(f.key, (f"Fixed: {note}" if outcome == FIXED
+                                                  else f"The fix did not help: {note}"))
         title = f"Maintenance: {'fixed' if outcome == FIXED else 'not fixed'}"
         body = f"{f.title}\n{note}" + ("" if outcome == FIXED else "\nNext: " + " ".join(f.steps[:2]))
         self._say("result", title, happened=f.title,

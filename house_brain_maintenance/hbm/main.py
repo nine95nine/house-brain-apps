@@ -394,8 +394,23 @@ class Service:
         from .messages import Messages, Messenger, parse_quiet
         self.messages = Messages(self.j)
         self.messages.owner = self._owner_id
+        self.messages.review = self._problem_review                          # 0.9.23: the page's AI block
+        self.messages.fixes = self._page_fixes                               # 0.9.23: the page's "Fix it"
         self.messenger = Messenger(self.ha, self.messages, self.o.notify_service, open_url=self._open_url,
                                    quiet=parse_quiet(self.o.quiet_hours))
+
+    def _problem_review(self, key: str) -> dict | None:
+        """0.9.23: the AI review of a problem as the Messages page shows it (None without one)."""
+        ai = getattr(self.watcher, "problem_ai", None) if self.watcher is not None else None
+        return ai.detail(key) if ai is not None else None
+
+    def _page_fixes(self) -> dict:
+        """0.9.23: fix request id (``fix-<problem key>``) -> its "Needs your decision" row (inbox key, label, AI
+        verdict, decision). Both an offered fix and a missed phone ask of one count."""
+        if self.inbox is None:
+            return {}
+        return {i["key"].split("|", 1)[0][4:]: i for i in self.inbox.items()
+                if i.get("stage") == "FIX" and i.get("resumable") and str(i.get("key", "")).startswith("FIX:")}
 
     def _open_url(self) -> str:
         """The tap link of every push: the Maintenance page (its Messages list)."""
@@ -498,6 +513,8 @@ class Service:
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
             self.watcher.step_errors = self.step_errors                   # 0.9.22
             self.watcher.messenger = self.messenger                       # 0.9.18
+            if self.o.report_issue and hasattr(self.gh, "issue_url"):     # 0.9.23: links instead of "see GitHub"
+                self.watcher.issue_url = self.gh.issue_url(self.o.report_issue)
             if self.o.report_issue and self.o.ai_review:                  # 0.9.6: AI problem reviews
                 from .problems import ProblemReviews
                 self.watcher.problem_ai = ProblemReviews(self.gh, self.j, self.o.report_issue)
@@ -619,20 +636,23 @@ class Service:
         self.j.audit(request_id, "OUTCOME", job=job, outcome=result.outcome, reasons=result.reasons[:5])
         self.status(result.outcome, {"request_id": request_id, "job": job, "version": VERSION,
                                      "dry_run": self.o.dry_run})
+        url = ""
+        if issue:                                       # 0.9.23: posted first, so the message links to the report
+            try:
+                url = self.gh.comment(issue, report_markdown(request_id, job, result, self.o.dry_run)) or ""
+            except net.NetError as err:
+                self.j.audit(request_id, "REPORT_FAILED", error=str(err)[:200])
+            if not url and hasattr(self.gh, "issue_url"):
+                url = self.gh.issue_url(issue)
         if notify:                                      # 0.9.18: kept in the Messages list, own tag
             reasons = "; ".join(str(r)[:120] for r in result.reasons[:3])
             failed = result.outcome in (FAILED, FAILED_MANUAL)
             msg = self.messages.add(
                 "result", f"Maintenance: {result.outcome}", happened=f"{request_id} ({job})",
                 done=f"{result.outcome}: {reasons}" if reasons else result.outcome,
-                todo=((f"Details are on GitHub issue #{issue}." if issue else "Details are in the App log."),)
-                if failed else (), severity="warning" if failed else "info")
+                todo=(("Read the full report: the link below." if url else "Details are in the App log."),)
+                if failed else (), severity="warning" if failed else "info", link=url)
             self.messenger.send(msg)
-        if issue:
-            try:
-                self.gh.comment(issue, report_markdown(request_id, job, result, self.o.dry_run))
-            except net.NetError as err:
-                self.j.audit(request_id, "REPORT_FAILED", error=str(err)[:200])
         if result.outcome == FAILED_MANUAL:
             self.j.freeze(request_id)
         elif result.outcome in (DONE, RESTORED, ROLLED_BACK) and self.j.frozen_by() == request_id:
@@ -860,11 +880,18 @@ class Service:
                              + (f"\nThis App's review: {row.get('verdict')}" if row.get("verdict") else ""),
                              "ai": ai, "ai_url": (review or {}).get("url", ""),
                              "ai_verdict": (review or {}).get("verdict", "")})
+        if self.watcher is not None and not self.o.dry_run:   # 0.9.23: "Fix it" for problems with a built-in fix
+            try:
+                rows += self.watcher.fix_rows()
+            except Exception as err:  # noqa: BLE001 - the update rows stay; the fix rows return next poll
+                LOG.warning("fix rows wait: %s", net.redact(f"{type(err).__name__}: {err}")[:200])
         return rows
 
-    def report_text(self, text: str) -> None:
+    def report_text(self, text: str) -> str:
+        """Post on the tracking issue; 0.9.23: returns the comment's address ("" when unknown)."""
         if self.o.report_issue:
-            self.gh.comment(self.o.report_issue, text)
+            return self.gh.comment(self.o.report_issue, text) or ""
+        return ""
 
     def poll_issues(self) -> None:
         if not self.o.issue_checks:

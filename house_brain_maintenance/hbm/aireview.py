@@ -153,7 +153,7 @@ class AiReviews:
             for r in self._parse(c, self.owner):
                 old = reviews.get(r["item"])
                 if old is None or r["at"] >= float(old.get("at") or 0):     # the newest review of an item wins
-                    reviews[r["item"]] = {k: r[k] for k in ("verdict", "summary", "at", "url")}
+                    reviews[r["item"]] = {k: r[k] for k in ("verdict", "summary", "at", "url", "steps") if k in r}
         doc["reviews"] = {k: v for k, v in reviews.items() if now - float(v.get("at") or 0) < KEEP}
         doc["since"] = _iso(max(newest - 1, now - LOOKBACK))
         doc["read_at"] = now
