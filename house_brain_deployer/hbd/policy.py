@@ -25,6 +25,15 @@ DENIED_TOP_LEVEL_KEYS = frozenset({
     "frontend", "lovelace", "api", "websocket_api", "auth", "default_config",
 })
 RE_DENIED_TAG = re.compile(r"!(include\w*|env_var)\b")
+
+# 0.3.31 (owner pop-ups 2026-10-19 "Teach the Deployer to do it", "Build as 0.3.31"): the one recorder shape a
+# package may carry. The whole file is ``recorder: exclude: entities/entity_globs`` lists and nothing else, so it
+# only stops new history rows (Home Assistant merges package dict/list keys into the root recorder config).
+# purge_keep_days, include, db_url, auto_purge and every other recorder key stay refused: they could delete
+# history. Block style only; every item is one entity id or one glob.
+RE_RECORDER_ENTITY = re.compile(r"^[a-z][a-z0-9_]{0,40}\.[a-z0-9_]{1,200}$")
+RE_RECORDER_GLOB = re.compile(r"^[a-z][a-z0-9_]{0,40}\.[a-z0-9_*]{1,200}$")
+MAX_RECORDER_EXCLUDES = 200
 RE_TOP_KEY = re.compile(r"^([A-Za-z0-9_]+)\s*:(\s|$)")
 
 DEFAULT_SENSITIVE_PATTERNS = (
@@ -113,10 +122,15 @@ def scan_package(data: bytes, sensitive_patterns: tuple[str, ...] = DEFAULT_SENS
                 continue
             key = m.group(1)
             top_keys.append(key)
-            if key in DENIED_TOP_LEVEL_KEYS:
+            if key in DENIED_TOP_LEVEL_KEYS and not (key == "recorder" and _recorder_exclude(text) is not None):
                 errors.append(f"DENIED_KEY:{key}")
     if len(top_keys) != len(set(top_keys)):
         errors.append("DUPLICATE_TOP_LEVEL_KEY")
+
+    excluded = _recorder_exclude(text) if "recorder" in top_keys else None
+    if excluded is not None:
+        shown = ", ".join(excluded[:8]) + (f" +{len(excluded) - 8} more" if len(excluded) > 8 else "")
+        flags.append(f"stops recording {len(excluded)} entities (deletes nothing): {shown}")
 
     for pattern in sensitive_patterns:
         rx = re.compile(pattern)
@@ -125,3 +139,59 @@ def scan_package(data: bytes, sensitive_patterns: tuple[str, ...] = DEFAULT_SENS
     if "!secret" in text:
         flags.append("uses !secret")
     return errors, flags
+
+
+def _recorder_exclude(text: str) -> list[str] | None:
+    """Return the excluded entity ids/globs when ``text`` is exactly the allowed recorder shape, else None.
+
+    Allowed (comments and blank lines anywhere; any indentation that nests)::
+
+        recorder:
+          exclude:
+            entities:
+              - sensor.a
+            entity_globs:
+              - sensor.b_*
+
+    Anything else (another top-level key, another recorder key, a value on a key line, flow style, a repeated
+    section, an empty section, an inline comment, a tab, uneven list indentation, an item that is not exactly one
+    entity id or glob) returns None, and ``recorder`` stays a denied key.
+    """
+    level, items, seen, counts = 0, [], set(), {}
+    exclude_indent = section_indent = item_indent = -1
+    section = ""
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        if indent == 0:
+            if level or stripped != "recorder:":
+                return None
+            level = 1
+        elif level == 1 and stripped == "exclude:":
+            level, exclude_indent = 2, indent
+        elif level >= 2 and stripped in ("entities:", "entity_globs:") and indent > exclude_indent:
+            section = stripped[:-1]
+            if section in counts or (level == 3 and indent != section_indent):
+                return None
+            level, section_indent, item_indent, counts[section] = 3, indent, -1, 0
+        elif level == 3 and stripped.startswith("- ") and indent >= section_indent:
+            if item_indent not in (-1, indent):
+                return None
+            item_indent = indent
+            item = stripped[2:].strip()
+            if section == "entities":
+                ok = RE_RECORDER_ENTITY.fullmatch(item) is not None
+            else:
+                ok = RE_RECORDER_GLOB.fullmatch(item) is not None and "*" in item
+            if not ok or item in seen:
+                return None
+            seen.add(item)
+            items.append(item)
+            counts[section] += 1
+        else:
+            return None
+    if not items or len(items) > MAX_RECORDER_EXCLUDES or 0 in counts.values():
+        return None
+    return items

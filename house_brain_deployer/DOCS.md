@@ -28,6 +28,14 @@ one of its entities. The approval message says so and names the entity. The Depl
 values it already holds (no message is sent to the device, nothing is written) and posts only each parameter's
 number, name, value, unit and default.
 
+## Stop recording busy entities (0.3.31)
+
+A package may contain **only** `recorder:` → `exclude:` → `entities:` and/or `entity_globs:` lists. Home Assistant
+adds those to your recorder exclude list, so the named entities stop getting new history rows; **nothing is
+deleted** and how many days are kept is unchanged. The approval message lists them ("stops recording N entities
+(deletes nothing)"). Any other recorder setting (days kept, include, database) is still refused. To undo, use
+**Undo this install** or retire the file.
+
 ## House Brain Companion set-up (0.3.30)
 
 Two fixed requests set up the House Brain Companion (the free explain-only AI) without you typing anything:

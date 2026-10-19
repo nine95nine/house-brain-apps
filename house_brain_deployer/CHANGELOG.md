@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.31 — 2026-10-19 (recorder exclude packages; owner pop-ups "Teach the Deployer to do it", "Build as 0.3.31")
+
+- Why: the history database is 7.7 GB (#454 hk:db_large). The owner approved to stop recording 4 busy entities
+  (about 74,000 rows a day) and chose to have the Deployer apply it instead of a hand edit of configuration.yaml.
+- A package may now carry top-level `recorder` in exactly one shape: the whole file is
+  `recorder: exclude: entities: [...]` and/or `entity_globs: [...]` in block style, each item one entity id or
+  glob, at most 200. Home Assistant merges those lists into the root recorder exclude, so it only stops new rows.
+- Every other recorder key stays refused (`purge_keep_days`, `include`, `db_url`, `auto_purge`, `commit_interval`,
+  `exclude: domains/event_types` ...), as does any other shape (flow style, empty or repeated sections, uneven
+  lists, quoted items, another top-level key in the same file): `DENIED_KEY:recorder`, before any ask.
+- The approval text lists what stops being recorded: "REVIEW: <file> stops recording N entities (deletes nothing):
+  ...". Undo is the usual Undo or a retire of the file. Both phone taps, the strict config check, the partial
+  backup, rollback on failure and the log scan are unchanged.
+- Tests: `test_recorder_exclude.py` (shape, flag, 30 refused shapes, mimic prompt and refusal); mutants RX01–RX07, RX09.
+- Stacked on 0.3.30 (Companion set-up); nothing of 0.3.30 changes.
+
 ## 0.3.30 — 2026-10-19 (House Brain Companion set-up; owner pop-ups "Yes, one tap" and "Pi makes it, nobody sees it")
 
 - Why: the owner asked that the AI do the Companion set-up so they have no steps left. The Home Assistant part was
