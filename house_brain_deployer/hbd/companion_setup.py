@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -190,10 +191,14 @@ def _expect(result: dict, kind_: str, step: str | None = None) -> dict:
     return result
 
 
-def _flow_id(result: dict) -> str:
+RE_CONFIG_FLOW_ID = re.compile(r"^[0-9A-Z]{26}$")    # 0.3.32: Core's config flows use ulid_now()
+RE_SUBENTRY_FLOW_ID = re.compile(r"^[0-9a-f]{32}$")  # subentry flows use the base FlowManager's random_uuid_hex()
+
+
+def _flow_id(result: dict, shape: re.Pattern) -> str:
     fid = result.get("flow_id")
-    if not isinstance(fid, str) or len(fid) != 32:
-        raise SetupError("FLOW_ID_SHAPE")
+    if not isinstance(fid, str) or not shape.fullmatch(fid):
+        raise SetupError("FLOW_ID_SHAPE", f"{type(fid).__name__}:{len(fid) if isinstance(fid, str) else '-'}")
     return fid
 
 
@@ -203,7 +208,7 @@ def setup(ha, key: str, url: str, sleep=time.sleep, monotonic=time.monotonic, pr
     facts: dict = progress if progress is not None else {}
     # 1. server
     first = _expect(ha.config_flow(None, {"handler": COMPANION_DOMAIN, "show_advanced_options": False}), "form", "user")
-    flow = _flow_id(first)
+    flow = _flow_id(first, RE_CONFIG_FLOW_ID)
     server = ha.config_flow(flow, {"base_url": url, "api_key": key})
     if server.get("type") == "abort" and server.get("reason") == "already_configured":
         raise SetupError("ALREADY_CONFIGURED")
@@ -221,7 +226,7 @@ def setup(ha, key: str, url: str, sleep=time.sleep, monotonic=time.monotonic, pr
     # 3. re-save without the control API
     start = _expect(ha.subentry_flow(None, {"handler": [entry_id, "conversation"],
                                            "subentry_id": convo[0]["subentry_id"]}), "form", "init")
-    saved = ha.subentry_flow(_flow_id(start), {"recommended": True, "chat_model": COMPANION_MODEL})
+    saved = ha.subentry_flow(_flow_id(start, RE_SUBENTRY_FLOW_ID), {"recommended": True, "chat_model": COMPANION_MODEL})
     if saved.get("type") != "abort" or saved.get("reason") != "reconfigure_successful":
         raise SetupError("CONTROL_NOT_REMOVED", f"{saved.get('type')}/{saved.get('reason')}")
     entities = [e for e in ha.ws_once({"type": "config/entity_registry/list"}, timeout=60) or []

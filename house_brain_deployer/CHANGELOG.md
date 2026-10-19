@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.32 — 2026-10-19 (Companion set-up: config flow ids are ULIDs; owner pop-up "0.3.32, after 0.3.31")
+
+- Why: the first live set-up (`2026-10-19-companion-setup-1`, #561 6275794350) stopped at its first step with
+  `FLOW_ID_SHAPE`, and nothing was created. Core's `ConfigEntriesFlowManager.async_init` (2026.10.1
+  `homeassistant/config_entries.py:1610`) makes config flow ids with `ulid_now()`, which is 26 characters. Only the base
+  `FlowManager`, which subentry flows use, makes the 32-hex `random_uuid_hex()`. 0.3.30 allowed 32 hex for both.
+- The config-flow step path and the set-up check now take exactly a 26-character upper-case ULID. The subentry-flow step
+  path keeps exactly 32 hex. Each shape is refused on the other path. The refusal names the type and length it saw.
+- The mimic now uses Core's two shapes, and it reproduced the live `FLOW_ID_SHAPE` before the fix.
+- Nothing else changed. The 0.3.31 recorder-exclude release comes first (stacked).
 ## 0.3.31 — 2026-10-19 (recorder exclude packages; owner pop-ups "Teach the Deployer to do it", "Build as 0.3.31")
 
 - Why: the history database is 7.7 GB (#454 hk:db_large). The owner approved to stop recording 4 busy entities

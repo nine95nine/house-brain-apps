@@ -40,7 +40,9 @@ _HTTP_ALLOW: tuple[tuple[str, re.Pattern], ...] = (
     # 0.3.30 (owner pop-up 2026-10-19 "Yes, one tap"): the Companion setup only, after the owner's approval. Every
     # body is pinned by _body_guard below: one integration (llama_cpp), one URL, one model, no control API.
     ("POST", re.compile(r"^/core/api/config/config_entries/flow$")),
-    ("POST", re.compile(r"^/core/api/config/config_entries/flow/[0-9a-f]{32}$")),
+    # 0.3.32: a config flow id is a 26-character ULID (Core ConfigEntriesFlowManager.async_init, ulid_now()); a
+    # subentry flow id stays 32 hex (base FlowManager, random_uuid_hex()).
+    ("POST", re.compile(r"^/core/api/config/config_entries/flow/[0-9A-Z]{26}$")),
     ("POST", re.compile(r"^/core/api/config/config_entries/subentries/flow$")),
     ("POST", re.compile(r"^/core/api/config/config_entries/subentries/flow/[0-9a-f]{32}$")),
     ("DELETE", re.compile(r"^/core/api/config/config_entries/entry/[0-9A-Z]{26}$")),  # undo of this run's entry only
@@ -95,7 +97,7 @@ def _guard(method: str, path: str) -> None:
     raise ForbiddenCall(f"{method} {path}")
 
 
-_FLOW = re.compile(r"^/core/api/config/config_entries/flow/[0-9a-f]{32}$")
+_FLOW = re.compile(r"^/core/api/config/config_entries/flow/[0-9A-Z]{26}$")
 _SUB_FLOW = re.compile(r"^/core/api/config/config_entries/subentries/flow/[0-9a-f]{32}$")
 
 
