@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.20)
+## What it does (0.9.21)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -510,6 +510,13 @@ them once and never again. Now:
 - **Every problem reaches the review the first time it is reported.** A short "problems waiting for AI review" post
   on the tracking issue names each one at most once an hour; it no longer waits for the Sunday list.
 - After updating to 0.9.19, problems that were already open are reviewed once more.
+
+**Problem details for the AI reviewers, from 0.9.21.**
+- What each open problem suggests (for the large database: the busiest sensors by entity id and rows a day, never
+  their values) is posted to the tracking issue again, not only in its first report. A "problem details" post names
+  problems whose suggestions are new or changed, at most once a day; the "waiting for AI review" post now carries
+  the same lines.
+- Only while AI problem reviews are on. A problem that clears and comes back is posted again.
 
 ## Moving the old Deployer's history — from 0.9.5
 

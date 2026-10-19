@@ -306,7 +306,7 @@ class Watcher:
                 if tag:
                     rec["after_update"] = tag
             rec.update(polls=rec["polls"] + 1, title=f.title, severity=f.severity, clear=f.announce_clear,
-                       source=f.source)
+                       source=f.source, steps=PR.detail_steps(f))           # 0.9.21: what can be done, for #454
             diagnosis = f.facts.get("diagnosis")
             if diagnosis and diagnosis not in I.UNSURE_DIAGNOSES and rec.get("diagnosis") != diagnosis \
                     and now - rec.get("diagnosed_at", 0) >= REDIAGNOSE_SECONDS:
@@ -356,6 +356,7 @@ class Watcher:
         self._maybe_summary(now)
         self._maybe_still_open(now)                            # 0.9.6: weekly still-open list
         self._maybe_queue_post(now)                            # 0.9.19: every problem reaches the AI review
+        self._maybe_details_post(now)                          # 0.9.21: new or changed problem details on #454
         self._maybe_backup_report(now)
         self._maybe_health_score(now)
         self._maybe_housekeeping_report(now)
@@ -523,13 +524,50 @@ class Watcher:
         self.j.save_doc(DOC, st)
         from . import VERSION
         lines = ["### House Brain Maintenance: problems waiting for AI review", ""]
-        lines += [f"- **{I.scrub(t, 160)}** (`{k}`)" for k, t, _ in rows]
+        for k, t, _ in rows:
+            lines.append(f"- **{I.scrub(t, 160)}** (`{k}`)")
+            lines += [f"  - Suggested: {s}" for s in (st["open"].get(k) or {}).get("steps") or []]   # 0.9.21
         lines += ["", "Each one is new to the review, or what it says changed since its last AI review (an older "
                       "review no longer counts for it).", "", f"- **App:** `{VERSION}`", "",
                   "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._", "",
                   PR.queue_line(rows, ai, PR.after_tags(st["open"]))]
         self.queued = [n["key"] for n in PR.queue_entries(rows, ai)]
         self.j.audit("issues", "PROBLEM_QUEUE_POSTED", items=len(rows))
+        self._post(I.scrub("\n".join(lines), 60000))
+
+    def _maybe_details_post(self, now: float) -> None:
+        """0.9.21 (reviewer request 2026-10-18, owner pop-up "Build 0.9.21"): an open problem's "what you can do"
+        lines (for the large database: the busiest sensors by entity id and rows a day, never values) reached the
+        tracking issue only in its first report. Problems whose lines are new or changed since they were last
+        posted are posted in one "problem details" post, at most every PR.DETAILS_HOURS."""
+        ai = self.problem_ai                    # for the AI reviewers: only while AI problem reviews are on
+        if ai is None or not ai.enabled or not self.queue_posts:
+            return
+        st = self._state()
+        posted = st.setdefault("details_posted", {})
+        gone = [key for key in posted if key not in st["open"]]
+        for key in gone:
+            del posted[key]                     # cleared: posted again if it comes back
+        if gone:
+            self.j.save_doc(DOC, st)
+        if now - float(st.get("details_post_at") or 0) < PR.DETAILS_HOURS * 3600:
+            return
+        rows = PR.details_due(st["open"], posted)
+        if not rows:
+            return
+        from . import VERSION
+        lines = ["### House Brain Maintenance: problem details", "",
+                 "What can be done about each open problem whose details are new or changed (no sensor values; "
+                 "nothing is changed without your approval).", ""]
+        for key, rec, fp in rows:
+            lines.append(f"- **{I.scrub(str(rec.get('title', key)), 160)}** (`{key}`)")
+            lines += [f"  - Suggested: {s}" for s in rec.get("steps") or []]
+            posted[key] = fp
+        lines += ["", f"- **App:** `{VERSION}`", "",
+                  "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._"]
+        st["details_post_at"] = now
+        self.j.save_doc(DOC, st)
+        self.j.audit("issues", "PROBLEM_DETAILS_POSTED", items=len(rows))
         self._post(I.scrub("\n".join(lines), 60000))
 
     def _markdown(self, heading: str, items: list[dict], cleared: list[str] = ()) -> str:

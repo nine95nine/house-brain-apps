@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.21
+
+Problem details reach the AI reviewers (owner pop-up 2026-10-19 "Build 0.9.21", from the reviewer chat; Work Board
+#942 claim 6256752715). Contains 0.9.20 unchanged otherwise.
+
+- **Reviewer request:** the reviewer could not see which sensors make the database large. The suggested steps (the
+  busiest sensors by entity id and rows a day) went to the tracking issue only in the problem's first report, and
+  the "waiting for AI review" post named only titles.
+- **Now:** a "problem details" post (at most once a day) gives each open problem's suggested steps when they are
+  new or changed, and the waiting-for-review post carries the same lines. Sensor values are never posted. Only
+  while AI problem reviews are on.
+
 ## 0.9.20
 
 Deployer safety copies are not your full backups (owner pop-up 2026-10-18 "Build 0.9.20", from the reviewer chat;

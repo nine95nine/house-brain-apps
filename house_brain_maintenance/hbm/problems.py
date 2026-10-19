@@ -236,6 +236,29 @@ def note_queued(doc: dict, keys: list[str], open_keys: set[str], now: float, sin
     return {"queued": dict(sorted(queued.items(), key=lambda kv: kv[1])[-MAX_QUEUED_KEPT:])}
 
 
+DETAILS_HOURS = 24.0                # 0.9.21: at most one "problem details" post a day
+MAX_DETAIL_STEPS = 4
+MAX_DETAILS = 15
+
+
+def detail_steps(f) -> list[str]:
+    """0.9.21: a problem's "what you can do" lines as posted on the tracking issue (scrubbed, bounded)."""
+    return [I.scrub(str(s), 500) for s in tuple(f.steps or ())[:MAX_DETAIL_STEPS]]
+
+
+def details_due(open_recs: dict, posted: dict) -> list[tuple[str, dict, str]]:
+    """0.9.21: (key, record, steps fingerprint) of alerted open problems whose lines were never posted or changed
+    since (numbers masked), oldest first; never the reviewer watchdog itself."""
+    out = []
+    for key, rec in sorted(open_recs.items(), key=lambda kv: float((kv[1] or {}).get("first") or 0)):
+        if key == STALL_KEY or not isinstance(rec, dict) or not rec.get("alerted") or not rec.get("steps"):
+            continue
+        fp = fingerprint(" | ".join(rec["steps"]))
+        if posted.get(key) != fp:
+            out.append((key, rec, fp))
+    return out[:MAX_DETAILS]
+
+
 def need_queue(open_recs: dict, queued: dict, reviews, since: dict | None = None) -> list[tuple[str, str, str]]:
     """0.9.19: (key, title, source) of each alerted open problem without a counting review that no posted queue line
     has named since its facts last changed (never the reviewer watchdog itself)."""
