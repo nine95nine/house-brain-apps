@@ -343,6 +343,7 @@ class Service:
                  approval_timeout: float, board: ApprovalBoard | None = None,
                  scout_run_timeout: float = 600.0, poll: float = 5.0, health_scale: float = 1.0) -> None:
         self.o = opts
+        self.step_errors: dict[str, str] = {}           # 0.9.22: shared with the Watcher (a failing step = a problem)
         self.ha = ha
         self.gh = gh
         self.j = journal
@@ -495,6 +496,7 @@ class Service:
                                 backup_report=self.o.backup_report, pi_health=self.o.pi_health,
                                 housekeeping=self.o.housekeeping)
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
+            self.watcher.step_errors = self.step_errors                   # 0.9.22
             self.watcher.messenger = self.messenger                       # 0.9.18
             if self.o.report_issue and self.o.ai_review:                  # 0.9.6: AI problem reviews
                 from .problems import ProblemReviews
@@ -750,12 +752,19 @@ class Service:
             return
         if self.poll_keys():                            # 0.8.0: at most one key step, then the next poll
             return
-        if not self.poll_after_update():                # an after-update check is open: no new update starts,
-            self.poll_updates()                         # but the problem watch keeps running (it skips the
-        self.poll_update_queue()                        # 0.8.9: the "updates waiting" list (only when it changed)
-        self.poll_reviews()                             # 0.9.16: new AI reviews reach the page within READ_EVERY
-        if self.engine is not None:                     # 0.9.0: the page's "Needs your decision" list
-            self.inbox.set_offered(self.offered_rows())
+        try:                                            # 0.9.22: a failing update step never stops the problem watch
+            if not self.poll_after_update():            # an after-update check is open: no new update starts,
+                self.poll_updates()                     # but the problem watch keeps running (it skips the
+            self.poll_update_queue()                    # 0.8.9: the "updates waiting" list (only when it changed)
+            self.poll_reviews()                         # 0.9.16: new AI reviews reach the page within READ_EVERY
+            if self.engine is not None:                 # 0.9.0: the page's "Needs your decision" list
+                self.inbox.set_offered(self.offered_rows())
+        except Exception as err:  # noqa: BLE001 - shown as a problem (issues.from_step_errors), retried next poll
+            message = net.redact(f"{type(err).__name__}: {err}")[:300]
+            LOG.warning("update step failed (problem checks continue): %s", message)
+            self.step_errors["updates"] = message
+        else:
+            self.step_errors.pop("updates", None)
         self.poll_issues()                              # integrations the check is handling)
 
     def app_update_done(self, kind: str, txn: dict) -> None:

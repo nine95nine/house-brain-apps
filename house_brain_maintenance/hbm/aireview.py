@@ -31,7 +31,7 @@ from dataclasses import dataclass
 
 SCHEMA = "house_brain_ai_update_review.v1"
 RE_MACHINE = re.compile(r"<!-- house_brain_ai_update_review\.v1 (\{[^\n]*?\}) -->")
-RE_ITEM = re.compile(r"^(?:app:[a-z0-9][a-z0-9_]{0,99}|core|os|pifw|entity:[a-z0-9_]{1,40}\.[a-z0-9_]{1,200})"
+RE_ITEM = re.compile(r"^(?:app:[a-z0-9][a-z0-9_-]{0,99}|core|os|pifw|entity:[a-z0-9_]{1,40}\.[a-z0-9_]{1,200})"
                      r"@[0-9A-Za-z][0-9A-Za-z._+:-]{0,39}$")
 VERDICTS = ("APPROVE", "HOLD", "DECLINE")
 DOC = "ai_reviews"

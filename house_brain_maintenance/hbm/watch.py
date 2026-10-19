@@ -103,6 +103,7 @@ class Watcher:
         self.clock = clock
         # 0.6.3 Credential Autopilot: this App's own GitHub sign-in summary (set by the Service)
         self.credentials: Callable[[], dict] | None = None
+        self.step_errors: dict[str, str] = {}                 # 0.9.22: poll steps that failed this poll
         # 0.6.3: the relay's public dispatch-key view (option relay_credential_url; "" = off)
         self.relay_url = ""
         self.key_findings: Callable[[], list] | None = None   # 0.8.0: automatic Broker keys (failures only)
@@ -266,6 +267,7 @@ class Watcher:
         findings += I.from_liveness(self.j.load_doc(LIVENESS_DOC, {}), now)
         findings += self._credential_findings(failed)
         findings += self._reviewer_findings(st, now, failed)    # 0.9.12: reviewer watchdog
+        findings += I.from_step_errors(self.step_errors)       # 0.9.22: a failing update step is a problem
         if self.os_findings is not None:
             try:
                 findings += self.os_findings()

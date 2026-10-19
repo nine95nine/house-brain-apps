@@ -829,6 +829,29 @@ def from_liveness(doc: dict, now: float) -> list[Finding]:
                     steps=steps, facts={"status": status, "detail": str(doc.get("detail") or "")[:120]})]
 
 
+# -- 0.9.22: a poll step that keeps failing ----------------------------------------------------------------------------
+STEP_TITLES = {"updates": "Maintenance cannot check for updates"}
+
+
+def from_step_errors(errors: dict[str, str]) -> list[Finding]:
+    """0.9.22 (live 2026-10-19: every poll stopped at "ForbiddenCall: GET /addons/<hyphen slug>/info", so the problem
+    watch never ran and nothing reached the owner): a failing poll step is a problem the owner sees, by the error's
+    type only in the title; the problem watch itself keeps running."""
+    out = []
+    for step, message in sorted((errors or {}).items()):
+        if step not in STEP_TITLES:
+            continue
+        kind = str(message).split(":", 1)[0][:40] or "error"
+        out.append(Finding(f"maint:step_failed:{step}", "maintenance", WARNING, f"{STEP_TITLES[step]} ({kind})",
+                           detail=(scrub(str(message), 300),),
+                           steps=("Update this App when an update is offered: this is a fault in this App.",
+                                  "Problem checks, messages and reports keep working meanwhile."),
+                           done="Nothing: I keep checking problems and try the update check again on every poll.",
+                           if_ignored="Updates of Apps, Core and OS are not reviewed or offered until it is fixed.",
+                           facts={"step": step, "error_type": kind}))
+    return out
+
+
 # -- 0.5.1: Apps stopped for a month -----------------------------------------------------------
 def from_stopped_apps(stopped_since: dict[str, float], names: dict[str, str], now: float) -> list[Finding]:
     out = []

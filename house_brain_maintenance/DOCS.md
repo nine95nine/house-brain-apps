@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.21)
+## What it does (0.9.22)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -346,6 +346,11 @@ If the Supervisor lists an App whose name (slug) this App does not accept, that 
 Every other App is still watched and updated. You get one problem, "N installed App(s) could not be read, so they
 are not watched or updated", and the status sensor shows `apps_skipped`. Nothing about that App is shown. Before
 0.9.15 one such App stopped every job ("APPS_SHAPE", live 2026-10-18).
+
+**From 0.9.22:** Apps with a hyphen in their slug are read, reviewed and updated like any other. Before 0.9.22 an
+update for such an App stopped every check (status `ERROR` "ForbiddenCall", live 2026-10-19). If the update check
+itself ever fails again, problem checks, messages and reports keep running, and you get one problem, "Maintenance
+cannot check for updates", until it works again.
 
 ## Automatic Broker keys — from 0.8.0
 

@@ -26,7 +26,7 @@ from .journal import Journal
 DOC = "holds"
 MAX_ITEMS = 50
 RE_VER = r"[0-9A-Za-z][0-9A-Za-z._+-]{0,39}"
-RE_ITEM = re.compile(rf"^(?:(?:core|os)(?:@{RE_VER})?|app:[a-z0-9][a-z0-9_]{{0,99}}(?:@{RE_VER})?"
+RE_ITEM = re.compile(rf"^(?:(?:core|os)(?:@{RE_VER})?|app:[a-z0-9][a-z0-9_-]{{0,99}}(?:@{RE_VER})?"
                      r"|update\.[a-z0-9_]{1,200})$")
 RE_DOT_ZERO = re.compile(r"^[0-9]{4}\.[0-9]{1,2}\.0$")
 

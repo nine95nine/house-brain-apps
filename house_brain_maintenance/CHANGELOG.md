@@ -1,8 +1,22 @@
 # Changelog
 
+## 0.9.22
+
+Apps with a hyphen in their slug, and checks that keep running (owner pop-up 2026-10-19 "Fix + keep checks running";
+Work Board #942 claim 6261400467). Contains 0.9.21 unchanged otherwise.
+
+- **Live 2026-10-19:** after the update to 0.9.21 nothing was posted. The status sensor showed `ERROR`
+  "ForbiddenCall: GET /addons/5c5…" on every check. An App with a hyphen in its slug (read since 0.9.15) had an
+  update waiting, but this App's own call list still refused to read it. The update review failed, and that stopped
+  the whole check: problems, messages, summaries and the first "problem details" post.
+- **Now:** hyphen slugs are read, reviewed, held and requested like any other (the call list, AI reviews, the hold
+  list and request files). If the update check fails, the problem check still runs, and after two failed checks in a
+  row you get the problem "Maintenance cannot check for updates" (error type only). It clears once the update check
+  works again.
+
 ## 0.9.21
 
-Problem details reach the AI reviewers (owner pop-up 2026-10-19 "Build 0.9.21", from the reviewer chat; Work Board
+Problem details reach the AI reviewers (owner pop-up 2026-10-18 "Build 0.9.21", from the reviewer chat; Work Board
 #942 claim 6256752715). Contains 0.9.20 unchanged otherwise.
 
 - **Reviewer request:** the reviewer could not see which sensors make the database large. The suggested steps (the

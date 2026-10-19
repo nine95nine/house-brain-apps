@@ -344,11 +344,11 @@ RE_INSTANCE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/addons/self/info"),
     ("GET", r"/addons"),
-    ("GET", r"/addons/[a-z0-9][a-z0-9_]{0,99}/info"),
-    ("GET", r"/addons/[a-z0-9][a-z0-9_]{0,99}/changelog"),
-    ("GET", r"/addons/[a-z0-9][a-z0-9_]{0,99}/stats"),     # 0.8.6: App memory/CPU (read-only, projected)
+    ("GET", r"/addons/[a-z0-9][a-z0-9_-]{0,99}/info"),      # 0.9.22: hyphen slugs (RE_SLUG)
+    ("GET", r"/addons/[a-z0-9][a-z0-9_-]{0,99}/changelog"),
+    ("GET", r"/addons/[a-z0-9][a-z0-9_-]{0,99}/stats"),    # 0.8.6: App memory/CPU (read-only, projected)
     ("GET", r"/os/boards/raspberrypi/firmware"),           # 0.8.6: Pi firmware version / update (read-only)
-    ("GET", r"/store/addons/[a-z0-9][a-z0-9_]{0,99}"),
+    ("GET", r"/store/addons/[a-z0-9][a-z0-9_-]{0,99}"),
     ("GET", r"/core/info"),
     ("GET", r"/os/info"),                                   # 0.6.0: OS version / update (read-only, projected)
     ("GET", r"/core/api/config"),                           # 0.6.0: Core run state / safe mode (projected)
