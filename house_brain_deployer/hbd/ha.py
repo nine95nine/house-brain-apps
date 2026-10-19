@@ -8,6 +8,8 @@ the ``ha`` CLI is never invoked (see the #223 R4 ``apps``/``addons`` escape).
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -35,12 +37,41 @@ _HTTP_ALLOW: tuple[tuple[str, re.Pattern], ...] = (
     ("POST", re.compile(r"^/core/api/services/notify/mobile_app_[a-z0-9_]{1,80}$")),
     ("POST", re.compile(r"^/core/api/services/hassio/backup_partial$")),
     ("POST", re.compile(r"^/core/api/states/" + re.escape(STATUS_ENTITY) + r"$")),
+    # 0.3.30 (owner pop-up 2026-10-19 "Yes, one tap"): the Companion setup only, after the owner's approval. Every
+    # body is pinned by _body_guard below: one integration (llama_cpp), one URL, one model, no control API.
+    ("POST", re.compile(r"^/core/api/config/config_entries/flow$")),
+    ("POST", re.compile(r"^/core/api/config/config_entries/flow/[0-9a-f]{32}$")),
+    ("POST", re.compile(r"^/core/api/config/config_entries/subentries/flow$")),
+    ("POST", re.compile(r"^/core/api/config/config_entries/subentries/flow/[0-9a-f]{32}$")),
+    ("DELETE", re.compile(r"^/core/api/config/config_entries/entry/[0-9A-Z]{26}$")),  # undo of this run's entry only
 )
 _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "system_log/list", "config/auth/list",
                        "http/config", "repairs/list_issues",
-                       "zwave_js/get_config_parameters"})  # 0.3.29: read-only, one device per owner-approved lookup
+                       "zwave_js/get_config_parameters",  # 0.3.29: read-only, one device per owner-approved lookup
+                       # 0.3.30: Companion setup (reads, plus one pinned pipeline create)
+                       "config_entries/subentries/list", "config/entity_registry/list",
+                       "assist_pipeline/pipeline/list", "assist_pipeline/pipeline/create"})
 RE_DEVICE_ID = re.compile(r"^[0-9a-f]{32}$")
+RE_ENTRY_ID = re.compile(r"^[0-9A-Z]{26}$")
+RE_CONVERSATION_ENTITY = re.compile(r"^conversation\.[a-z0-9_]{1,96}$")
 APPROVAL_EVENT = "mobile_app_notification_action"
+
+# 0.3.30: the only values the Companion setup can ever send. Literals, never from a request, except the
+# Worker URL: the public store refuses a concrete Cloudflare host, so the set-up request carries it and only
+# the URL whose SHA-256 is pinned here is ever accepted.
+COMPANION_URL_SHA256 = "d67b9516dad8c2833917503af83d0ae50e1125ef1b61fc9d4a82d6b416137a72"
+COMPANION_MODEL = "house-brain-companion"
+COMPANION_PIPELINE = "House Brain Companion"
+COMPANION_DOMAIN = "llama_cpp"
+PIPELINE_KEYS = frozenset({"conversation_engine", "conversation_language", "language", "name", "stt_engine",
+                           "stt_language", "tts_engine", "tts_language", "tts_voice", "wake_word_entity",
+                           "wake_word_id", "prefer_local_intents"})
+RE_COMPANION_KEY = re.compile(r"^[0-9a-f]{48}$")
+
+
+def companion_url_ok(url: Any) -> bool:
+    return (isinstance(url, str) and url.startswith("https://") and len(url) <= 200
+            and hmac.compare_digest(hashlib.sha256(url.encode("utf-8")).hexdigest(), COMPANION_URL_SHA256))
 
 
 # 0.3.5 (P4): an App update or options save during an open install hard-stops the App and rolls it back.
@@ -64,6 +95,37 @@ def _guard(method: str, path: str) -> None:
     raise ForbiddenCall(f"{method} {path}")
 
 
+_FLOW = re.compile(r"^/core/api/config/config_entries/flow/[0-9a-f]{32}$")
+_SUB_FLOW = re.compile(r"^/core/api/config/config_entries/subentries/flow/[0-9a-f]{32}$")
+
+
+def _body_guard(method: str, path: str, body: Any) -> None:
+    """0.3.30: the config-flow paths accept only the Companion's fixed bodies (checked before any I/O)."""
+    if path == "/core/api/config/config_entries/flow":
+        if body != {"handler": COMPANION_DOMAIN, "show_advanced_options": False}:
+            raise ForbiddenCall("config flow for another integration")
+    elif _FLOW.fullmatch(path):
+        if not isinstance(body, dict) or not body or not set(body) <= {"base_url", "api_key", "chat_model"}:
+            raise ForbiddenCall("config flow step shape")
+        if "base_url" in body and (not companion_url_ok(body["base_url"]) or set(body) != {"base_url", "api_key"}
+                                   or not RE_COMPANION_KEY.fullmatch(str(body.get("api_key")))):
+            raise ForbiddenCall("config flow server step")
+        if "chat_model" in body and body != {"chat_model": COMPANION_MODEL}:
+            raise ForbiddenCall("config flow model step")
+    elif path == "/core/api/config/config_entries/subentries/flow":
+        handler = body.get("handler") if isinstance(body, dict) else None
+        if (not isinstance(body, dict) or set(body) != {"handler", "subentry_id"} or not isinstance(handler, list)
+                or len(handler) != 2 or not RE_ENTRY_ID.fullmatch(str(handler[0])) or handler[1] != "conversation"
+                or not RE_ENTRY_ID.fullmatch(str(body["subentry_id"]))):
+            raise ForbiddenCall("subentry flow shape")
+    elif _SUB_FLOW.fullmatch(path):
+        # The re-save that removes control: recommended settings, the Companion model, and NO llm_hass_api key.
+        if body != {"recommended": True, "chat_model": COMPANION_MODEL}:
+            raise ForbiddenCall("subentry step must be exactly recommended + model (no control API)")
+    elif method == "DELETE" and body is not None:
+        raise ForbiddenCall("delete takes no body")
+
+
 def _ws_guard(msg: dict) -> None:
     kind = msg.get("type")
     if kind not in _WS_ALLOW:
@@ -76,6 +138,18 @@ def _ws_guard(msg: dict) -> None:
             set(msg) != {"type", "device_id"} or not isinstance(msg.get("device_id"), str)
             or not RE_DEVICE_ID.fullmatch(msg["device_id"])):
         raise ForbiddenCall("ws zwave config read takes exactly one device id")
+    if kind in ("config/entity_registry/list", "assist_pipeline/pipeline/list") and set(msg) != {"type"}:
+        raise ForbiddenCall("ws read takes no parameters")
+    if kind == "config_entries/subentries/list" and (
+            set(msg) != {"type", "entry_id"} or not RE_ENTRY_ID.fullmatch(str(msg.get("entry_id")))):
+        raise ForbiddenCall("ws subentry list takes exactly one entry id")
+    if kind == "assist_pipeline/pipeline/create":
+        fields = {k: v for k, v in msg.items() if k != "type"}
+        if (set(fields) != PIPELINE_KEYS or fields["name"] != COMPANION_PIPELINE
+                or not RE_CONVERSATION_ENTITY.fullmatch(str(fields["conversation_engine"]))
+                or fields["prefer_local_intents"] is not False
+                or fields["wake_word_entity"] is not None or fields["wake_word_id"] is not None):
+            raise ForbiddenCall("ws pipeline create must be the Companion pipeline")
 
 
 class HomeAssistant:
@@ -88,6 +162,7 @@ class HomeAssistant:
     # -- HTTP -------------------------------------------------------------
     def _call(self, method: str, path: str, body: Any = None, timeout: float = 30.0) -> Any:
         _guard(method, path)
+        _body_guard(method, path, body)
         headers = {"Authorization": f"Bearer {self._token}"}
         try:
             _, data = net.request(method, self.base + path, headers, body=body, timeout=timeout)
@@ -239,6 +314,32 @@ class HomeAssistant:
         if not isinstance(result, dict):
             raise HAError("ZWAVE_CONFIG_SHAPE")
         return result
+
+    # -- 0.3.30 Companion setup (called only after the owner's approval; bodies pinned by _body_guard) ----
+    def config_flow(self, flow_id: str | None, data: dict) -> dict:
+        path = "/core/api/config/config_entries/flow" + (f"/{flow_id}" if flow_id else "")
+        result = self._call("POST", path, body=data, timeout=60)
+        if not isinstance(result, dict):
+            raise HAError("CONFIG_FLOW_SHAPE")
+        return result
+
+    def subentry_flow(self, flow_id: str | None, data: dict) -> dict:
+        path = "/core/api/config/config_entries/subentries/flow" + (f"/{flow_id}" if flow_id else "")
+        result = self._call("POST", path, body=data, timeout=60)
+        if not isinstance(result, dict):
+            raise HAError("SUBENTRY_FLOW_SHAPE")
+        return result
+
+    def delete_entry(self, entry_id: str) -> None:
+        self._call("DELETE", f"/core/api/config/config_entries/entry/{entry_id}", timeout=60)
+
+    def ws_once(self, msg: dict, timeout: float = 30.0) -> Any:
+        """One allowlisted WebSocket command on a short-lived socket."""
+        sock = self.ws()
+        try:
+            return sock.command(msg, timeout=timeout)
+        finally:
+            sock.close()
 
     def http_repair_ids(self) -> set[str]:
         sock = self.ws()

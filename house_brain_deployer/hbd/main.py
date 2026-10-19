@@ -20,6 +20,7 @@ from functools import wraps
 from . import (
     VERSION,
     approval,
+    companion_setup,
     diagnose,
     ghauth,
     ghpage,
@@ -520,6 +521,31 @@ class Service:
             return
         result = run_lookup(self.ensure_engine(), lr)
         self.finish(request_id, lr.digest, lr.tracking_issue, result, key=request_id)
+
+    def _companion(self, request_id: str, raw: bytes, digest: str, key: str) -> None:
+        """0.3.30: the Companion key (no Home Assistant change) or the owner-approved Companion set-up."""
+        try:
+            req = companion_setup.parse(raw)
+        except ManifestError as err:
+            self.finish(request_id, digest, None, Result(REFUSED, [f"companion: {err.code}"]), key=key)
+            return
+        if req.request_id != request_id:
+            self.finish(request_id, digest, req.tracking_issue,
+                        Result(REFUSED, ["request_id does not match its directory"]), key=key)
+            return
+        limited = self._limit_reason(request_id, lookup=req.kind == "key")
+        if limited:
+            self.j.audit(request_id, "RATE_LIMITED")
+            self.diag.add(limited)
+            self._announce_hold(limited, req.tracking_issue)
+            self._offer_lift()
+            return
+        engine = self.ensure_engine()
+        if req.kind == "key":
+            result = companion_setup.run_key(engine, req, self._data_dir())
+        else:
+            result = companion_setup.run_setup(engine, req, self._data_dir(), self.o.dry_run)
+        self.finish(request_id, req.digest, req.tracking_issue, result, key=key)
 
     def _http_inspect(self, request_id: str, raw: bytes, digest: str) -> None:
         try:
@@ -1041,6 +1067,7 @@ class Service:
             enroll = writer_enroll.is_enroll(raw)   # 0.3.19: keyed and limited like a lookup
             probe = writer_probe.is_probe(raw)      # 0.3.21: likewise
             legacy = legacy_migrate.kind(raw)       # 0.3.23 (#985 M4/M5): likewise
+            companion = companion_setup.kind(raw)   # 0.3.30: "key" (lookup-like) or "setup" (owner-approved change)
             if selected and legacy != legacy_migrate.UNSELECT:
                 # A selection waits for the next start; new results would not be in the moved history.
                 self.diag.add(diagnose.Reason("LEGACY_SELECTED_WAITING", diagnose.HOLD,
@@ -1048,8 +1075,9 @@ class Service:
                                               "Deployer restart. Other requests wait until then.",
                                               "Restart the Deployer, or send an Unselect request first."))
                 continue   # skipped, not recorded: an Unselect later in the list must still run
-            lookup = is_lookup(raw) or http_inspection or enroll or probe or legacy is not None
-            key = request_id if lookup else self.key(request_id)  # lookups are read-only in both modes
+            lookup = is_lookup(raw) or http_inspection or enroll or probe or legacy is not None or companion is not None
+            # lookups are read-only in both modes; the Companion set-up changes Home Assistant, so it is keyed per mode
+            key = request_id if lookup and companion != "setup" else self.key(request_id)
             seen = ledger.get(key)
             if seen:
                 # Idempotent: a processed id is never run again. A changed manifest under a
@@ -1071,6 +1099,8 @@ class Service:
                     self._writer_probe(request_id, raw, digest)
                 elif legacy is not None:
                     self._legacy(request_id, raw, digest)
+                elif companion is not None:
+                    self._companion(request_id, raw, digest, key)
                 elif http_inspection:
                     self._http_inspect(request_id, raw, digest)
                 else:

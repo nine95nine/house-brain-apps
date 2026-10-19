@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.30 — 2026-10-19 (House Brain Companion set-up; owner pop-ups "Yes, one tap" and "Pi makes it, nobody sees it")
+
+- Why: the owner asked that the AI do the Companion set-up so they have no steps left. The Home Assistant part was
+  the llama.cpp integration (URL, key, model, control off) and a voice assistant, done by hand in the UI.
+- `house_brain_companion_key_request.v1`: makes a 48-hex key in `/data/companion_key` (0600) when there is none and
+  reports only its SHA-256 (`companion_key_sha256`). No Home Assistant call, no approval (lookup allowance).
+  `rotate: true` makes a new key after an approval.
+- `house_brain_companion_setup_request.v1` (owner approval, install allowance): Home Assistant's own config flow for
+  `llama_cpp` with the Companion URL (carried by the request, accepted only if its SHA-256 equals the pinned
+  `COMPANION_URL_SHA256`, because the public store refuses a concrete Cloudflare host) and the Pi key; the Companion model; then the conversation subentry is
+  re-saved as exactly `{"recommended": true, "chat_model": "house-brain-companion"}` (no `llm_hass_api`, so no device
+  control) and the agent must stop reporting the CONTROL feature within 30 s; then one Assist pipeline "House Brain
+  Companion" with that agent (language/voice copied from the preferred pipeline, no wake word, Home Assistant's own
+  sentence matching off). Any failure after the entry exists deletes that entry. An existing entry for the URL:
+  `COMPANION_ALREADY_SET_UP`, nothing changed.
+- Allowlist: five pinned HTTP paths (config flow, its steps, subentry flow, its steps, DELETE of one entry id), each
+  with a pinned body (`_body_guard`); four WebSocket commands (`config_entries/subentries/list`,
+  `config/entity_registry/list`, `assist_pipeline/pipeline/list`, `assist_pipeline/pipeline/create` with the exact
+  Companion field set). Options flows, other integrations, other subentry types, pipeline update/delete stay refused.
+- The key is registered as a secret for redaction and never appears in a comment, push, status or audit line (tested).
+- Tests: L1 parse/guards/key file; L4 mimic of the real poll loop (set-up, control removed and verified, nothing
+  without the owner, failure undoes the entry, wrong key or unreachable Worker creates nothing, second set-up finds it).
+  Hand mutants 12/13 (the survivor: the re-save result check, backed by the independent CONTROL-feature check).
+
 ## 0.3.29 — 2026-10-18 (read-only Z-Wave configuration lookup; owner pop-up "This chat builds it")
 
 - Why: the evap auto-off design (#912) needs the ZEN16 timer parameters 6–11 and 15–20. Home Assistant exposes

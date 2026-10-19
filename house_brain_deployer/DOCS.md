@@ -28,12 +28,27 @@ one of its entities. The approval message says so and names the entity. The Depl
 values it already holds (no message is sent to the device, nothing is written) and posts only each parameter's
 number, name, value, unit and default.
 
+## House Brain Companion set-up (0.3.30)
+
+Two fixed requests set up the House Brain Companion (the free explain-only AI) without you typing anything:
+
+- **Companion key:** the Deployer makes a random key on the Pi and keeps it only in its own private storage. It
+  posts just the key's fingerprint (a SHA-256), which the Companion Worker uses to recognise the key. Nothing in
+  Home Assistant changes, so this one does not ask you.
+- **Companion set-up:** you get **"set up the Companion?"**. After you approve, the Deployer adds the llama.cpp
+  integration for the Companion with that key, turns its device control **off** (and checks that it is off), and
+  adds a voice assistant called **House Brain Companion**. If anything fails, it deletes the entry it made. The model
+  and assistant name are fixed in the Deployer, and it accepts only the one Companion address it was built for
+  (checked by fingerprint); a request cannot change them. Then, in the Home Assistant app:
+  Assist, choose "House Brain Companion".
+
 ## What it can and cannot do
 
 - Generic deployments write only `/config/packages/<name>.yaml` files and keep the old copy as `<name>.yaml[.tag].bak`.
 - 0.3.9 adds one fixed repair: remove an obsolete HTTP block from `configuration.yaml` after confirming the migrated Network settings already match. The AI receives hashes, never the configuration contents. You approve inspection, then separately deployment and restart. Unsupported files or mismatched settings are refused.
 - 0.3.24 adds one fixed tidy: rename `house_energy_brain_v1_1.yaml copy.bak` (the space in the name) to `house_energy_brain_v1_1.yaml.copy.bak`. Same bytes, one Approve tap, backup and checks first, no restart. A request cannot name any other file.
 - Cannot touch `secrets.yaml`, `.storage`, dashboards or other Apps. No arbitrary root configuration editor or HTTP settings mutation is provided.
+- 0.3.30 adds the Companion set-up above: one integration (llama.cpp), one URL, one model, no control API, one voice assistant. It cannot add or change any other integration, agent or assistant.
 - Never turns anything on or off. It only sends you notifications, makes a partial backup, runs the
   configuration check and (after your second tap) restarts Home Assistant.
 - Opens no port on your network. Its approval page is reachable only inside the Home Assistant app
