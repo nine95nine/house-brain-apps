@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.23)
+## What it does (0.9.24)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -330,6 +330,27 @@ once I click them on my pop-up ... with the solution that the AI took, or with t
   `/share/hb91-app-update`. Nothing else in `/addons` or `/share` is written, and `/config` is never touched.
 - Delete long-term statistics. The one statistics change (0.9.6) is the unit label of a sensor's history, after
   your Approve, with the numbers unchanged.
+- Send anything to an App's input (stdin). The one exception (0.9.24, owner pop-up 2026-10-20 "I approve the
+  exception"): after your Approve of an Energy AI settings request, one message with the exact bytes it pinned,
+  to the store Energy AI App only. See "Energy AI settings" below.
+
+## Energy AI settings — from 0.9.24
+
+Energy AI needs your private household settings once before it can work. They are delivered by a request file
+on the private request branch (`maint/requests/<request id>/manifest.json`, with the settings next to it as
+`household.bundle`):
+
+- `READBACK` asks Energy AI which settings are active. Nothing changes.
+- `ACTIVATE` delivers the settings. The request names their SHA-256, the `main` commit they came from and the
+  fingerprint of the settings that are active now (`null` when there are none yet).
+
+Before anything is asked, it checks that Energy AI is the store App, is installed, is stopped, is at the version
+the request names and has `setup_only` off, and that the settings file matches the request. After your Approve it
+switches `setup_only` on, starts Energy AI, sends the one message and reads its receipt from Energy AI's log. The
+report shows Energy AI's answer (for example `ACTIVATED`, `ALREADY_ACTIVE` or `ACTIVE`) and the settings'
+fingerprint, never their contents. `setup_only` is switched off again whatever happened. If no receipt arrives
+within 75 seconds, or the receipt does not match, the request fails: file a `READBACK` request to see what is
+active before trying again.
 
 ## One-tap install of a House Brain App — from 0.7.4
 

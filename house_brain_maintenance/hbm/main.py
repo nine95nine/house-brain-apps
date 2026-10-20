@@ -26,8 +26,9 @@ from .inspectormove import JOB as INSMOVE_JOB, TXN as INSMOVE_TXN, InspectorMove
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
-from .manifest import (ASK_UPDATE_NOW, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE, RE_REQUEST_ID,
-                       ROTATE_KEYS_NOW, STAGE_LOCAL_APP_SOURCE, Manifest, ManifestError, parse)
+from .manifest import (ASK_UPDATE_NOW, ENERGY_AI_SETTINGS, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE,
+                       RE_REQUEST_ID, ROTATE_KEYS_NOW, STAGE_LOCAL_APP_SOURCE, Manifest, ManifestError, parse)
+from .energyai import PENDING_DOC as ENERGY_PENDING_DOC, EnergyDelivery
 from .upgradeinfo import UpgradeInfo
 from .pifirmware import JOB as PIFW_JOB, FirmwarePolicy, PiFirmware
 from .cfrelay import RE_CONTROL_URL, CfRelay, control_url_from_broker, safe_cycle as cf_safe_cycle
@@ -753,6 +754,8 @@ class Service:
             return
         if self.poll_stage_pending():
             return
+        if self.poll_energy_pending():                  # 0.9.24: setup_only off again after a restart mid-delivery
+            return
         if self.frozen():
             return
         if self.poll_page_reask():
@@ -1084,6 +1087,9 @@ class Service:
             if manifest.job == ROTATE_KEYS_NOW:
                 self.keys_request(manifest)
                 return True
+            if manifest.job == ENERGY_AI_SETTINGS:
+                self.energy_request(manifest, head)
+                return True
             result = self.ensure_engine().run(manifest)
             self.finish(request_id, manifest.job, manifest.digest, manifest.tracking_issue, result)
             return True  # at most one request per poll
@@ -1107,6 +1113,40 @@ class Service:
                 result = Result(FAILED, [f"preflight: {net.redact(str(err))[:200]}; nothing asked or changed"],
                                 {"slug": m.stage_slug, "to": m.stage_to})
         self.finish(m.request_id, m.job, m.digest, issue, result)
+
+    def energy(self) -> EnergyDelivery:
+        engine = self.ensure_engine()
+        return EnergyDelivery(self.ha, self.j, engine.s, self.gh, engine._ask)
+
+    def energy_request(self, m: Manifest, head: str) -> None:
+        """0.9.24 ENERGY_AI_SETTINGS: verify the pinned settings file and the App, ask once, deliver, report."""
+        issue = m.tracking_issue or self.o.report_issue or None
+        self.j.record(self.key(m.request_id), m.digest, "DELIVERING")
+        try:
+            result = self.energy().run(m, head)
+        except (HAError, net.NetError) as err:
+            reason = net.redact(str(err))[:200]
+            if self.j.load_doc(ENERGY_PENDING_DOC, {}):
+                result = Result(FAILED, [f"interrupted after your Approve ({reason}); setup_only is switched "
+                                         "off on the next poll"])
+            else:
+                result = Result(FAILED, [f"preflight: {reason}; nothing asked or changed"])
+        self.finish(m.request_id, m.job, m.digest, issue, result)
+
+    def poll_energy_pending(self) -> bool:
+        doc = self.j.load_doc(ENERGY_PENDING_DOC, {})
+        if not isinstance(doc, dict) or not doc.get("request_id"):
+            return False
+        try:
+            out = self.energy().recover(doc)
+        except (HAError, net.NetError) as err:
+            LOG.warning("Energy AI setup_only restore waits: %s", net.redact(str(err))[:200])
+            return True
+        if out is not None:
+            rid, result = out
+            previous = self.j.ledger().get(self.key(rid), {}).get("digest") or "recovered"
+            self.finish(rid, ENERGY_AI_SETTINGS, previous, None, result)
+        return True
 
     def poll_stage_pending(self) -> bool:
         """0.7.4: after a restart mid-install, read what is true and undo a staged source the App does not run.

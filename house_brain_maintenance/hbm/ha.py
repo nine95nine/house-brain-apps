@@ -8,7 +8,8 @@ boundary is this module:
 * every HTTP call and WebSocket command passes ``_guard``/``_ws_guard`` before any I/O;
 * App routes are pinned at construction to the two configured target slugs (the Scout and
   the Observer). There is no generic ``/addons`` listing, no uninstall, stop, rebuild,
-  stdin, security, store-repository, host, OS, network or Docker route (0.5.4 exceptions, both read-only: the
+  stdin (0.9.24 exception below: one owner-approved Energy AI settings frame), security, store-repository, host, OS,
+  network or Docker route (0.5.4 exceptions, both read-only: the
   House Brain App log read and the host boot list, below; 0.6.0 exceptions: the read-only OS info and the
   owner-approved Core/OS update inside ``system_target``, below);
 * other Apps' info replies are projected to a few named fields at once
@@ -94,6 +95,14 @@ boundary is this module:
   values change), and, for the Observer, AI Access and Inspector only, ``POST /addons/<slug>/restart`` with an
   empty body (the owner's standing permission K3/K4: restart only right after its key changed, and to roll that
   back; a stopped App is never started). Never this App, never another App, never nested with another target.
+* 0.9.24 (owner pop-up 2026-10-20 "Yes, build 0.9.24"; DO_NOT_REGRESS INTENTIONALLY MODIFIED): exactly one *Energy
+  AI target* at a time, ``with ha.energy_target(slug)``, only for the House Brain store's Energy AI App
+  (``<this store's prefix>_house_brain_energy_ai``) during one owner-approved ENERGY_AI_SETTINGS request. Inside it
+  the guard allows that App's ``GET /addons/<slug>/info``, ``POST /addons/<slug>/options`` whose option *names* are
+  exactly the ones just read and which change nothing but ``setup_only``, ``POST /addons/<slug>/start`` with an empty
+  body, and **one** ``POST /addons/<slug>/stdin`` whose raw bytes hash to the frame pinned by ``energy_pin_frame``.
+  Its log is read through the existing House Brain App log route. Never stop, restart, update or uninstall it,
+  never this App, never another App, never nested with another target.
 
 The ``ha`` CLI is never used (#223 R4 ``apps``/``addons`` escape).
 """
@@ -216,6 +225,7 @@ KEY_OPTIONS = {"observer_write": "broker_write_key", "ai_read": "broker_read_key
 KEY_NO_RESTART = frozenset({"scout_inventory"})
 INSPECTOR_SLUG = "local_house_brain_engineering_inspector"
 RE_AI_ACCESS_SLUG = re.compile(r"^(?:local|[0-9a-f]{8})_house_brain_ai_access$")
+RE_ENERGY_AI_SLUG = re.compile(r"^[0-9a-f]{8}_house_brain_energy_ai$")   # 0.9.24: the store Energy AI App only
 RE_SECRET_OPTION = re.compile(r"(?:key|token|password|secret|pass)$", re.I)
 
 
@@ -586,6 +596,28 @@ def entity_call_ok(target: dict, method: str, path: str, body: Any) -> bool:
     return False
 
 
+def energy_call_ok(energy: dict, method: str, path: str, body: Any) -> bool:
+    """True only for the exact calls of one open ``energy_target`` (0.9.24)."""
+    slug = energy["slug"]
+    if method == "GET":
+        return path == f"/addons/{slug}/info" and body is None
+    if method != "POST":
+        return False
+    if path == f"/addons/{slug}/start":
+        return body in (None, {})
+    if path == f"/addons/{slug}/options":
+        opts = body.get("options") if isinstance(body, dict) and set(body) == {"options"} else None
+        base = energy.get("options")
+        return (isinstance(opts, dict) and isinstance(base, dict) and frozenset(opts) == frozenset(base)
+                and type(opts.get("setup_only")) is bool
+                and all(opts[k] == v for k, v in base.items() if k != "setup_only"))
+    if path == f"/addons/{slug}/stdin":
+        frame = energy.get("frame_sha256")
+        return (isinstance(body, bytes | bytearray) and frame is not None and not energy.get("frame_sent")
+                and hashlib.sha256(bytes(body)).hexdigest() == frame)
+    return False
+
+
 def key_call_ok(key: dict, method: str, path: str, body: Any) -> bool:
     """True only for the exact calls of one open ``key_target`` (0.8.0)."""
     slug = key["slug"]
@@ -767,6 +799,7 @@ class HomeAssistant:
         self._legacy: dict | None = None          # 0.9.5: {"bslug"} during one legacy Deployer backup/stage step
         self._obsmove: dict | None = None         # 0.9.8: {"old", "new"} during the Observer switch to the store
         self._insmove: dict | None = None         # 0.9.9: {"old", "new"} during the Inspector switch to the store
+        self._energy: dict | None = None          # 0.9.24: {"slug", "options", "frame_sha256", "frame_sent"}
         self._self_slug: str | None = None
         # 0.6.1 shared Core socket (see shared_ws)
         self._shared_lock = threading.Lock()
@@ -848,13 +881,16 @@ class HomeAssistant:
         key = self._key
         if key is not None and key_call_ok(key, method, path, body):
             return                                # 0.8.0: only inside key_target (see the module docstring)
+        energy = self._energy
+        if energy is not None and energy_call_ok(energy, method, path, body):
+            return                                # 0.9.24: only inside energy_target (see the module docstring)
         raise ForbiddenCall(f"{method} {path}")
 
     def _busy(self) -> bool:
         return any(t is not None for t in (self._target, self._fix, self._system, self._os_act, self._pifw,
                                            self._migrate, self._legacy, self._obsmove, self._insmove,
                                            self._entity,
-                                           self._stage, self._key))
+                                           self._stage, self._key, self._energy))
 
     @contextmanager
     def fix_target(self, kind: str, ref: str):
@@ -1028,6 +1064,67 @@ class HomeAssistant:
         key["names"] = frozenset(str(k) for k in options)
         state = data.get("state")
         return (state if state in SAFE_STATES else "unknown"), dict(options)
+
+    def energy_slug(self) -> str | None:
+        """0.9.24: the Energy AI App of this App's own store (None: not resolvable here)."""
+        prefix = self.self_slug().split("_", 1)[0]
+        slug = f"{prefix}_house_brain_energy_ai"
+        return slug if RE_ENERGY_AI_SLUG.fullmatch(slug) else None
+
+    @contextmanager
+    def energy_target(self, slug: str):
+        """0.9.24: open the Energy AI App's info read, its setup_only switch, its start and one pinned stdin frame."""
+        if not isinstance(slug, str) or slug != self.energy_slug() or slug in ("self", self.self_slug()):
+            raise ForbiddenCall("energy target")
+        if self._busy():
+            raise ForbiddenCall("nested energy target")
+        self._energy = {"slug": slug, "options": None, "frame_sha256": None, "frame_sent": False}
+        try:
+            yield
+        finally:
+            self._energy = None
+
+    def energy_read(self) -> tuple[str, str, dict]:
+        """0.9.24, only inside ``energy_target``: (state, version, options); the option values are pinned."""
+        energy = self._energy
+        if energy is None:
+            raise ForbiddenCall("energy read outside an Energy AI settings job")
+        data = self._supervisor("GET", f"/addons/{energy['slug']}/info")
+        options = data.get("options") if isinstance(data, dict) else None
+        if not isinstance(options, dict) or type(options.get("setup_only")) is not bool:
+            raise HAError("ENERGY_APP_OPTIONS")
+        if energy["options"] is None:
+            energy["options"] = dict(options)
+        state = data.get("state")
+        version = data.get("version")
+        return (state if state in SAFE_STATES else "unknown"), (version if isinstance(version, str) else ""), \
+            dict(options)
+
+    def energy_set_setup_only(self, value: bool) -> None:
+        energy = self._energy or {}
+        base = energy.get("options")
+        if not isinstance(base, dict):
+            raise ForbiddenCall("energy options before the read")
+        self._supervisor("POST", f"/addons/{energy.get('slug')}/options",
+                         body={"options": {**base, "setup_only": bool(value)}}, timeout=60)
+
+    def energy_start(self) -> None:
+        energy = self._energy or {}
+        self._supervisor("POST", f"/addons/{energy.get('slug')}/start", body={}, timeout=300)
+
+    def energy_pin_frame(self, frame: bytes) -> None:
+        energy = self._energy
+        if energy is None or energy["frame_sha256"] is not None:
+            raise ForbiddenCall("energy frame pinned twice or outside the job")
+        energy["frame_sha256"] = hashlib.sha256(bytes(frame)).hexdigest()
+
+    def energy_send_frame(self, frame: bytes) -> None:
+        """The one stdin write. The Supervisor appends the terminating newline."""
+        energy = self._energy or {}
+        data = self._call("POST", f"/addons/{energy.get('slug')}/stdin", raw_body=bytes(frame), timeout=60)
+        energy["frame_sent"] = True
+        if not isinstance(data, dict) or data.get("result") != "ok":
+            raise HAError("SUPERVISOR_RESULT", "stdin")
 
     def key_consumer_write(self, options: dict) -> None:
         key = self._key or {}
@@ -1301,8 +1398,8 @@ class HomeAssistant:
 
     # -- HTTP ---------------------------------------------------------------
     def _call(self, method: str, path: str, body: Any = None, timeout: float = 30.0,
-              raw: bool = False, query: str = "") -> Any:
-        self._guard(method, path, body)
+              raw: bool = False, query: str = "", raw_body: bytes | None = None) -> Any:
+        self._guard(method, path, raw_body if raw_body is not None else body)
         app_log = path.startswith("/addons/") and "/logs/boots/" in path
         allowed_query = r"\?verbose&no_colors&lines=[0-9]{1,5}" if app_log else r"\?lines=[0-9]{1,4}"
         if (query or app_log) and not re.fullmatch(allowed_query, query):
@@ -1310,7 +1407,10 @@ class HomeAssistant:
         headers = {"Authorization": f"Bearer {self._token}"}
         if raw:
             headers["Accept"] = "text/plain"
-        _, data = net.request(method, self.base + path + query, headers, body=body, timeout=timeout, raw=raw)
+        if raw_body is not None:
+            headers["Content-Type"] = "application/octet-stream"
+        _, data = net.request(method, self.base + path + query, headers, body=body, timeout=timeout, raw=raw,
+                              raw_body=raw_body)
         return data
 
     def _supervisor(self, method: str, path: str, body: Any = None, timeout: float = 30.0) -> Any:

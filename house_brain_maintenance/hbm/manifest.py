@@ -95,6 +95,14 @@ JOBS[WRITER_PROBE] = (frozenset({"operation"}), frozenset())
 LEGACY_STAGE = "LEGACY_STAGE"
 LEGACY_PHASES = ("backup", "stage")
 JOBS[LEGACY_STAGE] = (frozenset({"phase"}), frozenset({"custody_sha256"}))
+# 0.9.24 (owner pop-up 2026-10-20 "Yes, build 0.9.24"): deliver Energy AI's private household settings once, to the
+# store-installed Energy AI App only, through its Supervisor stdin in setup-only mode. It asks the owner first. The
+# settings file sits next to the manifest (``household.bundle``) on this private repository's request branch and is
+# pinned here by its SHA-256 and source commit; the frame itself is built on the Pi at send time (it expires in 5 min).
+ENERGY_AI_SETTINGS = "ENERGY_AI_SETTINGS"
+ENERGY_OPERATIONS = ("READBACK", "ACTIVATE")
+JOBS[ENERGY_AI_SETTINGS] = (frozenset({"operation", "expect_energy_ai_version", "manifest_sha256"}),
+                            frozenset({"bundle_sha256", "source_commit", "expected_current_sha256"}))
 _TOP = frozenset({"schema", "request_id", "job", "requested_by", "tracking_issue", "note", "params"})
 _REQUIRED_TOP = frozenset({"schema", "request_id", "job", "requested_by", "params"})
 
@@ -143,6 +151,13 @@ class Manifest:
     # 0.9.5 LEGACY_STAGE
     legacy_phase: str | None = None
     custody_sha256: str | None = None
+    # 0.9.24 ENERGY_AI_SETTINGS
+    energy_operation: str | None = None
+    energy_version: str | None = None
+    energy_manifest_sha256: str | None = None
+    energy_bundle_sha256: str | None = None
+    energy_source_commit: str | None = None
+    energy_expected_current: str | None = None
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict:
@@ -218,6 +233,8 @@ def parse(raw: bytes) -> Manifest:
         if digest is not None and (not isinstance(digest, str) or not RE_SHA256.fullmatch(digest)):
             raise ManifestError("CUSTODY_SHA256")
         log.update(legacy_phase=phase, custody_sha256=digest)
+    if job == ENERGY_AI_SETTINGS:
+        log.update(_energy(params))
     fp = params.get("expect_key_fingerprint")
     if fp is not None and (not isinstance(fp, str) or not RE_SHA256.fullmatch(fp)):
         raise ManifestError("EXPECT_KEY_FINGERPRINT")
@@ -243,6 +260,35 @@ def parse(raw: bytes) -> Manifest:
         expect_new_fingerprint=new_fp,
         **log,
     )
+
+
+def _energy(params: dict) -> dict:
+    """READBACK names no settings file; ACTIVATE pins it (hash, source commit, the digest it replaces or null)."""
+    op = params["operation"]
+    if op not in ENERGY_OPERATIONS:
+        raise ManifestError("ENERGY_OPERATION")
+    version = params["expect_energy_ai_version"]
+    if not isinstance(version, str) or not RE_STAGE_VERSION.fullmatch(version):
+        raise ManifestError("ENERGY_VERSION")
+    manifest = params["manifest_sha256"]
+    if not isinstance(manifest, str) or not RE_SHA256.fullmatch(manifest):
+        raise ManifestError("ENERGY_MANIFEST_SHA256")
+    write = {"bundle_sha256", "source_commit", "expected_current_sha256"}
+    if op == "READBACK":
+        if write & set(params):
+            raise ManifestError("ENERGY_READBACK_FIELDS")
+        return {"energy_operation": op, "energy_version": version, "energy_manifest_sha256": manifest}
+    if not write <= set(params):
+        raise ManifestError("ENERGY_ACTIVATE_FIELDS")
+    bundle, commit, current = params["bundle_sha256"], params["source_commit"], params["expected_current_sha256"]
+    if not isinstance(bundle, str) or not RE_SHA256.fullmatch(bundle):
+        raise ManifestError("ENERGY_BUNDLE_SHA256")
+    if not isinstance(commit, str) or not RE_COMMIT.fullmatch(commit):
+        raise ManifestError("ENERGY_SOURCE_COMMIT")
+    if current is not None and (not isinstance(current, str) or not RE_SHA256.fullmatch(current)):
+        raise ManifestError("ENERGY_EXPECTED_CURRENT")
+    return {"energy_operation": op, "energy_version": version, "energy_manifest_sha256": manifest,
+            "energy_bundle_sha256": bundle, "energy_source_commit": commit, "energy_expected_current": current}
 
 
 def _utc(value: Any, code: str) -> float:

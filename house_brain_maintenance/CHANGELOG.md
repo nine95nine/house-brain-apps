@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.24
+
+Energy AI settings, delivered once with your approval (owner pop-ups 2026-10-20 "Yes, start install path", "Yes,
+build 0.9.24" and "I approve the exception"; Work Board #942 claim 6283003936). Contains 0.9.23 unchanged otherwise.
+
+- **New request `ENERGY_AI_SETTINGS`** (`READBACK` or `ACTIVATE`). It works only with the store House Brain Energy
+  AI App, at the version the request names, while it is stopped. Your phone shows the App, the version and the
+  settings' fingerprint; Approve needs Face ID.
+- **What it does after Approve:** switches Energy AI's `setup_only` on, starts it, sends the one settings message
+  (it expires after 5 minutes), reads Energy AI's one-line receipt from its log and checks it against what was
+  sent, then switches `setup_only` off again whatever happened. Energy AI starts no runtime and stops by itself.
+- **The settings file** sits next to the request on the private request branch, pinned by its SHA-256, and must
+  come from a commit on `main`. Its contents are never logged, reported or kept.
+- **The one stdin exception:** sending this one message is the only stdin call this App can make, only to that one
+  App, only inside the approved job and only with the exact bytes it pinned. Stop, restart, update, uninstall and
+  every other App's stdin stay refused.
+- **A restart mid-delivery** switches `setup_only` off on the next check and reports the request as failed.
+
 ## 0.9.23
 
 Messages that solve (owner pop-up 2026-10-19 "Build 0.9.23", from the reviewer chat; Work Board #942 claim
