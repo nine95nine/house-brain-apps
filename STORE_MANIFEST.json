@@ -10,6 +10,11 @@
       "source_manifest_sha256": "97e5747ba346b52c6f4bbf8472186d98b14698d0008b071e797ac49c4103709f",
       "version": "0.3.33"
     },
+    "house_brain_energy_ai": {
+      "files": 35,
+      "source_manifest_sha256": "2de56cf7aa4e301ddeb5caded1e3f690c96d50c206da563e879767224867992f",
+      "version": "0.1.0"
+    },
     "house_brain_engineering_inspector": {
       "files": 18,
       "source_manifest_sha256": "7b5a8104fd7c8d1cfbf0be90c3444ff33735f0a01fa1a06d9d6f67ec98c1fadb",
@@ -32,6 +37,6 @@
     }
   },
   "schema_version": "house_brain_apps_store_manifest.v1",
-  "source_commit": "cd4629fbeb5d6ffcc693bf8d1d46239191735a88",
+  "source_commit": "dbabf292a49c328adc6e7e6556abbb28a68f3ef2",
   "source_repository": "private engineering repository"
 }

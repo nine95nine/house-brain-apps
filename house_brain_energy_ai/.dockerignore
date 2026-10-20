@@ -1,0 +1,14 @@
+**
+!Dockerfile
+!.dockerignore
+!DOCS.md
+!README.md
+!config.yaml
+!requirements.txt
+!SOURCE_MANIFEST.sha256
+!energy_ai/
+!energy_ai/**
+!tools/
+!tools/**
+**/__pycache__/
+**/*.pyc

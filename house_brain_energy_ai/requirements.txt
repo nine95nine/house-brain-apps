@@ -1,0 +1,3 @@
+# Zero third-party Python distributions.
+# Python/SQLite/tzdata are supplied by the immutable HA base image in Dockerfile.
+# No pip installation, model downloads, paid APIs, or runtime dependency upgrades.
