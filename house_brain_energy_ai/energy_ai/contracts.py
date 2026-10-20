@@ -65,6 +65,30 @@ def sample(state, binding, now):
     return result
 
 
+def mark_idle(values, states):
+    """A detection device sitting at 0 W is idle, not stale (R14, first live run 2026-10-20).
+
+Home Assistant moves a state's timestamps only when the value is written, and the Sense
+device sensors are written when the reading changes, so a device that was switched off hours
+ago looks stale. Only when the same family's load reading is GOOD in this cycle, the device's
+last reading is exactly 0 W/kW and not from the future does STALE_OR_FUTURE become IDLE.
+No value is filled in: IDLE samples are never stored or used as measurements.
+"""
+    fresh = {v["family"] for v in values if v["role"] == "load" and v["quality"] == "GOOD"}
+    for v in values:
+        if (v["quality"] != "STALE_OR_FUTURE" or not v["role"].startswith("detection:")
+                or v["family"] not in fresh or v["source_at"] is None or v["source_at"] > v["observed_at"]):
+            continue
+        state = states.get(v["entity"]) or {}
+        try:
+            if (state.get("attributes", {}).get("unit_of_measurement") in {"W", "kW"}
+                    and number(state.get("state")) == 0):
+                v["quality"] = "IDLE"
+        except (ValueError, TypeError, OverflowError):
+            continue
+    return values
+
+
 def validate_bindings(rows):
     if not isinstance(rows, list) or not 1 <= len(rows) <= 32:
         raise ValueError("BINDING_LIMIT")

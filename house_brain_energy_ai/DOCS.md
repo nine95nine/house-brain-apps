@@ -135,7 +135,13 @@ state after restoration. Expired action requests never become permission.
 Development containment is 256 MiB address space, optional-work hold at 128 MiB
 peak RSS and a 128 MiB database cap. Journal/backups need additional space. These
 are not measured host budgets. Planning is at most four jobs, 96 slots and
-10,000 combinations or two seconds. No production sender is present.
+10,000 combinations or two seconds. The private settings are delivered by House Brain
+Maintenance (0.9.24 or later, request `ENERGY_AI_SETTINGS`) after the owner's Approve;
+nothing else writes to this app's input.
+
+Data health shows `IDLE` for a Sense device that reads 0 W and has not changed since it
+switched off, while the Sense total is fresh (0.1.1). Idle readings are not faults and
+are never stored as measurements.
 
 Before installation, qualify the exact image on the supported architecture:
 configuration schema, ingress peer/API behavior, AppArmor, start/stop/restart,

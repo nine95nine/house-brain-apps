@@ -10,7 +10,7 @@ import signal
 import time
 
 from . import __version__
-from .contracts import sample, validate_bindings, timestamp
+from .contracts import mark_idle, sample, validate_bindings, timestamp
 from .store import Store, encode
 from .forecast import hourly, evaluate, seasonal_many, predict
 from .analytics import baseload, robust_anomaly, cycles, clusters, IdentityRegistry
@@ -111,14 +111,14 @@ class Runtime:
     def tick(self, states, now=None):
         now=time.time() if now is None else now
         start=time.monotonic()
-        values=[sample(states.get(b.entity),b,now) for b in self.bindings]
+        values=mark_idle([sample(states.get(b.entity),b,now) for b in self.bindings],states)
         self.store.ingest(values)
         try:
             context=load_context(self.data_dir,now,self.bindings)
             enroll(self.store,context,now)
         except (ValueError,KeyError,TypeError,OSError,OverflowError):
             context={"status":"REFUSED","planning":None,"reason":"PRIVATE_CONTEXT_INVALID_OR_EXPIRED"}
-        issues={v["role"]:v["quality"] for v in values if v["quality"]!="GOOD"}
+        issues={v["role"]:v["quality"] for v in values if v["quality"] not in ("GOOD","IDLE")}
         series={b.role:self.store.series(b.entity,now-7*86400) for b in self.bindings
                 if b.role in {"load","solar","grid","unknown"}}
         by_role={b.role:b for b in self.bindings}

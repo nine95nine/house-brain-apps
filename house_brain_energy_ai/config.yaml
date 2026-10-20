@@ -1,5 +1,5 @@
 name: House Brain Energy AI
-version: "0.1.0"
+version: "0.1.1"
 slug: house_brain_energy_ai
 description: Local energy forecasts, evidence and bank-aware shadow planning. No physical
   commands.

@@ -294,8 +294,9 @@ def weekly_summary(scorecard, view, rate_plan):
     """Plain sentences from the views above; anything not yet available is said so, never filled in."""
     lines = []
     if scorecard and scorecard.get('window_days'):
-        lines.append(f"Over {scorecard['window_days']} days the shadow planner made {scorecard['distinct_proposals']} "
-                     'proposals; none was carried out, so no savings are claimed.')
+        days, made = scorecard['window_days'], scorecard['distinct_proposals']
+        lines.append(f"Over {days} day{'' if days == 1 else 's'} the shadow planner made {made} "
+                     f"proposal{'' if made == 1 else 's'}; none was carried out, so no savings are claimed.")
     always = view.get('always_on') or {}
     if always.get('status') == 'ESTIMATED':
         lines.append(f"Always-on load is about {always['latest_overnight_w']:.0f} W, about "
