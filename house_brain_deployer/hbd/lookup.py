@@ -15,13 +15,30 @@ traffic, no write). The device id comes from the read-only template
 ``device_id()``. Output is projected to parameter number, label, value, unit and
 default; nothing else leaves the house. The owner's approval message names the
 entity.
+
+0.3.34 (#215, owner pop-ups 2026-10-24 "This chat builds 0.3.34", "Approve §4 as
+written"; design ``docs/architecture/SENSE_DEVICE_TAGS_LOOKUP_DEPLOYER_PROPOSAL_R1.md``):
+two more optional read-only parts, each named in the approval message and run only
+after the owner's Approve:
+
+* ``sense_device_tags: true`` reads Home Assistant's own Sense login from
+  ``.storage/core.config_entries`` (the only ``.storage`` file AppArmor lets the
+  Deployer read), keeps only that one entry's token, device id and monitor id in
+  memory, and makes one GET to Sense's ``devices/overview``. It never
+  authenticates, refreshes or logs out, so Home Assistant's Sense login is not
+  touched. Output: device names, icons and allowlisted tags only.
+* ``history_entities`` (up to 16 ids) with ``history_days`` (1-7) reads one
+  ``/api/history/period`` window (``minimal_response``, ``no_attributes``) and
+  posts compact state changes.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 
 from . import approval, net
 from .manifest import RE_REQUEST_ID, REQUESTERS, ManifestError, sanitize_text
@@ -32,6 +49,21 @@ MAX_OUTPUT_CHARS = 20000
 MAX_ZWAVE_PARAMETERS = 200
 RE_ENTITY_ID = re.compile(r"^[a-z_]{2,32}\.[a-z0-9_]{1,96}$")
 RE_DEVICE_ID = re.compile(r"^[0-9a-f]{32}$")
+MAX_HISTORY_ENTITIES = 16
+MAX_HISTORY_DAYS = 7
+MAX_HISTORY_STATES = 32          # distinct states per entity in the legend; more are reported, not guessed
+# 0.3.34: the only Sense URL the Deployer can build. Never authenticate/renew/refresh/logout (HA's login stays as is).
+SENSE_API_BASE = "https://api.sense.com/apiservice/api/v1/"
+SENSE_TIMEOUT_S = 10.0
+SENSE_TAGS = ("DefaultUserDeviceType", "UserDeviceType", "UserDeviceTypeDisplayString", "DeviceListAllowed",
+              "Revoked", "Pending", "Virtual", "TimelineAllowed", "OriginalName", "NameUseredit")
+SENSE_DATE_TAGS = ("DateCreated", "DateFirstUsage")
+SENSE_HINT_TAG = "PeerNames"
+MAX_SENSE_DEVICES = 300
+RE_SENSE_MONITOR = re.compile(r"^[0-9]{1,12}$")
+RE_SENSE_DEVICE_HEADER = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+RE_SENSE_TOKEN = re.compile(r"^[\x21-\x7e]{16,4096}$")
+CONFIG_ENTRIES = os.path.join(".storage", "core.config_entries")
 LOOKUP_OK = "LOOKUP_OK"
 LOOKUP_FAILED = "LOOKUP_FAILED"
 
@@ -55,6 +87,9 @@ class LookupRequest:
     note: str
     digest: str
     zwave_config_entity: str = ""
+    sense_device_tags: bool = False
+    history_entities: tuple[str, ...] = field(default_factory=tuple)
+    history_days: int = 0
 
 
 def is_lookup(raw_bytes: bytes) -> bool:
@@ -93,7 +128,8 @@ def parse_lookup(raw_bytes: bytes) -> LookupRequest:
     if not isinstance(data, dict):
         raise ManifestError("TYPE")
     required = {"schema", "request_id", "title", "requested_by", "tracking_issue", "template"}
-    unknown = set(data) - required - {"note", "zwave_config_entity"}
+    unknown = set(data) - required - {"note", "zwave_config_entity", "sense_device_tags", "history_entities",
+                                      "history_days"}
     if required - set(data):
         raise ManifestError("MISSING_KEY", sorted(required - set(data))[0])
     if unknown:
@@ -124,8 +160,20 @@ def parse_lookup(raw_bytes: bytes) -> LookupRequest:
     zwave = data.get("zwave_config_entity", "")
     if not isinstance(zwave, str) or (zwave and not RE_ENTITY_ID.fullmatch(zwave)):
         raise ManifestError("PATTERN", "zwave_config_entity")
+    sense = data.get("sense_device_tags", False)
+    if not isinstance(sense, bool):
+        raise ManifestError("TYPE", "sense_device_tags")
+    hist = data.get("history_entities", [])
+    if (not isinstance(hist, list) or len(hist) > MAX_HISTORY_ENTITIES or len(set(map(str, hist))) != len(hist)
+            or not all(isinstance(e, str) and RE_ENTITY_ID.fullmatch(e) for e in hist)):
+        raise ManifestError("PATTERN", "history_entities")
+    days = data.get("history_days", 1 if hist else 0)
+    if isinstance(days, bool) or not isinstance(days, int) or (
+            hist and not 1 <= days <= MAX_HISTORY_DAYS) or (not hist and days != 0):
+        raise ManifestError("RANGE", "history_days")
     return LookupRequest(rid, sanitize_text(title, 80), data["requested_by"], issue, template,
-                         sanitize_text(note, 300), hashlib.sha256(raw_bytes).hexdigest(), zwave)
+                         sanitize_text(note, 300), hashlib.sha256(raw_bytes).hexdigest(), zwave,
+                         sense, tuple(hist), days)
 
 
 def scrub(output: str) -> str:
@@ -192,6 +240,203 @@ def read_zwave_config(ha, entity_id: str) -> str:
     return "\n".join([head, *lines]) if lines else head + "\n(none reported)"
 
 
+# ---------------------------------------------------------------------------------------------
+# 0.3.34: Sense device tags (read-only; Home Assistant's own login, never refreshed)
+
+
+class SenseLookupError(RuntimeError):
+    """A reason code; the message never contains a token."""
+
+
+def read_sense_login(config_root: str) -> tuple[str, str, str]:
+    """``(access_token, device_id, monitor_id)`` of the single loaded Sense entry. Nothing else is kept.
+
+    The file holds every integration's credentials; this function is the only reader and keeps three values of one
+    entry. Everything else goes out of scope before the function returns.
+    """
+    path = os.path.join(config_root, CONFIG_ENTRIES)
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(4 * 1024 * 1024 + 1)
+    except OSError:
+        raise SenseLookupError("SENSE_CONFIG_UNREADABLE") from None
+    if len(raw) > 4 * 1024 * 1024:
+        raise SenseLookupError("SENSE_CONFIG_UNREADABLE")
+    try:
+        entries = json.loads(raw.decode("utf-8"))["data"]["entries"]
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        raise SenseLookupError("SENSE_CONFIG_UNREADABLE") from None
+    finally:
+        raw = b""
+    if not isinstance(entries, list):
+        raise SenseLookupError("SENSE_CONFIG_UNREADABLE")
+    sense = [e for e in entries if isinstance(e, dict) and e.get("domain") == "sense" and e.get("disabled_by") is None]
+    if len(sense) != 1 or not isinstance(sense[0].get("data"), dict):
+        raise SenseLookupError("SENSE_ENTRY_NOT_UNIQUE")
+    data = sense[0]["data"]
+    token, device, monitor = data.get("access_token"), data.get("device_id"), str(data.get("monitor_id", ""))
+    del entries, sense, data
+    if not (isinstance(token, str) and RE_SENSE_TOKEN.fullmatch(token) and isinstance(device, str)
+            and RE_SENSE_DEVICE_HEADER.fullmatch(device) and RE_SENSE_MONITOR.fullmatch(monitor)):
+        raise SenseLookupError("SENSE_ENTRY_SHAPE")
+    net.register_secret(token)
+    return token, device, monitor
+
+
+def sense_overview_url(monitor_id: str) -> str:
+    """The one Sense URL. No other Sense path (authenticate, renew, refresh, logout) can be built."""
+    if not RE_SENSE_MONITOR.fullmatch(monitor_id):
+        raise SenseLookupError("SENSE_ENTRY_SHAPE")
+    return f"{SENSE_API_BASE}app/monitors/{monitor_id}/devices/overview"
+
+
+def _date(value) -> str:
+    text = _plain(value, 40)
+    return text[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", text) else ""
+
+
+def project_sense_devices(reply) -> list[str]:
+    """Sense ``devices/overview`` reply -> one line per device. Ids, account fields and unknown tag values drop."""
+    devices = reply.get("devices") if isinstance(reply, dict) else None
+    if not isinstance(devices, list):
+        raise SenseLookupError("SENSE_REPLY_SHAPE")
+    names = {d.get("id"): _plain(d.get("name"), 60) for d in devices if isinstance(d, dict)}
+    rows, unknown = [], set()
+    for d in devices[:MAX_SENSE_DEVICES]:
+        if not isinstance(d, dict):
+            continue
+        raw_tags = d.get("tags")
+        tags: dict = raw_tags if isinstance(raw_tags, dict) else {}
+        parts = [_plain(d.get("name"), 60) or "(unnamed)", "icon=" + (_plain(d.get("icon"), 30) or "-")]
+        for key in SENSE_TAGS:
+            if key in tags and not isinstance(tags[key], (dict, list)):
+                parts.append(f"{key}={_plain(tags[key], 40)}")
+        for key in SENSE_DATE_TAGS:
+            if _date(tags.get(key)):
+                parts.append(f"{key}={_date(tags.get(key))}")
+        merge = tags.get("MergeId")
+        if merge:
+            target = names.get(merge)
+            parts.append(f"merged into {target}" if target else "merged (target not listed)")
+        hints = tags.get(SENSE_HINT_TAG)
+        if isinstance(hints, list):
+            scored = []
+            for h in hints:
+                if isinstance(h, dict) and _plain(h.get("Name"), 40):
+                    pct = h.get("Percent")
+                    pct = float(pct) if isinstance(pct, (int, float)) and not isinstance(pct, bool) else -1.0
+                    scored.append((pct, _plain(h.get("Name"), 40)))
+            scored.sort(key=lambda x: -x[0])
+            if scored:
+                parts.append("hints: " + ", ".join(n + (f" {p:.0f}%" if p >= 0 else "") for p, n in scored[:3]))
+        unknown |= {_plain(k, 40) for k in tags if k not in SENSE_TAGS + SENSE_DATE_TAGS + ("MergeId", SENSE_HINT_TAG)}
+        rows.append(" | ".join(parts))
+    rows.sort(key=str.lower)
+    if len(devices) > MAX_SENSE_DEVICES:
+        rows.append(f"[{len(devices) - MAX_SENSE_DEVICES} more devices not shown]")
+    if unknown:
+        rows.append("Other tag keys (values not shown): " + ", ".join(sorted(k for k in unknown if k)))
+    return rows
+
+
+def read_sense_device_tags(config_root: str, request=None) -> str:
+    """Read-only: one GET with Home Assistant's own Sense token. Never logs in, refreshes or logs out."""
+    request = request or net.request
+    token, device, monitor = read_sense_login(config_root)
+    try:
+        _, reply = request("GET", sense_overview_url(monitor),
+                           {"x-sense-device-id": device, "Authorization": f"bearer {token}"}, timeout=SENSE_TIMEOUT_S)
+    except net.NetError as err:
+        raise SenseLookupError("SENSE_TOKEN_REFUSED" if err.status in (401, 403) else "SENSE_READ_FAILED") from None
+    finally:
+        token = ""
+    lines = project_sense_devices(reply)
+    head = (f"Sense devices ({len(lines)} lines, read-only with Home Assistant's own Sense login; tags allowlisted; "
+            "a Sense name or type is a hint, never an identity):")
+    return "\n".join([head, *lines])
+
+
+# ---------------------------------------------------------------------------------------------
+# 0.3.34: history (read-only /api/history/period window)
+
+
+def _b36(n: int) -> str:
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    n = max(0, int(n))
+    while True:
+        n, r = divmod(n, 36)
+        out = digits[r] + out
+        if not n:
+            return out
+
+
+def _epoch(value) -> int | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        from datetime import datetime
+        t = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return int(t.timestamp()) if t.tzinfo else None
+
+
+def project_history(reply, entities: tuple[str, ...], start: int, budget: int) -> list[str]:
+    """``HST1`` lines: per entity a state legend and ``<seconds since previous, base 36><state letter>`` changes.
+
+    An entity whose line does not fit the remaining budget is listed as SKIPPED (re-file with fewer entities); no
+    change is ever dropped silently from an emitted line.
+    """
+    by_id: dict[str, list] = {}
+    if isinstance(reply, list):
+        for series in reply:
+            if isinstance(series, list) and series and isinstance(series[0], dict):
+                eid = series[0].get("entity_id")
+                if eid in entities:
+                    by_id[eid] = series
+    lines = [f"HST1 start={start} entities={len(entities)}"]
+    used = len(lines[0])
+    letters = "abcdefghijklmnopqrstuvwxyzABCDEF"
+    for eid in entities:
+        series = by_id.get(eid, [])
+        legend: dict[str, str] = {}
+        changes, prev, overflow = [], start, False
+        for row in series:
+            if not isinstance(row, dict):
+                continue
+            t = _epoch(row.get("last_changed") or row.get("lu"))
+            state = _plain(row.get("state"), 32) or "?"
+            if t is None:
+                continue
+            if state not in legend:
+                if len(legend) >= MAX_HISTORY_STATES:
+                    overflow = True
+                    continue
+                legend[state] = letters[len(legend)]
+            changes.append(_b36(t - prev) + legend[state])
+            prev = max(prev, t)
+        line = (f"E {eid} n={len(changes)} legend=" + ",".join(f"{v}:{k}" for k, v in legend.items())
+                + (" STATES_OVERFLOW" if overflow else "") + "\nC " + " ".join(changes))
+        if used + len(line) + 1 > budget:
+            lines.append(f"E {eid} SKIPPED budget (file again with fewer entities or days)")
+            used += len(lines[-1]) + 1
+            continue
+        lines.append(line)
+        used += len(line) + 1
+    lines.append("END")
+    return lines
+
+
+def read_history(ha, entities: tuple[str, ...], days: int, now: float | None = None, budget: int = 0) -> str:
+    end = int(now if now is not None else time.time())
+    start = end - days * 86400
+    reply = ha.history_period(entities, start, end)
+    lines = project_history(reply, entities, start, budget or MAX_OUTPUT_CHARS - 600)
+    head = f"History of {len(entities)} entities over {days} day(s), read-only (state changes only):"
+    return "\n".join([head, *lines])
+
+
 def run_lookup(engine, lr: LookupRequest):
     """Ask the owner, then render read-only. Returns an engine Result."""
     from .engine import REJECTED, TIMED_OUT, Result
@@ -203,6 +448,12 @@ def run_lookup(engine, lr: LookupRequest):
     if lr.zwave_config_entity:
         message += (f"\nAlso reads the Z-Wave settings of the device of {lr.zwave_config_entity} "
                     "(read-only, nothing is written to the device).")
+    if lr.sense_device_tags:
+        message += ("\nAlso reads Sense's device list, read-only, using Home Assistant's own Sense login "
+                    "(no new login, nothing changed in Sense or Home Assistant).")
+    if lr.history_entities:
+        message += (f"\nAlso reads {lr.history_days} day(s) of history of {len(lr.history_entities)} entities: "
+                    + ", ".join(lr.history_entities[:6]) + (" ..." if len(lr.history_entities) > 6 else ""))
     outcome = engine._ask(lr.request_id, "LOOKUP", "House Brain Deployer: approve lookup?", message,
                           engine.s.timing.approval_timeout)
     if outcome != approval.APPROVE:
@@ -216,5 +467,20 @@ def run_lookup(engine, lr: LookupRequest):
             rendered += "\n\n" + read_zwave_config(engine.ha, lr.zwave_config_entity)
         except Exception as err:  # noqa: BLE001 - reported once, never retried
             return Result(LOOKUP_FAILED, [f"zwave config read error: {scrub(str(err))[:300]}"],
+                          {"lookup_output": scrub(rendered)})
+    if lr.history_entities:
+        try:
+            rendered += "\n\n" + read_history(engine.ha, lr.history_entities, lr.history_days,
+                                              budget=max(1000, MAX_OUTPUT_CHARS - len(rendered) - 600))
+        except Exception as err:  # noqa: BLE001 - reported once, never retried
+            return Result(LOOKUP_FAILED, [f"history read error: {scrub(str(err))[:300]}"],
+                          {"lookup_output": scrub(rendered)})
+    if lr.sense_device_tags:
+        try:
+            rendered += "\n\n" + read_sense_device_tags(os.path.dirname(engine.pk.root.rstrip("/")))
+        except SenseLookupError as err:
+            return Result(LOOKUP_FAILED, [f"sense read error: {err}"], {"lookup_output": scrub(rendered)})
+        except Exception as err:  # noqa: BLE001 - never echoes the exception text (it could hold a token)
+            return Result(LOOKUP_FAILED, [f"sense read error: SENSE_READ_FAILED {type(err).__name__}"],
                           {"lookup_output": scrub(rendered)})
     return Result(LOOKUP_OK, [], {"lookup_output": scrub(rendered)})

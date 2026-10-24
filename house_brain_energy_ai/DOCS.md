@@ -148,3 +148,15 @@ configuration schema, ingress peer/API behavior, AppArmor, start/stop/restart,
 persistence, cold backup/restore and measured host CPU/RAM/storage/latency.
 Local process/file mimics do not qualify Home Assistant or physical equipment.
 At first-install rollback leave this app stopped and native schedules running.
+
+Self-health (0.1.2, `house_brain_app_health.v1`): `GET /health` on the App's port answers only
+peers on the internal Supervisor network (the /23 that holds the Supervisor proxy
+address) and loopback, so Systems AI can read
+it; the LAN is refused and nothing is written to Home Assistant. The block holds the App's
+health (`OK`, `DEGRADED`, `FAILED`), its activity (`RUNNING`, `PAUSED`, `HELD`, `STARTING`),
+reason codes, cycle times, input counts (good, idle, bad), peak memory and database size; no
+entity ids, readings or household data. An owner pause or a kill-switch FULL_STOP is `OK`
+with activity `PAUSED`/`HELD`; an unreadable kill switch, bad inputs, a resource hold or a
+failed cycle is not `OK`; before the first cycle it is never `OK`. The answer is HTTP 503 only
+when this App's own loop has not finished a cycle for 3 minutes; there is no Supervisor
+watchdog line (owner decision 2026-10-20: report only).

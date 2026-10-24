@@ -414,6 +414,22 @@
       "purpose": "DIAGNOSTICS",
       "default_class": "HOUSEHOLD"
     },
+    "house_brain_app_health.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "dismissals": {
+        "health": {
+          "categories": ["HEALTH"],
+          "rationale": "An App's software health (OK/DEGRADED/FAILED), not human health."
+        },
+        "resources/address_cap_mb": {
+          "categories": ["LOCATION"],
+          "rationale": "The App's memory address-space cap in MiB, not a postal address or location."
+        }
+      }
+    },
     "house_brain_ai_benchmark_evidence.v1.schema.json": {
       "role": "RECORD",
       "destination": "HOUSE_BRAIN_LOCAL",

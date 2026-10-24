@@ -28,6 +28,17 @@ one of its entities. The approval message says so and names the entity. The Depl
 values it already holds (no message is sent to the device, nothing is written) and posts only each parameter's
 number, name, value, unit and default.
 
+From 0.3.34 a lookup can also ask for two more read-only parts. Each one is named in the approval message, and
+nothing is read before you approve:
+
+- **History** (`history_entities`, up to 16 entities, `history_days` 1–7): one Home Assistant history read,
+  posted as compact state changes (code `HST1`).
+- **Sense device tags** (`sense_device_tags: true`): one read of Sense's device list using Home Assistant's own
+  Sense login. The Deployer reads only that login from Home Assistant's config entries (the only private-store
+  file it may read), never logs in, refreshes or logs out, and posts device names, icons and a fixed list of
+  tags (type, created and first-used dates, listed/merged/hidden flags, Sense's own name hints). No ids and no
+  token leave the house. A Sense name or type is a hint, not proof of what a device is.
+
 ## Stop recording busy entities (0.3.31)
 
 A package may contain **only** `recorder:` → `exclude:` → `entities:` and/or `entity_globs:` lists. Home Assistant

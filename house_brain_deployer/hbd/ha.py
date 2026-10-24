@@ -46,7 +46,15 @@ _HTTP_ALLOW: tuple[tuple[str, re.Pattern], ...] = (
     ("POST", re.compile(r"^/core/api/config/config_entries/subentries/flow$")),
     ("POST", re.compile(r"^/core/api/config/config_entries/subentries/flow/[0-9a-f]{32}$")),
     ("DELETE", re.compile(r"^/core/api/config/config_entries/entry/[0-9A-Z]{26}$")),  # undo of this run's entry only
+    # 0.3.34 (#215, owner pop-up 2026-10-24): one read-only history window for an owner-approved lookup. GET only;
+    # the ids and window are checked again in history_period() (at most 16 ids, at most 7 days).
+    ("GET", re.compile(r"^/core/api/history/period/" + r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+                       + r"\?filter_entity_id=[a-z0-9_.,]{1,2400}&end_time=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+                       + r"&minimal_response&no_attributes$")),
 )
+RE_HISTORY_ENTITY = re.compile(r"^[a-z_]{2,32}\.[a-z0-9_]{1,96}$")
+MAX_HISTORY_IDS = 16
+MAX_HISTORY_WINDOW_S = 7 * 86400
 _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "system_log/list", "config/auth/list",
                        "http/config", "repairs/list_issues",
                        "zwave_js/get_config_parameters",  # 0.3.29: read-only, one device per owner-approved lookup
@@ -238,6 +246,19 @@ class HomeAssistant:
         self._call("POST", "/core/api/services/hassio/backup_partial",
                    body={"addons": ["local_house_brain_deployer"], "homeassistant": False, "name": name},
                    timeout=1800)
+
+    def history_period(self, entity_ids, start_ts: int, end_ts: int):
+        """0.3.34: Core ``GET /api/history/period`` for one owner-approved lookup. Read-only, bounded, no attributes."""
+        ids = tuple(entity_ids)
+        if (not ids or len(ids) > MAX_HISTORY_IDS or len(set(ids)) != len(ids)
+                or not all(isinstance(e, str) and RE_HISTORY_ENTITY.fullmatch(e) for e in ids)):
+            raise ForbiddenCall("history ids")
+        if not (isinstance(start_ts, int) and isinstance(end_ts, int) and 0 < end_ts - start_ts <= MAX_HISTORY_WINDOW_S):
+            raise ForbiddenCall("history window")
+        stamp = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))  # noqa: E731
+        path = (f"/core/api/history/period/{stamp(start_ts)}?filter_entity_id={','.join(ids)}"
+                f"&end_time={stamp(end_ts)}&minimal_response&no_attributes")
+        return self._call("GET", path, timeout=60)
 
     def render_template(self, template: str) -> str:
         """Core ``POST /api/template``: renders read-only; templates cannot change state."""

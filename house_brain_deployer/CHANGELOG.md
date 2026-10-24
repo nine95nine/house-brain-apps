@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.34 — 2026-10-24 (read-only Sense device-tags and history lookups; owner "This chat builds 0.3.34")
+
+- New optional lookup parts, each named in the approval message and read only after Approve:
+  - `history_entities` (≤ 16) + `history_days` (1–7): one `GET /api/history/period` window with
+    `minimal_response` and `no_attributes`, posted as `HST1` compact state changes. An entity that does not fit the
+    output bound is listed as `SKIPPED`, never cut silently.
+  - `sense_device_tags: true`: Home Assistant's own Sense login is read from `.storage/core.config_entries`; only the
+    single Sense entry's token, device id and monitor id are kept in memory. One GET to Sense
+    `app/monitors/<id>/devices/overview`. Never authenticate, renew, refresh or logout. Output: names, icons and
+    allowlisted tags (plus key names of other tags), no ids or tokens.
+- AppArmor: read of exactly `/homeassistant/.storage/core.config_entries`; write, lock and link stay denied on all of
+  `.storage`, and every other `.storage` path stays unreadable. Owner-approved boundary (§4 of
+  `docs/architecture/SENSE_DEVICE_TAGS_LOOKUP_DEPLOYER_PROPOSAL_R1.md`).
+- No new outcome: the parts report `LOOKUP_OK` / `LOOKUP_FAILED` like every lookup.
+
 ## 0.3.33 — 2026-10-19 (startup hotfix: the moved history admits the Companion outcomes; owner "fix it")
 
 - Live fault: from the 0.3.31 update (2026-10-19 21:25Z) every start was held with `STARTUP_REFUSED` (#454 log reads

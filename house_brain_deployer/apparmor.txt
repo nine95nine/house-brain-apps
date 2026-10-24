@@ -29,7 +29,7 @@ profile house_brain_deployer flags=(attach_disconnected,mediate_deleted) {
   /data/** rwk,
 
   # Packages plus one fixed HTTP-migration repair target (owner 2026-10-08).
-  # secrets.yaml, .storage and every other path stay unreadable/unwritable.
+  # secrets.yaml and every other path stay unreadable/unwritable; .storage too, except the one 0.3.34 read below.
   /homeassistant/ r,
   /homeassistant/packages/ r,
   /homeassistant/packages/* rwlk,
@@ -37,7 +37,12 @@ profile house_brain_deployer flags=(attach_disconnected,mediate_deleted) {
   /homeassistant/configuration.yaml.hbd_http_*.bak rwlk,
   deny /homeassistant/packages/*/** rwlk,
   deny /homeassistant/secrets.yaml rwlk,
-  deny /homeassistant/.storage/** rwlk,
+  # 0.3.34 (#215, owner pop-up 2026-10-24 "Approve §4 as written"): READ of exactly one private-store file, the
+  # config entries, so an owner-approved lookup can use Home Assistant's own Sense login (hbd/lookup.py
+  # read_sense_login keeps only that entry's token, device id and monitor id). Every other .storage path has no
+  # allow rule (default deny), and write, lock and link stay explicitly denied on all of .storage.
+  /homeassistant/.storage/core.config_entries r,
+  deny /homeassistant/.storage/** wlk,
 
   # 0.3.19 #985 layout R1 (owner pop-up 2026-10-12): only the shared writer lock, never blanket /share.
   /share/ r,

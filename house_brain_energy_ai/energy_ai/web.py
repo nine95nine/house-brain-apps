@@ -1,17 +1,33 @@
 """Supervisor ingress only; CSRF-protected local reviews never call equipment."""
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import hmac
+import ipaddress
 import json
 import secrets
 from pathlib import Path
 from queue import Queue
 from threading import Event
 
+# Internal Supervisor network (the /23 holding the Supervisor proxy, its Apps) and loopback;
+# never the LAN (0.1.2).
+SUPERVISOR_NETWORK=ipaddress.ip_interface("172.30.32.2/23").network
+# 503 only when this App's own loop is broken; everything else is in the 200 body.
+HEALTH_BROKEN={"CYCLE_OVERDUE","HEALTH_SELF_CHECK_FAILED"}
+
+
+def health_peer(address):
+    try:
+        ip=ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip in SUPERVISOR_NETWORK
+
 
 class Ingress:
-    def __init__(self, status, commands, port=8099):
+    def __init__(self, status, commands, port=8099, health=None):
         self.status=status
         self.commands=commands
+        self.health=health
         self.csrf=secrets.token_urlsafe(32)
         owner=self
         class Handler(BaseHTTPRequestHandler):
@@ -36,6 +52,12 @@ class Ingress:
                 return self.client_address[0] in {"172.30.32.2","127.0.0.1","::1"}
 
             def do_GET(self):
+                if self.path=="/health":
+                    # house_brain_app_health.v1, read-only, for Systems AI on the internal network.
+                    if owner.health is None or not health_peer(self.client_address[0]):
+                        return self.respond(403,{"error":"HEALTH_PEER_REFUSED"})
+                    doc=owner.health()
+                    return self.respond(503 if HEALTH_BROKEN & set(doc["reasons"]) else 200,doc)
                 if not self.admitted():
                     return self.respond(403,{"error":"INGRESS_REQUIRED"})
                 if self.path in ("/",""):

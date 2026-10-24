@@ -13,6 +13,7 @@ from .transport import HAClient
 from .web import Ingress
 from .installation import read_private, validate
 from .interlock import safety_interlock
+from .health import Tracker
 
 
 def cycle(runtime, client, config, now):
@@ -83,7 +84,8 @@ def main():
     for sig in (signal.SIGTERM,signal.SIGINT):
         signal.signal(sig,lambda *_:stop.set())
     commands=Queue(maxsize=16)
-    ingress=Ingress(lambda:runtime.status,commands)
+    tracker=Tracker()
+    ingress=Ingress(lambda:runtime.status,commands,health=lambda:tracker.build(time.time()))
     thread=Thread(target=ingress.run,daemon=True)
     thread.start()
     next_tick=0.
@@ -108,7 +110,8 @@ def main():
             except Empty:
                 pass
             if time.monotonic()>=next_tick:
-                cycle(runtime,client,config,time.time())
+                now=time.time()
+                tracker.record(cycle(runtime,client,config,now),now)
                 next_tick=time.monotonic()+60
             stop.wait(.25)
     finally:
