@@ -1,6 +1,6 @@
 FROM ghcr.io/home-assistant/base-python:3.14-alpine3.24-2026.08.0@sha256:fb41585796deece71afd5a965e9a8aa1b5c2ceb4f020389d998fbe578dbbde6a
 
-ARG BUILD_VERSION=0.2.13
+ARG BUILD_VERSION=0.2.14
 ARG BUILD_ARCH=aarch64
 
 LABEL \
@@ -22,8 +22,10 @@ RUN chmod 0555 /opt/house-brain-engineering-inspector/inspector.py
 # embedded.* files (tools/sync_inspector_embedded_sources.py keeps them equal to the repository sources).
 COPY entity_sender.py /opt/house-brain-engineering-inspector/entity_sender.py
 COPY registry_probe.py /opt/house-brain-engineering-inspector/registry_probe.py
+COPY cooling_r18_site_probe.py /opt/house-brain-engineering-inspector/cooling_r18_site_probe.py
 COPY embedded.* /opt/house-brain-engineering-inspector/
 RUN chmod 0444 /opt/house-brain-engineering-inspector/entity_sender.py /opt/house-brain-engineering-inspector/registry_probe.py /opt/house-brain-engineering-inspector/embedded.*
+RUN chmod 0444 /opt/house-brain-engineering-inspector/cooling_r18_site_probe.py
 
 # Override the Home Assistant base image's inherited s6-overlay /init entrypoint.
 # This one-shot app has no child-process supervision requirement; Python is PID 1.
