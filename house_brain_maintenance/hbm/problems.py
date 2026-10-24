@@ -56,6 +56,9 @@ QUEUE_SCHEMA = "house_brain_problem_queue.v1"
 RE_MACHINE = re.compile(r"<!-- house_brain_ai_problem_review\.v1 (\{[^\n]*?\}) -->")
 # 0.9.23: the reviewer's numbered steps for one problem, posted next to its review line (reviewer chat 2026-10-19)
 RE_STEPS = re.compile(r"<!-- house_brain_ai_problem_steps\.v1 (\{[^\n]*?\}) -->")
+# 0.9.29: this App's own free-model reviews carry a marker line; they count as reviews (the queue and the page show
+# them) but never as the cloud reviewer's word (the watchdog and the lockout clock look at cloud reviews only).
+RE_FREE_MARK = re.compile(r"<!-- house_brain_free_review\.v1 \{")
 MAX_AI_STEPS = 6
 AI_STEP_CHARS = 120
 RE_KEY = re.compile(r"^[a-z_]{1,24}:[A-Za-z0-9_.:@/+-]{1,200}$")
@@ -94,6 +97,7 @@ def parse(comment: dict, owner: str) -> list[dict]:
     url = comment.get("html_url") if isinstance(comment.get("html_url"), str) and re.fullmatch(
         r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+#issuecomment-\d+", comment["html_url"]) else ""
     steps = parse_steps(body)
+    free = bool(RE_FREE_MARK.search(body))                          # 0.9.29
     out = []
     for raw in RE_MACHINE.findall(body)[:A.MAX_LINES_PER_COMMENT]:
         try:
@@ -106,7 +110,8 @@ def parse(comment: dict, owner: str) -> list[dict]:
         if not (isinstance(key, str) and RE_KEY.fullmatch(key)) or verdict not in VERDICTS:
             continue
         out.append({"item": key, "verdict": verdict, "summary": A._plain(doc.get("summary") or "", 200),
-                    "at": at, "url": url, **({"steps": steps[key]} if steps.get(key) else {})})
+                    "at": at, "url": url, **({"steps": steps[key]} if steps.get(key) else {}),
+                    **({"free": True} if free else {})})
     return out
 
 
@@ -167,16 +172,35 @@ class ProblemReviews(A.AiReviews):
     def _parse(comment: dict, owner: str) -> list[dict]:
         return parse(comment, owner)
 
+    def cloud(self, item: str) -> dict | None:
+        """0.9.29: a counting review by the cloud reviewer (never this App's own free-model line)."""
+        r = self.get(item)
+        return None if r is None or r.get("free") else r
+
+    def cloud_before(self, item: str) -> dict | None:
+        """0.9.29: the newest cloud review of this key even when the problem's facts changed since (the free lane
+        repeats it only when the title's fingerprint still matches)."""
+        r = super().get(item)
+        return None if r is None or r.get("free") else r
+
+    def cloud_at(self) -> float | None:
+        """0.9.29: when the cloud reviewer last posted any counting problem review (None: never seen / not read)."""
+        doc = self._doc()
+        if not float(doc.get("read_at") or 0):
+            return None
+        return float(doc.get("cloud_at") or 0) or None
+
     def detail(self, key: str) -> dict | None:
         """0.9.23: what the Messages page shows for a problem: the verdict in words, the summary, the AI's steps and
-        the review's address (github.com only). None without a counting review."""
+        the review's address (github.com only). None without a counting review. 0.9.29: ``free`` marks a free-model
+        review posted by this App in lockout mode."""
         r = self.get(key) if self.enabled else None
         if not r or r.get("verdict") not in WORDS:
             return None
         url = r.get("url") if isinstance(r.get("url"), str) and r["url"].startswith("https://github.com/") else ""
         steps = [s for s in (r.get("steps") or []) if isinstance(s, str) and s][:MAX_AI_STEPS]
         return {"verdict": r["verdict"], "words": WORDS[r["verdict"]], "summary": str(r.get("summary") or ""),
-                "steps": steps, "url": url}
+                "steps": steps, "url": url, **({"free": True} if r.get("free") else {})}
 
     def line(self, key: str) -> str:
         """One plain line for a problem ("" without a review). Never an instruction to act."""
@@ -184,7 +208,8 @@ class ProblemReviews(A.AiReviews):
         if not r:
             return ""
         summary = f": {r['summary']}" if r.get("summary") else ""
-        return f"AI review: {WORDS[r['verdict']]}{summary}"[:240]
+        who = "Free-model review (lockout mode)" if r.get("free") else "AI review"       # 0.9.29
+        return f"{who}: {WORDS[r['verdict']]}{summary}"[:240]
 
 
 def queue_entries(keys_titles: list[tuple[str, str, str]], reviews, after: dict | None = None) -> list[dict]:
@@ -228,8 +253,8 @@ def digest_due(st: dict, now: float, digest_hour: int, localtime=time.localtime)
     return lt.tm_wday == DIGEST_WEEKDAY and lt.tm_hour >= digest_hour and st.get("still_open_week") != week
 
 
-def digest_text(items: list[tuple[str, dict, float]], reviews, version: str) -> tuple[str, str]:
-    """(GitHub markdown, one phone line) for the weekly still-open list."""
+def digest_text(items: list[tuple[str, dict, float]], reviews, version: str, extra: str = "") -> tuple[str, str]:
+    """(GitHub markdown, one phone line) for the weekly still-open list. 0.9.29: ``extra`` is the free lane's line."""
     lines = ["### House Brain Maintenance: still open this week", ""]
     for key, rec, age in items[:30]:
         lines.append(f"- **{str(rec.get('title', key))[:120]}** ({rec.get('severity', 'warning')}, open "
@@ -240,7 +265,10 @@ def digest_text(items: list[tuple[str, dict, float]], reviews, version: str) -> 
     if len(items) > 30:
         lines.append(f"- … and {len(items) - 30} more")
     lines += ["", "Each one: approve its fix on the Maintenance page or your phone when one is offered, or follow the "
-              "AI review's step. A problem that clears by itself leaves this list.", "", f"- **App:** `{version}`", "",
+              "AI review's step. A problem that clears by itself leaves this list.", ""]
+    if extra:
+        lines += [extra, ""]
+    lines += [f"- **App:** `{version}`", "",
               "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._", "",
               queue_line([(k, str(r.get("title", k)), str(r.get("source", ""))) for k, r, _ in items], reviews,
                          after_tags({k: r for k, r, _ in items}))]
@@ -257,7 +285,7 @@ def problem_waits(open_recs: dict, queued: dict, reviews) -> list[tuple[str, flo
     for key, rec in open_recs.items():
         if key == STALL_KEY or not isinstance(rec, dict) or not rec.get("alerted") or key not in queued:
             continue
-        if reviews.get(key) is None:
+        if (reviews.cloud(key) if hasattr(reviews, "cloud") else reviews.get(key)) is None:   # 0.9.29: cloud only
             out.append((str(rec.get("title", key)), max(float(queued[key]), float(rec.get("first") or 0))))
     return out
 

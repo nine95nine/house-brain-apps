@@ -132,6 +132,8 @@ class Options:
     ai_review: bool = True            # 0.8.9: an AI review on the tracking issue before any update ask/auto install
     cf_control_issue: int = 454       # 0.8.2: Cloudflare control approvals to the phone (0 = off; owner 2026-10-11)
     cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
+    free_reviewer: str = "lockout"    # 0.9.29: off | shadow | lockout (owner 2026-10-24 "Go straight to lockout mode")
+    companion_url: str = ""           # 0.9.29: "" = the Companion on the Broker's Cloudflare account; "off" = never
 
 
 def load_options(path: str) -> Options:
@@ -232,7 +234,20 @@ def load_options(path: str) -> Options:
         else _bad("housekeeping"),
         ai_review=raw.get("ai_review", True) if isinstance(raw.get("ai_review", True), bool) else _bad("ai_review"),
         cf_control_url=_cf_url(raw.get("cf_control_url")),
+        free_reviewer=raw.get("free_reviewer", "lockout") if raw.get("free_reviewer", "lockout") in ("off", "shadow", "lockout")
+        else _bad("free_reviewer"),
+        companion_url=_companion_url(raw.get("companion_url")),
     )
+
+
+def _companion_url(value) -> str:
+    """0.9.29: the Companion address ("" = derived from the Broker's account; "off" = the free lane never calls)."""
+    from .freelane import RE_COMPANION_URL
+    if value in (None, ""):
+        return ""
+    if value == "off" or (isinstance(value, str) and RE_COMPANION_URL.fullmatch(value)):
+        return value
+    raise OptionsError("companion_url")
 
 
 def _cf_url(value) -> str:
@@ -369,6 +384,7 @@ class Service:
         self.ai: AiReviews | None = None                   # 0.8.9: AI reviews read from the tracking issue
         self.update_queue: UpdateQueue | None = None       # 0.8.9: the "updates waiting" list
         self.rate_noted: set[str] = set()                  # 0.8.9: requests waiting for the ask limit (audited once)
+        self.free_lane = None                                   # 0.9.29: the free reviewer lane
         self.key_broker_base: str | None = None             # 0.8.0: test mode only (a local Broker)
         self.migrator: Migrator | None = None              # 0.6.6: Deployer local -> store switch-over
         self.writer = SharedWriter()                       # 0.9.1: shared writer lock with the Deployer (never created)
@@ -526,6 +542,12 @@ class Service:
             if self.o.report_issue and self.o.ai_review:                  # 0.9.6: AI problem reviews
                 from .problems import ProblemReviews
                 self.watcher.problem_ai = ProblemReviews(self.gh, self.j, self.o.report_issue)
+                if self.o.free_reviewer != "off" and self.o.companion_url != "off":   # 0.9.29: the free reviewer lane
+                    from .freelane import FreeLane, companion_url
+                    self.free_lane = FreeLane(self.j, self.watcher.problem_ai, self.o.free_reviewer,
+                                              companion_url(self.o.companion_url, self._safe_broker_base()),
+                                              self._rotation_key, self.report_text)
+                    self.watcher.free_lane = self.free_lane
             self.watcher.credentials = self.gh.auth.summary if hasattr(self.gh, "auth") else None
             self.watcher.relay_url = self.o.relay_credential_url
             # 0.7.3: hold list (all update paths) and the after-update check (Core, OS and App updates).
@@ -562,6 +584,22 @@ class Service:
             self.watcher.key_findings = self.keys.findings
             self.watcher.os_findings = self.system.findings    # 0.8.3: an OS update waiting for a restart
         return self.engine
+
+    def _safe_broker_base(self) -> str:
+        """0.9.29: the Broker address, or "" when it is not known yet (the free lane then stays off)."""
+        try:
+            return self._key_broker_base()
+        except Exception:  # noqa: BLE001 - no Scout view yet, or a Broker URL in another shape
+            return ""
+
+    def _rotation_key(self) -> str:
+        """0.9.29: this App's own Broker rotation key, its identity towards the Companion (never logged or posted)."""
+        if self.keys is None:
+            return ""
+        try:
+            return str(self.keys.ensure_rotation_key().get("rotation_key") or "")
+        except Exception:  # noqa: BLE001
+            return ""
 
     def _key_broker_base(self) -> str:
         """0.8.0: the Broker the Scout publishes to (its URL is checked to the exact Broker shape)."""
@@ -977,10 +1015,16 @@ class Service:
             except Exception as err:  # noqa: BLE001 - the last reviews read stand
                 LOG.warning("AI problem review read waits: %s", net.redact(str(err))[:200])
         summary = self.watcher.check()
+        if self.free_lane is not None:                         # 0.9.29: drafts, comparisons, lockout posts
+            try:
+                self.free_lane.cycle(self.watcher._state()["open"], VERSION, self.o.dry_run)
+            except Exception as err:  # noqa: BLE001 - the lane is best effort; the problem watch itself stands
+                LOG.warning("free reviewer lane waits: %s", net.redact(str(err))[:200])
         self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary, **self._ledger_attrs(),
                                  **self._writer_attrs(), **self._skipped_attrs(),
                                  **self._waiting_attrs(), **self._keys_attrs(),
-                                 "needs_review": self.needs_review()})          # 0.9.26
+                                 "needs_review": self.needs_review(),           # 0.9.26
+                                 **({"free_reviewer": self.free_lane.status()} if self.free_lane is not None else {})})
 
     def _skipped_attrs(self) -> dict:
         """0.9.15: installed-App rows the last list read skipped, by reason ({} when none)."""

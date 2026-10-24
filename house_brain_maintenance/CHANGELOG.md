@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.29
+
+Free reviewer lane (reviewer session message 2026-10-24 14:30Z; owner pop-ups 2026-10-24 "Go straight to lockout mode",
+"Companion review route", "Its Broker key"; design `docs/architecture/HOUSE_BRAIN_FREE_REVIEWER_LANE_R1.md`; Work Board
+#942 claim 6389220976). 0.9.28 is the AI family's Systems AI relay. Contains 0.9.27 unchanged otherwise.
+
+- `hbm/freelane.py` (new): low-risk open log problems without a cloud review are drafted by the Companion's review route
+  (Gemma 4 26B, Workers AI free plan; the App's Broker rotation key is its identity): WATCH, IGNORE or ESCALATE. Drafts are
+  compared with the cloud review when it arrives (agreement per kind). In lockout mode (24 h without any cloud review) the
+  WATCH/IGNORE drafts are posted as review lines marked "free model", repeats of earlier cloud verdicts for unchanged problems
+  without a model call; a later cloud review wins; posting stops when agreement drops under 60 %. Daily count: ≤ 3,000
+  Neurons, ≤ 60 calls, ≤ 4 posts.
+- `problems.py`: free-model review lines carry `house_brain_free_review.v1`; `cloud()`, `cloud_before()`, `cloud_at()`; the
+  reviewer watchdog counts cloud reviews only; the Messages page and the weekly list label free-model reviews.
+- `aireview.py`: `cloud_at` (when the cloud reviewer last posted). `watch.py`: open records keep up to four detail lines.
+- Options `free_reviewer` (off | shadow | lockout, default lockout) and `companion_url` ("" = derived; `off`).
+- Status sensor: `free_reviewer` (mode, Neurons and calls today, drafts, posted, agreement).
+
 ## 0.9.27
 
 History measurement (history archive proposal R1 step 1; owner pop-ups 2026-10-24 "Yes, measure first" and "Yes, 0.9.27

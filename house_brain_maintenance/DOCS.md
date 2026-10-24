@@ -528,6 +528,31 @@ From 0.7.2, when an update ask (App, Core or OS) ends with no answer, one more p
 Maintenance page." It is sent once per missed ask, never after Reject and never in dry run. From 0.9.0 it reads
 "Tap to approve or decline it on the Maintenance page, or I'll ask again at 14:05 (local)." (see below).
 
+## Free reviewer (lockout mode) — from 0.9.29
+
+The cloud AI reviewer (a Claude routine) stops when the owner's weekly plan limit is used up; from 2026-10-20 to
+2026-10-24 nothing was reviewed. This App now keeps the low-risk problems reviewed for free:
+
+- **What it reviews:** ordinary log errors (`log:…`) that are not critical, have no built-in fix and are not about
+  firmware, Core, the OS, backups, safety sensors or a radio network (Zigbee, Z-Wave, Thread, Matter, Bluetooth,
+  ESPHome). Everything else stays with the cloud reviewer and you.
+- **Who answers:** the House Brain Companion's review route on Cloudflare Workers AI's free plan (Gemma 4 26B), with
+  this App's own Broker key as its identity. One short call per problem, about 13 Neurons; at most 3,000 Neurons and
+  60 calls a day, under the Companion's 8,000-Neuron self-cap. $0: past the free allowance Cloudflare refuses the
+  call; it never bills.
+- **Shadow:** every answer is kept as a draft and compared with the cloud review of the same problem when it comes.
+  The weekly "still open" list shows the agreement.
+- **Lockout mode (the default, `free_reviewer: lockout`):** when no cloud review has appeared for 24 hours, the
+  drafts are posted on the tracking issue as review lines marked "free model", so the queue, the Messages page and
+  the weekly list show them. **WATCH or IGNORE only**: a draft that says "escalate" is never posted. An unchanged
+  problem that had a cloud verdict before gets that verdict again without any model call. A later cloud review of the
+  same problem replaces the free one. Posting stops by itself when the free model disagreed with the cloud reviewer in
+  more than 40 % of the compared cases.
+- **Never:** "approve the offered fix", "needs a step by you", an update review, or anything that changes the house.
+  Fixes still need your Approve; the reviewer watchdog still tells you when the cloud reviewer is silent.
+- `free_reviewer: shadow` drafts and compares but never posts; `off` turns the lane off. `companion_url` is worked out
+  from the Broker's Cloudflare account; set `off` to forbid the call.
+
 ## Problems are followed until they are fixed — from 0.9.6
 
 Live 2026-10-13: six "The unit of sensor.… has changed" repairs sat for two days, because the morning summary named

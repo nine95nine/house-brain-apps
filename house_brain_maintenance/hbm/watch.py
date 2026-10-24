@@ -127,6 +127,7 @@ class Watcher:
         self.claimed: Callable[[], frozenset] = frozenset
         self.relay_fetch: Callable[[str], object] = lambda url: net.request("GET", url, timeout=15)[1]
         self.problem_ai: PR.ProblemReviews | None = None     # 0.9.6: AI problem reviews (set by the Service)
+        self.free_lane = None                                 # 0.9.29: the free reviewer lane (set by the Service)
         # 0.9.12 reviewer watchdog: (name, first offered) of waiting updates without an AI review, None when not known
         self.review_waits: Callable[[], list | None] | None = None
         self.queued: list[str] = []                           # 0.9.12: problem keys in the queue line being posted
@@ -327,7 +328,8 @@ class Watcher:
                         except Exception:  # noqa: BLE001 - the report is best effort; the problem itself stands
                             pass
             rec.update(polls=rec["polls"] + 1, title=f.title, severity=f.severity, clear=f.announce_clear,
-                       source=f.source, steps=PR.detail_steps(f))           # 0.9.21: what can be done, for #454
+                       source=f.source, steps=PR.detail_steps(f),           # 0.9.21: what can be done, for #454
+                       detail=[I.scrub(str(d), 400) for d in tuple(f.detail or ())[:4]])   # 0.9.29: the free lane's facts
             if f.action:                        # 0.9.23: the page's "Fix it" button (the owner's tap approves)
                 rec["fix"] = {"kind": f.action.kind, "label": f.action.label[:80]}
             else:
@@ -552,7 +554,8 @@ class Watcher:
         if not items:
             return
         from . import VERSION
-        text, phone = PR.digest_text(items, self.problem_ai, VERSION)
+        extra = self.free_lane.digest_line() if self.free_lane is not None else ""     # 0.9.29
+        text, phone = PR.digest_text(items, self.problem_ai, VERSION, extra)
         self.queued = [n["key"] for n in PR.queue_entries([(k, str(r.get("title", k)), "") for k, r, _ in items],
                                                           self.problem_ai)]
         url = self._post(I.scrub(text, 60000))                   # 0.9.23: first, so the message links to it
