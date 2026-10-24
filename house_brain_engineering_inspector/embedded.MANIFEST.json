@@ -11,7 +11,7 @@
     {
       "flat": "embedded.contracts.house_brain_entity_read_policy.v1.json",
       "path": "contracts/house_brain_entity_read_policy.v1.json",
-      "sha256": "ad4c24522b643438413230f901783d03f88e7e744573458be3cddf36177ac6e2"
+      "sha256": "42eab5ce5cb592b3e1c324027e40676ac1acd5c992cdc863cca1fa649a268ca5"
     },
     {
       "flat": "embedded.contracts.house_brain_privacy_data_classes.v1.json",

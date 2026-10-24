@@ -1,9 +1,9 @@
 {
   "schema_version": "house_brain_entity_read_policy.v1",
-  "contract_version": "1.7.0",
+  "contract_version": "1.8.0",
   "status": "REPOSITORY_CANDIDATE_NOT_COMMISSIONED",
   "initiative": "#212 G0 (with #60, #56)",
-  "owner_decisions": "Owner popups 2026-09-30 (recorded in PR #541, docs/governance/OWNER_DECISIONS_2026-09-30.md): 'Allowlisted snapshot (Recommended)'; 'Broad (non-sensitive)'; owner review of the first live dry run 2026-10-02 (Inspector 0.2.0, 1491 ids; docs/governance/OWNER_DECISIONS_2026-10-01.md): street-name and car-status sensors 'Keep them'; personal names 'Share with neutral labels' (owner_name_aliases); rest 'Approve the rest (Recommended)'; health-bridge prefix 'Reserve and block it now (Recommended)' (2026-10-02; owner_deny_prefixes sensor.hb_health_ and binary_sensor.hb_health_); Owner pop-up 2026-10-13 'Both (Recommended)' (Cooling chat): history_list adds house RH, outdoor temperature, outdoor dew point and Vent Start OK; Owner pop-up 2026-10-13 'Exact exception in Inspector' (AI Access chat, Work Board #942 row 56): registry_exempt_entities names the two App-written sensors sensor.house_brain_ai_connectors (AI connector heads-up, AI Access 0.1.5-dev) and sensor.house_brain_ai_kill_switch_effective (kill-switch bridge, AI Access 0.1.3-dev) as exportable without an entity-registry entry; state only (default attributes), every other rule still applies Owner pop-up 2026-10-18 'Build all 4 parts (Recommended)' (Work Board #942 row 72; policy 1.5.0, Inspector 0.2.11): sensor.house_brain_ai_activity (AI Access 0.1.6-dev, state-only, no registry entry) joins registry_exempt_entities, with the scalar attributes total_requests, from and to (counts and dates only; the nested per-AI counts stay unexported). Owner pop-up 2026-10-18 'Both of the above' (Work Board #942 row 74; policy 1.6.0, Inspector 0.2.12): the flat scalar attributes that AI Access 0.1.7-dev adds to sensor.house_brain_ai_activity join its attribute allowlist (flag_summary, which names the AI and flag such as claude:MANY_REFUSED, and per AI the counts <ai>_requests, <ai>_refused, <ai>_rate_limited for claude, chatgpt and grok); counts and flag names only, the nested providers and flags stay unexported. Owner pop-up 2026-10-18 'Show the reasons (Recommended)' (Work Board #942 row 74; policy 1.7.0, Inspector 0.2.13): claude_top_refused, chatgpt_top_refused and grok_top_refused (AI Access 0.1.8-dev; up to three perimeter reason codes with counts, such as KS_EDGE_STALE:12) join the same allowlist; reason codes and counts only.",
+  "owner_decisions": "Owner popups 2026-09-30 (recorded in PR #541, docs/governance/OWNER_DECISIONS_2026-09-30.md): 'Allowlisted snapshot (Recommended)'; 'Broad (non-sensitive)'; owner review of the first live dry run 2026-10-02 (Inspector 0.2.0, 1491 ids; docs/governance/OWNER_DECISIONS_2026-10-01.md): street-name and car-status sensors 'Keep them'; personal names 'Share with neutral labels' (owner_name_aliases); rest 'Approve the rest (Recommended)'; health-bridge prefix 'Reserve and block it now (Recommended)' (2026-10-02; owner_deny_prefixes sensor.hb_health_ and binary_sensor.hb_health_); Owner pop-up 2026-10-13 'Both (Recommended)' (Cooling chat): history_list adds house RH, outdoor temperature, outdoor dew point and Vent Start OK; Owner pop-up 2026-10-13 'Exact exception in Inspector' (AI Access chat, Work Board #942 row 56): registry_exempt_entities names the two App-written sensors sensor.house_brain_ai_connectors (AI connector heads-up, AI Access 0.1.5-dev) and sensor.house_brain_ai_kill_switch_effective (kill-switch bridge, AI Access 0.1.3-dev) as exportable without an entity-registry entry; state only (default attributes), every other rule still applies Owner pop-up 2026-10-18 'Build all 4 parts (Recommended)' (Work Board #942 row 72; policy 1.5.0, Inspector 0.2.11): sensor.house_brain_ai_activity (AI Access 0.1.6-dev, state-only, no registry entry) joins registry_exempt_entities, with the scalar attributes total_requests, from and to (counts and dates only; the nested per-AI counts stay unexported). Owner pop-up 2026-10-18 'Both of the above' (Work Board #942 row 74; policy 1.6.0, Inspector 0.2.12): the flat scalar attributes that AI Access 0.1.7-dev adds to sensor.house_brain_ai_activity join its attribute allowlist (flag_summary, which names the AI and flag such as claude:MANY_REFUSED, and per AI the counts <ai>_requests, <ai>_refused, <ai>_rate_limited for claude, chatgpt and grok); counts and flag names only, the nested providers and flags stay unexported. Owner pop-up 2026-10-18 'Show the reasons (Recommended)' (Work Board #942 row 74; policy 1.7.0, Inspector 0.2.13): claude_top_refused, chatgpt_top_refused and grok_top_refused (AI Access 0.1.8-dev; up to three perimeter reason codes with counts, such as KS_EDGE_STALE:12) join the same allowlist; reason codes and counts only. Owner pop-ups 2026-10-24 'I want you to access the boards and be able to read them', 'Take it over here', 'Status sensor counts as advice (Recommended)' and 'As lol of the above' (all four board options; Work Board #942; policy 1.8.0, Inspector 0.2.16): the App-written status sensors of Energy AI 0.1.3, Maintenance and Deployer join registry_exempt_entities with only their single-value attributes allowlisted (never the Deployer txn_marker, never a list or object); the board sensors the export missed join token_exemptions (status and check states only, including the family First Aid and Phone Safety review states, which carry VERIFIED/STALE/UNKNOWN/NEEDS_ACTION and no medical or phone data); the board cards' single-value details join attribute_allowlist; history_list adds the six cooling ids requested by Cooling row 7, the twelve Sense on/off ids requested by the Sense lane and the Energy AI status. Ids that embed the home coordinates are not named here (owner pop-up 2026-10-24 'Leave as is').",
   "authority": "READ_POLICY_ONLY_NO_EXECUTION",
   "domains": [
     "sensor",
@@ -61,12 +61,27 @@
   ],
   "token_exemptions": [
     "binary_sensor.cooling_arbiter_v2_pump_pulse_advised",
-    "sensor.cooling_arbiter_v2_pump_pulse_advised"
+    "sensor.cooling_arbiter_v2_pump_pulse_advised",
+    "sensor.environment_hottest_location",
+    "sensor.evap_controller_health_score",
+    "sensor.evap_data_health",
+    "sensor.house_brain_apocalypse_data_health",
+    "sensor.house_brain_energy_configuration_health",
+    "sensor.house_brain_energy_logic_health",
+    "sensor.house_brain_family_medical_check",
+    "sensor.house_brain_family_r2_phone_safety_check",
+    "sensor.house_brain_irrigation_accounting_health",
+    "sensor.house_brain_irrigation_active_zone_count",
+    "sensor.house_brain_irrigation_configuration_health",
+    "sensor.house_brain_irrigation_data_health"
   ],
   "registry_exempt_entities": [
     "sensor.house_brain_ai_activity",
     "sensor.house_brain_ai_connectors",
-    "sensor.house_brain_ai_kill_switch_effective"
+    "sensor.house_brain_ai_kill_switch_effective",
+    "sensor.house_brain_deployer_status",
+    "sensor.house_brain_energy_ai_status",
+    "sensor.house_brain_maintenance_status"
   ],
   "default_attributes": [
     "unit_of_measurement",
@@ -74,6 +89,23 @@
     "state_class"
   ],
   "attribute_allowlist": {
+    "binary_sensor.house_brain_apocalypse_mobile_delivery_ready": [
+      "commissioning_status"
+    ],
+    "binary_sensor.spa_automation_ready": [
+      "all_off_match_count",
+      "readiness_revision"
+    ],
+    "binary_sensor.tesla_left_open": [
+      "what_is_open"
+    ],
+    "sensor.aquarite_chlorinator_advice": [
+      "manual_fc_minimum",
+      "manual_test_logged"
+    ],
+    "sensor.aquarite_link": [
+      "reason"
+    ],
     "sensor.cooling_arbiter_v2_status": [
       "phase",
       "owner",
@@ -90,6 +122,12 @@
       "indoor_dew_point",
       "evap_actual_operation",
       "interlock_class"
+    ],
+    "sensor.evap_comfort_verdict": [
+      "plain_english"
+    ],
+    "sensor.garden_plant_stress": [
+      "detail"
     ],
     "sensor.house_brain_ai_activity": [
       "total_requests",
@@ -108,10 +146,175 @@
       "claude_top_refused",
       "chatgpt_top_refused",
       "grok_top_refused"
+    ],
+    "sensor.house_brain_apocalypse_corroboration_count": [
+      "threshold"
+    ],
+    "sensor.house_brain_apocalypse_data_health": [
+      "business_jet_as_of",
+      "business_jet_mode",
+      "business_jet_source_state",
+      "cohort_tracked_count",
+      "latest_slot_key",
+      "live_last_error",
+      "live_last_success_at",
+      "military_as_of",
+      "military_mode",
+      "military_source_state",
+      "source_warning",
+      "stale_after_minutes",
+      "untracked_as_of",
+      "untracked_mode",
+      "untracked_source_state"
+    ],
+    "sensor.house_brain_apocalypse_level": [
+      "as_of",
+      "excess_count",
+      "holiday_label",
+      "holiday_ratio",
+      "upstream_alert_level",
+      "concurrent_count",
+      "expected_count",
+      "z_score"
+    ],
+    "sensor.house_brain_apocalypse_military_level": [
+      "concurrent_count",
+      "expected_count",
+      "z_score"
+    ],
+    "sensor.house_brain_apocalypse_software": [
+      "alert_interface",
+      "build",
+      "control_authority",
+      "physical_control",
+      "schema",
+      "source_contract",
+      "source_contract_revision",
+      "version"
+    ],
+    "sensor.house_brain_apocalypse_untracked_level": [
+      "concurrent_count",
+      "expected_count",
+      "z_score"
+    ],
+    "sensor.house_brain_deployer_status": [
+      "version",
+      "request_id",
+      "reason"
+    ],
+    "sensor.house_brain_energy_ai_status": [
+      "version",
+      "mode",
+      "physical_actions",
+      "summary",
+      "data_status",
+      "plan",
+      "always_on",
+      "this_month",
+      "bank_runway",
+      "credit_headroom",
+      "stay_put",
+      "heat_and_use",
+      "panels",
+      "outage_planning",
+      "solar_used_at_home",
+      "forecast_trust",
+      "energy_counters",
+      "scorecard",
+      "updated"
+    ],
+    "sensor.house_brain_family_r2_next_milestone": [
+      "date"
+    ],
+    "sensor.house_brain_irrigation_back_yard_by_pool": [
+      "battery_percent",
+      "effective_next_watering",
+      "last_consumption_gallons",
+      "last_estimated_flow_gpm",
+      "last_runtime_minutes",
+      "last_watering",
+      "schedule_source",
+      "smart_watering",
+      "valve"
+    ],
+    "sensor.house_brain_irrigation_front_yard": [
+      "battery_percent",
+      "effective_next_watering",
+      "last_consumption_gallons",
+      "last_estimated_flow_gpm",
+      "last_runtime_minutes",
+      "last_watering",
+      "schedule_source",
+      "smart_watering",
+      "valve"
+    ],
+    "sensor.house_brain_irrigation_package_status": [
+      "build_revision",
+      "package_version",
+      "schema",
+      "source_contract_revision"
+    ],
+    "sensor.house_brain_irrigation_pool_equipment": [
+      "battery_percent",
+      "effective_next_watering",
+      "last_consumption_gallons",
+      "last_estimated_flow_gpm",
+      "last_runtime_minutes",
+      "last_watering",
+      "schedule_source",
+      "smart_watering",
+      "valve",
+      "device_mode",
+      "hardware",
+      "rain_delay",
+      "rain_delay_ends_at",
+      "rain_delay_remaining_days",
+      "source_device"
+    ],
+    "sensor.house_brain_maintenance_status": [
+      "version",
+      "dry_run",
+      "open_problems",
+      "pending_updates",
+      "job",
+      "request_id"
+    ],
+    "sensor.house_solar_opportunity": [
+      "recommendation"
+    ],
+    "sensor.largest_sense_load_now": [
+      "watts"
+    ],
+    "sensor.nursery_plant_stress": [
+      "detail"
+    ],
+    "sensor.pool_water_verdict": [
+      "plain_english"
+    ],
+    "sensor.spa_status": [
+      "plain_english"
     ]
   },
   "history_list": [
+    "binary_sensor.air_conditioning_power",
+    "binary_sensor.cooling_arbiter_v2_ac_block_verified",
     "binary_sensor.cooling_arbiter_v2_vent_start_ok",
+    "binary_sensor.cooling_humid_boost_would_start",
+    "binary_sensor.cooling_stale_air_advisory",
+    "binary_sensor.cooling_vent_humid_allowance_spent",
+    "binary_sensor.cooling_vent_humid_recovering",
+    "binary_sensor.dishwasher_power",
+    "binary_sensor.dryer_power",
+    "binary_sensor.electric_vehicle_2_power",
+    "binary_sensor.evap_power",
+    "binary_sensor.freezer_power",
+    "binary_sensor.fridge_2_power",
+    "binary_sensor.heat_pump_power",
+    "binary_sensor.microwave_2_power",
+    "binary_sensor.motor_2_power",
+    "binary_sensor.slow_cooker_power",
+    "binary_sensor.window_ac_power_2",
+    "sensor.cooling_arbiter_ecobee_target",
     "sensor.cooling_arbiter_v2_decision",
     "sensor.cooling_arbiter_v2_indoor_dew_point",
     "sensor.cooling_arbiter_v2_indoor_house_humidity",
@@ -120,7 +323,8 @@
     "sensor.evap_local_dew_point_consensus",
     "sensor.evap_local_outdoor_temperature",
     "sensor.evap_robust_indoor_temperature",
-    "sensor.evap_v24_eligibility_code"
+    "sensor.evap_v24_eligibility_code",
+    "sensor.house_brain_energy_ai_status"
   ],
   "bounds": {
     "max_entities": 3000,
@@ -141,5 +345,5 @@
     "owner_deny_prefixes: sensor.hb_health_ and binary_sensor.hb_health_ are reserved for the future #56 health bridge and never exported, whatever their content (owner decision 2026-10-02). The builder refuses a policy that claims health_bridge_prefix_in_owner_deny_prefixes without both prefixes (POLICY_HEALTH_PREFIX_NOT_DENIED).",
     "registry_exempt_entities (1.4.0): exact ids only, never a pattern; at most 8; each must be in an exported domain. These House Brain sensors are written by an App through the Core API, so Home Assistant's entity registry never lists them; without this they fail the NOT_IN_REGISTRY rule. Deny lists, blocked domains/devices, device-class and name-category rules, the attribute allowlist and the content detectors still apply."
   ],
-  "token_exemptions_rationale": "Cooling Arbiter evap pump pulse advice: 'pulse' is a #60 HEALTH token, but these are pump-control advisories, not human health data. Owner-reviewable."
+  "token_exemptions_rationale": "Cooling Arbiter evap pump pulse advice: 'pulse' is a #60 HEALTH token, but these are pump-control advisories, not human health data. Owner-reviewable. Policy 1.8.0 (owner pop-up 2026-10-24 'As lol of the above'): 'health' here is equipment or data health, 'location' and 'zone' are a room name (aliased like every text) and irrigation zones, 'medical' and 'phone' are the family preparedness review states (VERIFIED, STALE, UNKNOWN, NEEDS_ACTION); the content detector and name aliases still apply."
 }

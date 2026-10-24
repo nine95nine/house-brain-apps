@@ -4,6 +4,8 @@ import urllib.request
 from urllib.parse import urlencode, quote
 from datetime import datetime, timezone
 import re
+import time
+from .publish import ENTITY as STATUS_ENTITY, due, sensor_payload
 from .store import encode
 
 
@@ -59,11 +61,15 @@ class HAClient:
             raise ValueError("STATE_LIST_REQUIRED")
         return {r["entity_id"]:r for r in result if isinstance(r,dict) and "entity_id" in r}
 
-    def publish(self, status):
-        # One bounded status entity; state POST is entity presentation, not a service call.
-        return self.request("/states/sensor.house_brain_energy_ai_status",{
-            "state":status["state"],"attributes":{
-                "friendly_name":"House Brain Energy AI", "version":status["version"],
-                "mode":status["mode"],"physical_actions":False,"last_cycle":status["at"],
-                "data_quality":status["data_quality"],"model_status":status["model_status"],
-                "plan_status":status["plan_status"],"detail":"Open Energy AI ingress for evidence"}})
+    def publish(self, status, now=None):
+        """One bounded status entity (0.1.3: flat single-value lines, see publish.py); a state POST is entity
+        presentation, not a service call. Unchanged content is re-sent only every HEARTBEAT_S."""
+        now=time.time() if now is None else now
+        payload=sensor_payload(status,now)
+        if not due(getattr(self,"_published",None),payload,now):
+            return None
+        state,attributes=payload
+        result=self.request("/states/"+STATUS_ENTITY,{"state":state,"attributes":{
+            "friendly_name":"House Brain Energy AI",**attributes}})
+        self._published=(payload,now)
+        return result

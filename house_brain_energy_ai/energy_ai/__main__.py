@@ -16,6 +16,12 @@ from .interlock import safety_interlock
 from .health import Tracker
 
 
+# 0.1.3, owner pop-up 2026-10-24 "Status sensor counts as advice": writing this App's own status entity is
+# ADVISORY, so READ_ONLY publishes it and FULL_STOP or an unreadable switch still blocks it. The interlock's
+# MUTATION class (blocked at READ_ONLY) is unchanged for anything else.
+STATUS_PUBLICATION_CLASS="ADVISORY"
+
+
 def cycle(runtime, client, config, now):
     """One live cycle. Kill-switch interlock (#56): analytics are ADVISORY, publication is MUTATION."""
     try:
@@ -23,7 +29,7 @@ def cycle(runtime, client, config, now):
     except Exception:
         states=None
     advisory=safety_interlock(states,"ADVISORY",now)
-    publication=safety_interlock(states,"MUTATION",now)
+    publication=safety_interlock(states,STATUS_PUBLICATION_CLASS,now)
     if states is None:
         runtime.failure(now,"DATA_OR_STORAGE_FAILURE")
     elif advisory!="ALLOW":

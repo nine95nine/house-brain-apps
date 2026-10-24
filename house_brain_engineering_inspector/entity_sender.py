@@ -47,7 +47,7 @@ SENDER_SCHEMA: Final = "house_brain_engineering_inspector.entity_sender.v1"
 # 0.2.3 (live 2026-10-06): Cloudflare's edge answered 403 (error 1010) to Python's default "Python-urllib"
 # user agent before the Broker ran (ENTITY_SNAPSHOT_BROKER_HTTP_ERROR). The POST now names the App, like the
 # Maintenance App 0.5.1, the Scout and the Observer. Keep it equal to config.yaml ``version``.
-APP_VERSION: Final = "0.2.15"
+APP_VERSION: Final = "0.2.16"
 USER_AGENT: Final = f"house-brain-engineering-inspector/{APP_VERSION}"
 OPTIONS_PATH: Final = Path("/data/options.json")
 APP_DIR: Final = Path(__file__).resolve().parent
@@ -67,7 +67,7 @@ KEY_RE: Final = re.compile(r"\A[\x21-\x7e]{32,512}\Z")
 # this pattern exactly (UTC "Z" stamps, so no "+" that a query string would turn into a space) and every id in it must
 # be on the embedded read policy's history_list. One read per 5-minute cycle (288/day), REST, so no extra websocket.
 HISTORY_WINDOW_S: Final = 86400
-MAX_HISTORY_IDS: Final = 16
+MAX_HISTORY_IDS: Final = 32   # 0.2.16 (read policy 1.8.0): 29 ids; the path bound (4096 chars) still holds
 # Newest changes kept per id when only the snapshot size bound refuses the full history (builder bound is 200).
 HISTORY_ROW_CAPS: Final = (100, 50, 20)
 HISTORY_SIZE_CODES: Final = frozenset({"SNAPSHOT_SIZE_BOUND", "ENTITY_SENDER_BODY_TOO_LARGE"})
