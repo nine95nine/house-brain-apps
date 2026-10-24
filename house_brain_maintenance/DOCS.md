@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.26)
+## What it does (0.9.27)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -187,6 +187,16 @@ New in 0.5.3 (fixes for two false warnings seen on 2026-10-05), all read-only:
   backup of everything (GB). Each kind is compared with earlier backups of the same kind.
 - **Broker check**: the House Brain AI can ask which Maintenance Broker version is live (`CHECK_BROKER`). It reads
   the Broker's public health page only, needs no approval and changes nothing. A Scout run reports it too.
+
+**History measurement** (`HISTORY_MEASURE`, from 0.9.27; owner pop-ups 2026-10-24 "Yes, measure first" and "Yes,
+0.9.27 next", for the history archive proposal). A House Brain chat files it with one UTC day (`day: YYYY-MM-DD`;
+optional `chunk` 1-200 entities per read, default 25, and `max_minutes` 5-60, default 30). The App reads that whole
+day through Home Assistant's own history and statistics APIs, chunk by chunk, counts rows and bytes, runs each chunk
+through `xz` and lets it go. It reports rows, entities, raw JSON bytes, the compressed size (also in the proposed
+archive shape: seconds since midnight, state, changed attributes), the 10 largest entities, and the 5-minute and
+hourly statistics the same way. It needs no approval, keeps nothing (no file, no document, no value in the report)
+and changes nothing. A chunk Home Assistant cannot answer is split down to one entity; the time cap ends it early
+with a partial result that says so. Other checks wait while it runs (up to the cap), so file it at a quiet time.
 
 **Ask me now** (new in 0.6.5, owner decision 2026-10-07). When an update ask timed out (you did not tap in time),
 any House Brain chat (Claude, ChatGPT, Grok, Gemini, Codex) or you can file an `ASK_UPDATE_NOW` request and your phone asks again on

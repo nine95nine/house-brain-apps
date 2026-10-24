@@ -155,9 +155,16 @@ _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/li
                        "trace/list", "search/related", "system_health/info",
                        # 0.9.2 (owner pop-up 2026-10-12 "Measure first"): how many history rows each entity wrote in
                        # one past hour. Counted at once; every state value is dropped unread.
-                       "history/history_during_period"})
+                       "history/history_during_period",
+                       # 0.9.27 HISTORY_MEASURE (owner pop-ups 2026-10-24 "Yes, measure first" / "Yes, 0.9.27 next"):
+                       # one past day's full history and its long-term statistics, read to count rows and bytes.
+                       # Counted and compressed in memory per chunk; nothing is kept, logged or posted but numbers.
+                       "recorder/list_statistic_ids", "recorder/statistics_during_period"})
 HISTORY_KEYS = frozenset({"type", "start_time", "end_time", "entity_ids", "minimal_response", "no_attributes",
                           "significant_changes_only", "include_start_time_state"})
+STATISTICS_KEYS = frozenset({"type", "start_time", "end_time", "statistic_ids", "period"})
+STATISTIC_PERIODS = ("5minute", "hour")
+RE_STATISTIC_ID = re.compile(r"^[a-z0-9_]{1,40}[.:][a-z0-9_]{1,200}$")
 HISTORY_CHUNK = 200
 RE_ISO_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$")
 RE_AUTOMATION_ENTITY = re.compile(r"^automation\.[a-z0-9_]{1,200}$")
@@ -1388,13 +1395,26 @@ class HomeAssistant:
             raise ForbiddenCall("ws system health")
         if kind == "history/history_during_period":
             ids = msg.get("entity_ids")
-            if (set(msg) != HISTORY_KEYS or msg["minimal_response"] is not True or msg["no_attributes"] is not True
-                    or msg["significant_changes_only"] is not False or msg["include_start_time_state"] is not False
+            # Two shapes only: 0.9.2 counts (minimal, no attributes, no start row) and 0.9.27 full day (everything,
+            # with the start-of-day row). Anything in between is refused.
+            shape = (msg.get("minimal_response"), msg.get("no_attributes"), msg.get("include_start_time_state"))
+            if (set(msg) != HISTORY_KEYS or shape not in ((True, True, False), (False, False, True))
+                    or msg["significant_changes_only"] is not False
                     or not all(isinstance(msg[k], str) and RE_ISO_UTC.fullmatch(msg[k])
                                for k in ("start_time", "end_time"))
                     or not isinstance(ids, list) or not 0 < len(ids) <= HISTORY_CHUNK
                     or not all(isinstance(e, str) and RE_ENTITY_ID.fullmatch(e) for e in ids)):
                 raise ForbiddenCall("ws history")
+        if kind == "recorder/list_statistic_ids" and set(msg) != {"type"}:
+            raise ForbiddenCall("ws statistic ids")
+        if kind == "recorder/statistics_during_period":
+            ids = msg.get("statistic_ids")
+            if (set(msg) != STATISTICS_KEYS or msg.get("period") not in STATISTIC_PERIODS
+                    or not all(isinstance(msg[k], str) and RE_ISO_UTC.fullmatch(msg[k])
+                               for k in ("start_time", "end_time"))
+                    or not isinstance(ids, list) or not 0 < len(ids) <= HISTORY_CHUNK
+                    or not all(isinstance(e, str) and RE_STATISTIC_ID.fullmatch(e) for e in ids)):
+                raise ForbiddenCall("ws statistics")
 
     # -- HTTP ---------------------------------------------------------------
     def _call(self, method: str, path: str, body: Any = None, timeout: float = 30.0,
@@ -2386,6 +2406,38 @@ class HomeAssistant:
         finally:
             sock.close()
         return counts
+
+    # -- 0.9.27 HISTORY_MEASURE: one day's history and statistics, read chunk by chunk, kept by nobody ----------------
+    def entity_ids(self) -> list[str]:
+        """Every entity id Core knows right now (ids only; states are dropped unread)."""
+        lease = self.shared_ws()
+        try:
+            states = lease.command({"type": "get_states"}, timeout=60)
+        finally:
+            lease.close()
+        return sorted({row["entity_id"] for row in (states if isinstance(states, list) else [])[:20000]
+                       if isinstance(row, dict) and isinstance(row.get("entity_id"), str)
+                       and RE_ENTITY_ID.fullmatch(row["entity_id"])})
+
+    def history_full(self, sock: "CoreSocket", start_iso: str, end_iso: str, ids: list[str], timeout: float = 300.0):
+        """One chunk of entities' full history for a window: every row, with attributes and the start-of-window row.
+        The caller counts and compresses it and lets it go; ``sock`` is the caller's (large) socket."""
+        return sock.command({"type": "history/history_during_period", "start_time": start_iso, "end_time": end_iso,
+                             "entity_ids": list(ids), "minimal_response": False, "no_attributes": False,
+                             "significant_changes_only": False, "include_start_time_state": True}, timeout=timeout)
+
+    def statistic_ids(self, sock: "CoreSocket", timeout: float = 120.0) -> list[str]:
+        """The recorder's statistic ids (long-term statistics), ids only."""
+        rows = sock.command({"type": "recorder/list_statistic_ids"}, timeout=timeout)
+        return sorted({r["statistic_id"] for r in (rows if isinstance(rows, list) else [])[:20000]
+                       if isinstance(r, dict) and isinstance(r.get("statistic_id"), str)
+                       and RE_STATISTIC_ID.fullmatch(r["statistic_id"])})
+
+    def statistics_full(self, sock: "CoreSocket", start_iso: str, end_iso: str, ids: list[str], period: str,
+                        timeout: float = 300.0):
+        """One chunk of statistic ids' rows for a window and period (``5minute`` or ``hour``)."""
+        return sock.command({"type": "recorder/statistics_during_period", "start_time": start_iso,
+                             "end_time": end_iso, "statistic_ids": list(ids), "period": period}, timeout=timeout)
 
     def db_size_mib(self, timeout: float = 20.0) -> float | None:
         """The recorder's ``estimated_db_size`` from the system-health subscription; everything else dropped."""

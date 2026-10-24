@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -103,6 +104,14 @@ ENERGY_AI_SETTINGS = "ENERGY_AI_SETTINGS"
 ENERGY_OPERATIONS = ("READBACK", "ACTIVATE")
 JOBS[ENERGY_AI_SETTINGS] = (frozenset({"operation", "expect_energy_ai_version", "manifest_sha256"}),
                             frozenset({"bundle_sha256", "source_commit", "expected_current_sha256"}))
+# 0.9.27 (history archive proposal R1 step 1; owner pop-ups 2026-10-24 "Yes, measure first" and "Yes, 0.9.27 next"):
+# read one complete UTC day's history and statistics and report rows, entities, raw JSON bytes, the xz size and the
+# largest entities. Read-only, no approval; nothing is kept, written or changed.
+HISTORY_MEASURE = "HISTORY_MEASURE"
+JOBS[HISTORY_MEASURE] = (frozenset({"day"}), frozenset({"chunk", "max_minutes"}))
+NO_APPROVAL_JOBS = NO_APPROVAL_JOBS | {HISTORY_MEASURE}
+RE_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MEASURE_CHUNK_DEFAULT, MEASURE_MINUTES_DEFAULT = 25, 30
 _TOP = frozenset({"schema", "request_id", "job", "requested_by", "tracking_issue", "note", "params"})
 _REQUIRED_TOP = frozenset({"schema", "request_id", "job", "requested_by", "params"})
 
@@ -158,6 +167,10 @@ class Manifest:
     energy_bundle_sha256: str | None = None
     energy_source_commit: str | None = None
     energy_expected_current: str | None = None
+    # 0.9.27 HISTORY_MEASURE
+    measure_day: str | None = None
+    measure_chunk: int = 25
+    measure_minutes: int = 30
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict:
@@ -211,6 +224,7 @@ def parse(raw: bytes) -> Manifest:
     if "expect_scout_version" in required and (not isinstance(version, str) or not RE_VERSION.fullmatch(version)):
         raise ManifestError("EXPECT_SCOUT_VERSION")
     log = _log_window(params) if job == APP_LOG_WINDOW else {}
+    log.update(_history_measure(params) if job == HISTORY_MEASURE else {})
     log.update(_ask_update(params) if job == ASK_UPDATE_NOW else {})
     if job in (HOLD_UPDATE, RELEASE_UPDATE):
         if not valid_item(params["item"]):
@@ -299,6 +313,23 @@ def _utc(value: Any, code: str) -> float:
         return datetime(*(int(g) for g in match.groups()), tzinfo=UTC).timestamp()
     except ValueError:
         raise ManifestError(code) from None
+
+
+def _history_measure(params: dict) -> dict:
+    """0.9.27: a real UTC calendar day, 1 to 200 entities per read, 5 to 60 minutes in all."""
+    day = params["day"]
+    if not isinstance(day, str) or not RE_DAY.fullmatch(day):
+        raise ManifestError("MEASURE_DAY")
+    try:
+        time.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        raise ManifestError("MEASURE_DAY") from None
+    chunk, minutes = params.get("chunk", MEASURE_CHUNK_DEFAULT), params.get("max_minutes", MEASURE_MINUTES_DEFAULT)
+    if isinstance(chunk, bool) or not isinstance(chunk, int) or not 1 <= chunk <= 200:
+        raise ManifestError("MEASURE_CHUNK")
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 5 <= minutes <= 60:
+        raise ManifestError("MEASURE_MINUTES")
+    return {"measure_day": day, "measure_chunk": chunk, "measure_minutes": minutes}
 
 
 def _log_window(params: dict) -> dict:

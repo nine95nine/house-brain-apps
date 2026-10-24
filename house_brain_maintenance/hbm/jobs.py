@@ -27,8 +27,8 @@ from . import approval, net
 from .ha import AppView, ForbiddenCall, HAError, HomeAssistant, fingerprint
 from .journal import Journal
 from . import logwindow
-from .manifest import (APP_LOG_WINDOW, CHECK_BROKER, LEGACY_STAGE, ROTATE_SCOUT_KEY, RUN_SCOUT_ONCE, WRITER_PROBE,
-                       Manifest)
+from .manifest import (APP_LOG_WINDOW, CHECK_BROKER, HISTORY_MEASURE, LEGACY_STAGE, ROTATE_SCOUT_KEY, RUN_SCOUT_ONCE,
+                       WRITER_PROBE, Manifest)
 from .writer import WriterError
 from .web import ApprovalBoard
 
@@ -186,6 +186,9 @@ class Engine:
                 return self._check_broker(m)
             if m.job == APP_LOG_WINDOW:
                 return self._app_log_window(m)
+            if m.job == HISTORY_MEASURE:                    # 0.9.27: read-only, no approval, keeps nothing
+                from . import histmeasure
+                return histmeasure.run(self.ha, m)
             if m.job == WRITER_PROBE:
                 return self._writer_probe(m)
             if m.job == LEGACY_STAGE:                       # 0.9.5: #985 test plan M2/M3

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.27
+
+History measurement (history archive proposal R1 step 1; owner pop-ups 2026-10-24 "Yes, measure first" and "Yes, 0.9.27
+next"; request #454 6385485785; Work Board #942 claim 6385912228). Contains 0.9.26 unchanged otherwise.
+
+- **New read-only job `HISTORY_MEASURE`** (no approval): one complete UTC day of history (every row, with attributes)
+  and its 5-minute and hourly statistics, read chunk by chunk through Home Assistant's own APIs, counted, compressed
+  with `xz` in memory and dropped. Reported: rows, entities, raw JSON bytes, compressed bytes (raw and in the proposed
+  archive row shape), the 10 largest entities, statistics rows and bytes. Nothing is kept, written or changed.
+- A chunk too large for Home Assistant is split down to one entity; an entity unreadable even alone is named. A time
+  cap (default 30 minutes) ends the read early with a partial result that says so.
+- The socket allowlist gains the full-day history shape and the two statistics reads, each in a closed shape.
+
 ## 0.9.26
 
 Free checks (reviewer plan step 1; owner pop-ups 2026-10-20 "Build 0.9.24" and "Build as 0.9.26 now"; Work Board
