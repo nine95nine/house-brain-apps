@@ -473,6 +473,9 @@ def main() -> int:
                           "mutation": False, "physical_control": False}, sort_keys=True, separators=(",", ":")))
         return 1
     if options["entity_snapshot_mode"] != "off":
+        if options["entity_snapshot_mode"] == "r18_preflight":
+            import cooling_r18_site_probe
+            return cooling_r18_site_probe.main()
         return entity_sender.run(options, ha_rest_get, ha_ws_command)
     try:
         snapshot = asyncio.run(build_snapshot())
