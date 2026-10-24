@@ -68,7 +68,7 @@ MAX_QUEUE = 25
 STALL_KEY = "reviewer:stalled"     # 0.9.12 reviewer watchdog
 STALL_SOURCE = "reviewer"
 WATCH_DOC = "review_watch"         # {"queued": {problem key: when a posted queue line first listed it}}
-REVIEW_STALL_HOURS = 6
+REVIEW_STALL_HOURS = 26          # 0.9.26: the reviewer may run once a day (owner decision 2026-10-20)
 MAX_STALL_NAMED = 5
 MAX_QUEUED_KEPT = 200
 INSTALLS_DOC = "recent_installs"   # 0.9.12 after-update tag: {"installs": [{"at", "item", "apps", "domains"}]}
@@ -325,7 +325,7 @@ def stalled(waits: list[tuple[str, float]], now: float) -> list[I.Finding]:
         STALL_KEY, STALL_SOURCE, I.WARNING,
         f"The AI reviewer has not answered for over {REVIEW_STALL_HOURS} hours ({len(late)} waiting)",
         detail=detail,
-        steps=("The AI reviewer runs every hour from the \"House Brain Maintenance reviewers\" chat. Open that chat "
+        steps=("The AI reviewer runs a few times a day (once a day while the owner's weekly plan limit is used up) from the \"House Brain Maintenance reviewers\" chat. Open that chat "
                "and check its last runs; a run that failed shows there.",
                "Nothing installs by itself and your phone is not asked before a review. After 48 hours your phone is "
                "asked about each update anyway.",

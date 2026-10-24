@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.26
+
+Free checks (reviewer plan step 1; owner pop-ups 2026-10-20 "Build 0.9.24" and "Build as 0.9.26 now"; Work Board
+#942 claim 6302610201). Contains 0.9.24 unchanged otherwise (0.9.25 is another chat's change).
+
+- **Why:** the owner's weekly Claude limit ran out; most of it went to hourly reviewer runs that found nothing. The
+  reviewer now runs a few times a day (once a day while the limit is used up), and this App does the plain checks
+  itself, for free.
+- **Its own after-update result:** about a day after an update it installed, this App posts clean / problems /
+  not confirmed, with the same machine line the AI reviewer used (`house_brain_ai_after_update.v1`).
+- **Needs-review count** on every post (`house_brain_needs_review.v1`, right after the heading) and on the status
+  sensor (`needs_review`).
+- **Reviewer watchdog:** 26 hours instead of 6.
+- **Large database:** "(… GB; not growing)" once growth is 5 MB a day or less over a week (with hysteresis), and a
+  plain explanation that the file shrinks only after old rows age out and the monthly repack.
+
 ## 0.9.24
 
 Energy AI settings, delivered once with your approval (owner pop-ups 2026-10-20 "Yes, start install path", "Yes,

@@ -39,6 +39,7 @@ RELATED_MAX = 150
 FLOOD_PER_DAY = 1000
 DB_LARGE_MIB = 2048.0
 DB_GROWTH_MIB_DAY = 100.0
+DB_STEADY_MIB_DAY = 5.0          # 0.9.26: at most this a day over the last week: "not growing"
 READ_EVERY = 3600                 # automations and traces
 RELATED_EVERY = 86400             # dead references
 DB_EVERY = 6 * 3600
@@ -218,6 +219,18 @@ def db_top_due(doc: dict, now: float) -> bool:
     return bool(samples) and samples[-1][1] >= DB_LARGE_MIB and now - float(doc.get("db_top_at") or 0) >= TOP_EVERY
 
 
+def db_steady(doc: dict, growth: float | None) -> bool:
+    """0.9.26: "not growing" with hysteresis: it starts at DB_STEADY_MIB_DAY a day or less and ends only above three
+    times that, so a size that hovers around the line does not flip the problem's title (and its review) daily.
+    Unknown growth (under 2 days of samples) keeps the last answer."""
+    was = bool(doc.get("db_steady"))
+    if growth is None:
+        return was
+    steady = growth <= (DB_STEADY_MIB_DAY * 3 if was else DB_STEADY_MIB_DAY)
+    doc["db_steady"] = steady
+    return steady
+
+
 def db_findings(doc: dict) -> list[I.Finding]:
     samples = doc.get("db") or []
     if not samples:
@@ -238,11 +251,17 @@ def db_findings(doc: dict) -> list[I.Finding]:
     if families:
         steps.insert(0, "Busiest sensor families (rows a day, estimated from one hour): "
                      + "; ".join(f"{g} ({k} sensors) {n:,}" for g, k, n in families[:10]))
+    steady = db_steady(doc, growth)
+    if steady:                                  # 0.9.26 (reviewer 2026-10-19): after an exclude list, say so plainly
+        steps.insert(0, f"It is not growing any more (about {max(growth, 0):.0f} MB a day over the last week). The "
+                     "file shrinks only after the old rows age out (your keep days) and Home Assistant's monthly "
+                     "repack runs: nothing to do for that.")
     steps = tuple(steps)
     out = []
     if size >= DB_LARGE_MIB:
         out.append(I.Finding("hk:db_large", "housekeeping", I.WARNING,
-                             f"The history database is large ({size / 1024:.1f} GB)", steps=steps,
+                             f"The history database is large ({size / 1024:.1f} GB"
+                             + ("; not growing)" if steady else ")"), steps=steps,
                              link=RECORDER_LINK, facts={"mib": size, **({"top": top[:TOP_N]} if top else {}),
                                                                 **({"families": families[:10]} if families else {})}))
     if growth is not None and growth >= DB_GROWTH_MIB_DAY:

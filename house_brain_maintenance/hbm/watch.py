@@ -115,6 +115,7 @@ class Watcher:
         # 0.6.3 Credential Autopilot: this App's own GitHub sign-in summary (set by the Service)
         self.credentials: Callable[[], dict] | None = None
         self.step_errors: dict[str, str] = {}                 # 0.9.22: poll steps that failed this poll
+        self.after_report = None                              # 0.9.26: this App's own after-update reports
         # 0.6.3: the relay's public dispatch-key view (option relay_credential_url; "" = off)
         self.relay_url = ""
         self.key_findings: Callable[[], list] | None = None   # 0.8.0: automatic Broker keys (failures only)
@@ -320,6 +321,11 @@ class Watcher:
                 tag = PR.after_update(installs, f.key, f.facts, float(rec["first"]))
                 if tag:
                     rec["after_update"] = tag
+                    if self.after_report is not None:        # 0.9.26: counts against that update's report
+                        try:
+                            self.after_report.note_problem(tag, f.key, f.title)
+                        except Exception:  # noqa: BLE001 - the report is best effort; the problem itself stands
+                            pass
             rec.update(polls=rec["polls"] + 1, title=f.title, severity=f.severity, clear=f.announce_clear,
                        source=f.source, steps=PR.detail_steps(f))           # 0.9.21: what can be done, for #454
             if f.action:                        # 0.9.23: the page's "Fix it" button (the owner's tap approves)

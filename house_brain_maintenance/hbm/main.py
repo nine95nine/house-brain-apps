@@ -41,11 +41,14 @@ from .aireview import AiReviews, item_app
 from .inbox import Inbox
 from . import system as system_mod, entities as entities_mod, updates as updates_mod
 from .updatequeue import UpdateQueue, rows_from
-from .afterupdate import JOB as AFTER_JOB, AfterPolicy, AfterUpdate, loaded_snapshot
+from .afterupdate import JOB as AFTER_JOB, AfterPolicy, AfterUpdate, after_request_id, loaded_snapshot
+from .afterreport import AfterReports, item_of
+from .problems import STALL_KEY
 from .web import INGRESS_PEER, MAX_WAITING, ApprovalBoard, IngressServer, ReaskQueue
 from .writer import SharedWriter
 
 LOG = logging.getLogger("hbm")
+NEEDS_REVIEW_SCHEMA = "house_brain_needs_review.v1"      # 0.9.26: the count line on every post
 RE_NOTIFY = re.compile(r"^mobile_app_[a-z0-9_]{1,80}$")
 RE_USERNAME = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 RE_BRANCH = re.compile(r"^[A-Za-z0-9._/-]{1,100}$")
@@ -374,6 +377,7 @@ class Service:
         self.insmove: InspectorMove | None = None          # 0.9.9: Engineering Inspector local -> store switch
         self._writer_reported = False                      # 0.9.4: lock identity posted on #454 once per start
         self.watcher: Watcher | None = None
+        self.after_reports: AfterReports | None = None   # 0.9.26: this App's own after-update reports
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
         self.health_scale = health_scale
         self.last_update_check = 0.0
@@ -513,6 +517,9 @@ class Service:
                                 housekeeping=self.o.housekeeping)
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
             self.watcher.step_errors = self.step_errors                   # 0.9.22
+            if self.o.report_issue:                                        # 0.9.26: after-update reports
+                self.after_reports = AfterReports(self.j, self.report_text)
+                self.watcher.after_report = self.after_reports
             self.watcher.messenger = self.messenger                       # 0.9.18
             if self.o.report_issue and hasattr(self.gh, "issue_url"):     # 0.9.23: links instead of "see GitHub"
                 self.watcher.issue_url = self.gh.issue_url(self.o.report_issue)
@@ -635,12 +642,21 @@ class Service:
                notify: bool = True) -> None:
         self.j.record(self.key(request_id), digest, result.outcome)
         self.j.audit(request_id, "OUTCOME", job=job, outcome=result.outcome, reasons=result.reasons[:5])
+        if result.outcome == DONE and self.after_reports is not None:   # 0.9.26: its own after-update report in a day
+            item = item_of(digest)
+            if item:
+                try:
+                    active = self.after.active() if self.after is not None else None
+                    checked = bool(active and active.get("update_request") == request_id)
+                    self.after_reports.note_done(item, self._item_name(item), request_id, result.reasons, checked)
+                except Exception as err:  # noqa: BLE001 - the report is best effort; the result itself stands
+                    LOG.warning("after-update report note waits: %s", net.redact(str(err))[:200])
         self.status(result.outcome, {"request_id": request_id, "job": job, "version": VERSION,
                                      "dry_run": self.o.dry_run})
         url = ""
         if issue:                                       # 0.9.23: posted first, so the message links to the report
             try:
-                url = self.gh.comment(issue, report_markdown(request_id, job, result, self.o.dry_run)) or ""
+                url = self.gh.comment(issue, self._stamped(report_markdown(request_id, job, result, self.o.dry_run))) or ""
             except net.NetError as err:
                 self.j.audit(request_id, "REPORT_FAILED", error=str(err)[:200])
             if not url and hasattr(self.gh, "issue_url"):
@@ -779,6 +795,7 @@ class Service:
             if not self.poll_after_update():            # an after-update check is open: no new update starts,
                 self.poll_updates()                     # but the problem watch keeps running (it skips the
             self.poll_update_queue()                    # 0.8.9: the "updates waiting" list (only when it changed)
+            self.poll_after_reports()                   # 0.9.26: this App's own after-update results (no AI)
             self.poll_reviews()                         # 0.9.16: new AI reviews reach the page within READ_EVERY
             if self.engine is not None:                 # 0.9.0: the page's "Needs your decision" list
                 self.inbox.set_offered(self.offered_rows())
@@ -893,8 +910,62 @@ class Service:
     def report_text(self, text: str) -> str:
         """Post on the tracking issue; 0.9.23: returns the comment's address ("" when unknown)."""
         if self.o.report_issue:
-            return self.gh.comment(self.o.report_issue, text) or ""
+            return self.gh.comment(self.o.report_issue, self._stamped(text)) or ""
         return ""
+
+    def _item_name(self, item: str) -> str:
+        """0.9.26: a finished update's display name, from the waiting list while it is still there, else its item."""
+        try:
+            for r in rows_from(*(getattr(e, "queue", None) or {} for e in (self.system, self.updater, self.entities))):
+                if r.get("item") == item:
+                    return f"{r.get('name')} {r.get('to')}"
+        except Exception:  # noqa: BLE001 - a name only
+            pass
+        kind, _, rest = item.partition(":")
+        if kind == "app" and "@" in rest:
+            slug, version = rest.rsplit("@", 1)
+            names = getattr(self.watcher, "app_names", {}) or {}
+            return f"{names.get(slug, slug)} {version}"
+        if kind in ("core", "os"):
+            return f"Home Assistant {'Core' if kind == 'core' else 'OS'} {item.partition('@')[2]}"
+        return item
+
+    def poll_after_reports(self) -> None:
+        """0.9.26: about a day after an update this App installed, post its own after-update result (no AI)."""
+        if self.after_reports is None or self.watcher is None:
+            return
+        self.after_reports.cycle(self.j.ledger(), lambda rid: self.key(after_request_id(rid)),
+                                 self.watcher._state()["open"], VERSION)
+
+    def needs_review(self) -> dict:
+        """0.9.26: how many waiting updates and open problems have no AI review that counts; None = not known
+        (a review read failed, or no update check ran yet). Published on the status sensor and on every post."""
+        updates = None
+        try:
+            waits = self.review_waits() if self.engine is not None and self.updater is not None else None
+            updates = len(waits) if waits is not None else None
+        except Exception:  # noqa: BLE001 - not known this time
+            updates = None
+        problems = None
+        try:
+            ai = getattr(self.watcher, "problem_ai", None) if self.watcher is not None else None
+            if ai is not None and ai.enabled and ai.readable():
+                st = self.watcher._state()
+                problems = sum(1 for k, r in st["open"].items() if isinstance(r, dict) and r.get("alerted")
+                               and k != STALL_KEY and ai.get(k) is None)
+        except Exception:  # noqa: BLE001 - not known this time
+            problems = None
+        total = None if updates is None and problems is None else (updates or 0) + (problems or 0)
+        return {"updates": updates, "problems": problems, "total": total}
+
+    def _stamped(self, text: str) -> str:
+        """0.9.26 (reviewer plan step 1): every post on the tracking issue carries one machine line with the
+        needs-review count right after its heading, so a reviewer's read of the newest comment is enough to know
+        whether anything waits. Nothing about the items themselves is added here."""
+        line = (f"<!-- {NEEDS_REVIEW_SCHEMA} "
+                + json.dumps({**self.needs_review(), "app": VERSION}, separators=(",", ":")) + " -->")
+        head, sep, rest = text.partition("\n")
+        return f"{head}\n{line}{sep}{rest}" if sep else f"{text}\n{line}"
 
     def poll_issues(self) -> None:
         if not self.o.issue_checks:
@@ -908,7 +979,8 @@ class Service:
         summary = self.watcher.check()
         self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary, **self._ledger_attrs(),
                                  **self._writer_attrs(), **self._skipped_attrs(),
-                                 **self._waiting_attrs(), **self._keys_attrs()})
+                                 **self._waiting_attrs(), **self._keys_attrs(),
+                                 "needs_review": self.needs_review()})          # 0.9.26
 
     def _skipped_attrs(self) -> dict:
         """0.9.15: installed-App rows the last list read skipped, by reason ({} when none)."""

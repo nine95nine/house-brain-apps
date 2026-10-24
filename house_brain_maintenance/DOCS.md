@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.24)
+## What it does (0.9.26)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -552,6 +552,18 @@ them once and never again. Now:
 - **Every problem reaches the review the first time it is reported.** A short "problems waiting for AI review" post
   on the tracking issue names each one at most once an hour; it no longer waits for the Sunday list.
 - After updating to 0.9.19, problems that were already open are reviewed once more.
+
+**Free checks, from 0.9.26** (the AI reviewer now runs a few times a day, once a day while the owner's weekly plan
+limit is used up):
+- **Its own after-update result.** About a day after an update this App installed, it posts what it found: clean,
+  problems about that update (and whether its after-update integration check passed), or not confirmed. No AI is
+  needed for it; the AI reviewer no longer spends a run on it.
+- **A needs-review count on every post** (a machine line right after the heading) and on the status sensor
+  (`needs_review`: waiting updates and open problems without an AI review that counts). A reviewer reads one comment
+  to know whether anything waits.
+- **"The AI reviewer has not answered"** is said after 26 hours, not 6, so a once-a-day reviewer is not a problem.
+- **"not growing".** Once the large history database gains 5 MB a day or less over a week, its problem says
+  "(… GB; not growing)" and explains that the file shrinks only after the old rows age out and the monthly repack.
 
 **Problem details for the AI reviewers, from 0.9.21.**
 - What each open problem suggests (for the large database: the busiest sensors by entity id and rows a day, never
