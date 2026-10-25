@@ -2,7 +2,7 @@
 
 The AI Access App publishes the effective kill-switch state every 30 seconds. FULL_STOP
 holds every Energy AI cycle; READ_ONLY admits READ and ADVISORY work (collection, shadow
-analytics) and blocks MUTATION (status publication); ARMED_NORMAL admits all three.
+analytics and, since 0.1.3, the App's own status entity) and blocks MUTATION; ARMED_NORMAL admits all three.
 A missing, stale, future-dated or unknown state holds everything.
 """
 from .contracts import timestamp

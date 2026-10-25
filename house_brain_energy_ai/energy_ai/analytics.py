@@ -18,10 +18,17 @@ def robust_anomaly(history, value, minimum=30):
 
 
 def baseload(hourly):
-    nights=[v for t,v in hourly if 1<=datetime.fromtimestamp(t,TZ).hour<5]
+    nights=[(t,v) for t,v in hourly if 1<=datetime.fromtimestamp(t,TZ).hour<5]
     if len(nights)<12:
         return {"status":"INSUFFICIENT_NIGHTS"}
-    return {"status":"ESTIMATED","overnight_median_w":statistics.median(nights),
+    # 0.1.4: the 1-5 am median includes A/C and pump cycles, so it is the overnight draw, not the always-on floor.
+    # The floor is each night's quietest hour, then the median of those nights (closer to Sense's always-on).
+    quietest={}
+    for t,v in nights:
+        night=datetime.fromtimestamp(t,TZ).date()
+        quietest[night]=min(v,quietest.get(night,v))
+    return {"status":"ESTIMATED","overnight_median_w":statistics.median(v for _,v in nights),
+            "always_on_floor_w":statistics.median(quietest.values()),"nights":len(quietest),
             "samples":len(nights),"occupancy_inferred":False,
             "note":"includes necessary always-on services; not all avoidable"}
 

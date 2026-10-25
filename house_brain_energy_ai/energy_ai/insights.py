@@ -15,7 +15,7 @@ import statistics
 from .planning import TZ, period
 from .rateplan import season
 
-ALWAYS_ON_KEY = 'insights:always-on'
+ALWAYS_ON_KEY = 'insights:always-on-floor'   # 0.1.4: the floor, not the 1-5 am median (old key kept, unread)
 KEEP_ALWAYS_ON_DAYS = 400
 MIN_PROJECTION_DAYS = 7
 MAX_RECEIPTS = 10
@@ -42,7 +42,7 @@ def always_on(store, now, base, tariff):
     """Store today's overnight median; compare complete months; price a year of that constant load."""
     days = store.get(ALWAYS_ON_KEY, {})
     if base.get('status') == 'ESTIMATED':
-        days[_local(now).strftime('%Y-%m-%d')] = round(base['overnight_median_w'], 1)
+        days[_local(now).strftime('%Y-%m-%d')] = round(base.get('always_on_floor_w', base['overnight_median_w']), 1)
         for old in sorted(days)[:-KEEP_ALWAYS_ON_DAYS]:
             days.pop(old)
         store.put(ALWAYS_ON_KEY, days)
@@ -60,7 +60,8 @@ def always_on(store, now, base, tariff):
     return {'status': 'ESTIMATED', 'latest_overnight_w': latest, 'monthly_median_w': dict(list(monthly.items())[-13:]),
             'month_over_month_change_w': change,
             'yearly_cost_dollars_at_latest': round(latest / 1000 * yearly_rate, 2),
-            'basis': 'overnight 1-5 am median; includes necessary always-on services; base energy rates only',
+            'basis': 'quietest 1-5 am hour of each night, median over nights; includes necessary always-on services; '
+                     'base energy rates only',
             'physical_actions': False}
 
 
@@ -202,6 +203,9 @@ def forecast_calibration(store, role):
 COUNTER_KEY = 'insights:counters'
 MAX_COUNTERS = 50
 STUCK_AFTER_S = 3 * 3600
+STUCK_BUSY_HOURS = 3         # 0.1.4: complete busy hours without a change (night rest is not a stall)
+REGULAR_MIN_HOURS = 24      # 0.1.4: busy hours observed before a counter can be judged
+REGULAR_SHARE = 0.9         # and the share of them in which it advanced
 
 
 def bank_runway(bill_packet):
@@ -246,32 +250,56 @@ def bank_runway(bill_packet):
 
 
 def counter_health(store, states, now, load_w):
-    """Daily energy counters that stop advancing while the house is using power; report only, no alert."""
+    """Daily energy counters that stop advancing while the house is using power; report only, no alert.
+
+    0.1.4: only a counter that normally moves is judged. Each counter learns, per busy hour (8 am to 8 pm, load
+    above 200 W), whether it advanced; it can be flagged only after REGULAR_MIN_HOURS busy hours in which it
+    advanced at least REGULAR_SHARE of the time. Appliance counters that sit still for hours are never flagged."""
     seen = store.get(COUNTER_KEY, {})
     local = _local(now)
+    hour = int(now // 3600)
+    busy = load_w is not None and load_w > 200 and 8 <= local.hour < 20
     findings = {}
+    learning = 0
     candidates = sorted(e for e, s in states.items() if isinstance(s, dict)
                         and (s.get('attributes') or {}).get('state_class') == 'total_increasing'
                         and (s.get('attributes') or {}).get('unit_of_measurement') == 'kWh')[:MAX_COUNTERS]
     for entity in candidates:
+        record = seen.get(entity) or {}
         try:
             value = float(states[entity].get('state'))
         except (TypeError, ValueError):
-            findings[entity] = 'UNAVAILABLE'
-            continue
-        record = seen.get(entity)
-        if record is None or record['value'] != value:
-            record = {'value': value, 'since': now}
+            value = None
+        if record.get('hour') != hour:
+            if record.get('hour_busy') and record.get('hour_value') is not None and record.get('value') is not None:
+                moved = record['value'] != record['hour_value']
+                record['busy_hours'] = record.get('busy_hours', 0) + 1
+                record['moving_hours'] = record.get('moving_hours', 0) + moved
+                record['stalled_hours'] = 0 if moved else record.get('stalled_hours', 0) + 1
+            record.update(hour=hour, hour_value=value, hour_busy=False)
+        record['hour_busy'] = record.get('hour_busy', False) or busy
+        if record.get('value') != value:
+            record.update(value=value, since=now, stalled_hours=0)
+            if value is not None:
+                # Judged only when it moves, so a stall or an outage cannot argue it out of being regular.
+                record['regular'] = (record.get('busy_hours', 0) >= REGULAR_MIN_HOURS
+                                     and record.get('moving_hours', 0) >= REGULAR_SHARE * record['busy_hours'])
         seen[entity] = record
-        busy = load_w is not None and load_w > 200 and 8 <= local.hour < 20
-        if busy and now - record['since'] >= STUCK_AFTER_S:
+        if not record.get('regular'):
+            learning += record.get('busy_hours', 0) < REGULAR_MIN_HOURS
+            continue
+        if value is None:
+            findings[entity] = 'UNAVAILABLE'
+        elif busy and record.get('stalled_hours', 0) >= STUCK_BUSY_HOURS:
             findings[entity] = 'ZERO_WHILE_HOUSE_USES_POWER' if value == 0 else 'NOT_ADVANCING'
     for gone in set(seen) - set(candidates):
         seen.pop(gone)
     store.put(COUNTER_KEY, seen)
-    return {'status': 'REVIEW' if findings else 'OK', 'checked': len(candidates), 'findings': findings,
-            'basis': 'kWh total_increasing counters unchanged for 3 h between 8 am and 8 pm while the measured '
-                     'load is above 200 W; a counter may legitimately pause, so this is a hint for the owning lane',
+    return {'status': 'REVIEW' if findings else 'OK', 'checked': len(candidates), 'learning': learning,
+            'findings': findings,
+            'basis': 'kWh total_increasing counters that normally advance in busy hours (8 am to 8 pm, load above '
+                     '200 W) but have not changed for 3 complete busy hours; appliance counters that pause are not judged; a hint for '
+                     'the owning lane',
             'alert_sent': False}
 
 

@@ -23,7 +23,7 @@ STATUS_PUBLICATION_CLASS="ADVISORY"
 
 
 def cycle(runtime, client, config, now):
-    """One live cycle. Kill-switch interlock (#56): analytics are ADVISORY, publication is MUTATION."""
+    """One live cycle. Kill-switch interlock (#56): analytics and the App's own status entity are ADVISORY."""
     try:
         states=client.states()
     except Exception:
@@ -45,8 +45,11 @@ def cycle(runtime, client, config, now):
     try:
         if config.get("publish_status",False) and publication=="ALLOW":
             client.publish(runtime.status)
-    except Exception:
-        runtime.status={**runtime.status,"publication":"FAILED"}
+    except Exception as exc:
+        # 0.1.4: say why (a reason code, never the response body), so a failed write is visible on the page.
+        code=getattr(exc,"code",None)
+        reason=f"HTTP_{code}" if isinstance(code,int) else type(exc).__name__
+        runtime.status={**runtime.status,"publication":"FAILED","publication_reason":reason[:64]}
     return runtime.status
 
 
