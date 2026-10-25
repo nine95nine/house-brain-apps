@@ -39,6 +39,15 @@ nothing is read before you approve:
   tags (type, created and first-used dates, listed/merged/hidden flags, Sense's own name hints). No ids and no
   token leave the house. A Sense name or type is a hint, not proof of what a device is.
 
+From 0.3.35:
+- **Every part fits.** With other parts, the template output keeps at most 4,000 characters, and the parts share
+  the rest. A history always ends with `END`, and an entity that does not fit is `SKIPPED`. A long list says how
+  many lines did not fit. To get the whole bound for one part, file it on its own.
+- **Sense renew.** Home Assistant keeps its fresh Sense token in memory only, so the stored one expires. When
+  Sense answers 401, the Deployer renews once with Home Assistant's stored refresh token, exactly as Home
+  Assistant does at every start, and reads again. It never uses a password and never logs out. The output says
+  whether Sense kept the refresh token unchanged.
+
 ## Stop recording busy entities (0.3.31)
 
 A package may contain **only** `recorder:` → `exclude:` → `entities:` and/or `entity_globs:` lists. Home Assistant

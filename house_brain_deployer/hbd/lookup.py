@@ -30,6 +30,18 @@ after the owner's Approve:
 * ``history_entities`` (up to 16 ids) with ``history_days`` (1-7) reads one
   ``/api/history/period`` window (``minimal_response``, ``no_attributes``) and
   posts compact state changes.
+
+0.3.35 (#215, owner pop-ups 2026-10-24 "yes, fix the bug ... dive deep" and "Approve
+renew-like-HA"):
+
+* Every part has an output budget, so a lookup never loses its end. The template part
+  is capped when other parts follow; the Z-Wave, history and Sense parts share what is
+  left; history counts its header, SKIPPED lines and ``END``; Sense keeps the tag-key
+  line first and says how many devices did not fit. ``scrub()`` cuts on a line.
+* Home Assistant renews its Sense token in memory and never writes it back, so the
+  stored token goes stale. Like Home Assistant at every start, the Deployer then
+  renews once (only after a 401) with the stored refresh token, in memory, and reads.
+  It never authenticates with a password and never logs out.
 """
 from __future__ import annotations
 
@@ -52,7 +64,8 @@ RE_DEVICE_ID = re.compile(r"^[0-9a-f]{32}$")
 MAX_HISTORY_ENTITIES = 16
 MAX_HISTORY_DAYS = 7
 MAX_HISTORY_STATES = 32          # distinct states per entity in the legend; more are reported, not guessed
-# 0.3.34: the only Sense URL the Deployer can build. Never authenticate/renew/refresh/logout (HA's login stays as is).
+# 0.3.34: the Sense URLs the Deployer can build: the device overview and (0.3.35) the renew that Home Assistant's own
+# startup makes after a 401. Never authenticate (password) or logout.
 SENSE_API_BASE = "https://api.sense.com/apiservice/api/v1/"
 SENSE_TIMEOUT_S = 10.0
 SENSE_TAGS = ("DefaultUserDeviceType", "UserDeviceType", "UserDeviceTypeDisplayString", "DeviceListAllowed",
@@ -63,6 +76,10 @@ MAX_SENSE_DEVICES = 300
 RE_SENSE_MONITOR = re.compile(r"^[0-9]{1,12}$")
 RE_SENSE_DEVICE_HEADER = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 RE_SENSE_TOKEN = re.compile(r"^[\x21-\x7e]{16,4096}$")
+RE_SENSE_USER = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+# 0.3.35: output budget. With other parts, the template part keeps at most this many characters; the parts share the rest.
+TEMPLATE_CHARS_WITH_PARTS = 4000
+MAX_TAG_KEYS_CHARS = 1000
 CONFIG_ENTRIES = os.path.join(".storage", "core.config_entries")
 LOOKUP_OK = "LOOKUP_OK"
 LOOKUP_FAILED = "LOOKUP_FAILED"
@@ -181,7 +198,24 @@ def scrub(output: str) -> str:
     for pattern in _SECRET_PATTERNS:
         out = pattern.sub("[redacted]", out)
     if len(out) > MAX_OUTPUT_CHARS:
-        out = out[:MAX_OUTPUT_CHARS] + "\n[truncated]"
+        cut = out.rfind("\n", 0, MAX_OUTPUT_CHARS + 1)   # 0.3.35: never mid-line (a half line reads as data)
+        out = out[:cut if cut > MAX_OUTPUT_CHARS - 2000 else MAX_OUTPUT_CHARS] + "\n[truncated]"
+    return out
+
+
+def fit_lines(head: str, rows: list[str], budget: int, more: str) -> list[str]:
+    """0.3.35: ``head`` plus as many whole rows as fit; then ``more`` (``{n}`` = rows left out) is said, never cut.
+
+    The joined result (``"\n"``) is at most ``budget`` characters whenever ``head`` and the ``more`` line fit.
+    """
+    out, used = [head], len(head)
+    for i, row in enumerate(rows):
+        reserve = len(more.format(n=len(rows) - i - 1)) + 1 if i < len(rows) - 1 else 0
+        if used + 1 + len(row) + reserve > budget:
+            out.append(more.format(n=len(rows) - i))
+            return out
+        out.append(row)
+        used += 1 + len(row)
     return out
 
 
@@ -228,7 +262,7 @@ def project_zwave_config(result: dict) -> list[str]:
     return lines
 
 
-def read_zwave_config(ha, entity_id: str) -> str:
+def read_zwave_config(ha, entity_id: str, budget: int = MAX_OUTPUT_CHARS) -> str:
     """Read-only: device id via the ``device_id()`` template, then the parameter list. Never writes."""
     if not RE_ENTITY_ID.fullmatch(entity_id):
         raise ManifestError("PATTERN", "zwave_config_entity")
@@ -237,22 +271,25 @@ def read_zwave_config(ha, entity_id: str) -> str:
         return f"Z-Wave configuration of {entity_id}: no device found for this entity."
     lines = project_zwave_config(ha.zwave_config_parameters(device_id))
     head = f"Z-Wave configuration of the device of {entity_id} ({len(lines)} parameters, read-only):"
-    return "\n".join([head, *lines]) if lines else head + "\n(none reported)"
+    if not lines:
+        return head + "\n(none reported)"
+    return "\n".join(fit_lines(head, lines, budget, "[{n} more lines not shown (output bound)]"))
 
 
 # ---------------------------------------------------------------------------------------------
-# 0.3.34: Sense device tags (read-only; Home Assistant's own login, never refreshed)
+# 0.3.34: Sense device tags (read-only; Home Assistant's own login). 0.3.35: renewed once after a 401, as HA does.
 
 
 class SenseLookupError(RuntimeError):
     """A reason code; the message never contains a token."""
 
 
-def read_sense_login(config_root: str) -> tuple[str, str, str]:
-    """``(access_token, device_id, monitor_id)`` of the single loaded Sense entry. Nothing else is kept.
+def read_sense_login(config_root: str) -> tuple[str, str, str, str, str]:
+    """``(access_token, device_id, monitor_id, user_id, refresh_token)`` of the single loaded Sense entry.
 
-    The file holds every integration's credentials; this function is the only reader and keeps three values of one
-    entry. Everything else goes out of scope before the function returns.
+    The file holds every integration's credentials; this function is the only reader and keeps five values of one
+    entry (0.3.35 adds the two that Home Assistant's own startup renew sends). Everything else goes out of scope
+    before the function returns.
     """
     path = os.path.join(config_root, CONFIG_ENTRIES)
     try:
@@ -275,19 +312,29 @@ def read_sense_login(config_root: str) -> tuple[str, str, str]:
         raise SenseLookupError("SENSE_ENTRY_NOT_UNIQUE")
     data = sense[0]["data"]
     token, device, monitor = data.get("access_token"), data.get("device_id"), str(data.get("monitor_id", ""))
+    user, refresh = data.get("user_id"), data.get("refresh_token")
+    user = str(user) if isinstance(user, int) and not isinstance(user, bool) else user
     del entries, sense, data
     if not (isinstance(token, str) and RE_SENSE_TOKEN.fullmatch(token) and isinstance(device, str)
-            and RE_SENSE_DEVICE_HEADER.fullmatch(device) and RE_SENSE_MONITOR.fullmatch(monitor)):
+            and RE_SENSE_DEVICE_HEADER.fullmatch(device) and RE_SENSE_MONITOR.fullmatch(monitor)
+            and isinstance(user, str) and RE_SENSE_USER.fullmatch(user)
+            and isinstance(refresh, str) and RE_SENSE_TOKEN.fullmatch(refresh)):
         raise SenseLookupError("SENSE_ENTRY_SHAPE")
     net.register_secret(token)
-    return token, device, monitor
+    net.register_secret(refresh)
+    return token, device, monitor, user, refresh
 
 
 def sense_overview_url(monitor_id: str) -> str:
-    """The one Sense URL. No other Sense path (authenticate, renew, refresh, logout) can be built."""
+    """The Sense read URL. With ``sense_renew_url`` the only Sense paths; authenticate and logout cannot be built."""
     if not RE_SENSE_MONITOR.fullmatch(monitor_id):
         raise SenseLookupError("SENSE_ENTRY_SHAPE")
     return f"{SENSE_API_BASE}app/monitors/{monitor_id}/devices/overview"
+
+
+def sense_renew_url() -> str:
+    """0.3.35: the renew Home Assistant's Sense library makes after a 401 (form ``user_id`` + ``refresh_token``)."""
+    return SENSE_API_BASE + "renew"
 
 
 def _date(value) -> str:
@@ -334,26 +381,59 @@ def project_sense_devices(reply) -> list[str]:
     rows.sort(key=str.lower)
     if len(devices) > MAX_SENSE_DEVICES:
         rows.append(f"[{len(devices) - MAX_SENSE_DEVICES} more devices not shown]")
-    if unknown:
-        rows.append("Other tag keys (values not shown): " + ", ".join(sorted(k for k in unknown if k)))
+    if unknown:   # 0.3.35: first, so an output bound can never drop it
+        keys = "Other tag keys (values not shown): " + ", ".join(sorted(k for k in unknown if k))
+        rows.insert(0, keys if len(keys) <= MAX_TAG_KEYS_CHARS else keys[:MAX_TAG_KEYS_CHARS - 4] + " ...")
     return rows
 
 
-def read_sense_device_tags(config_root: str, request=None) -> str:
-    """Read-only: one GET with Home Assistant's own Sense token. Never logs in, refreshes or logs out."""
+def read_sense_device_tags(config_root: str, request=None, budget: int = MAX_OUTPUT_CHARS) -> str:
+    """Read-only: one GET with Home Assistant's own Sense login. Never authenticates (password) or logs out.
+
+    0.3.35: Home Assistant renews its token in memory and never writes it back, so the stored one goes stale. Only on
+    a 401, and exactly once, this renews the way Home Assistant's own startup does (stored ``user_id`` + refresh
+    token, in memory only) and reads once more. A 403, a refused renew or a second 401 ends the read; nothing retries.
+    """
     request = request or net.request
-    token, device, monitor = read_sense_login(config_root)
+    token, device, monitor, user, refresh = read_sense_login(config_root)
+    note = ""
     try:
-        _, reply = request("GET", sense_overview_url(monitor),
-                           {"x-sense-device-id": device, "Authorization": f"bearer {token}"}, timeout=SENSE_TIMEOUT_S)
+        try:
+            _, reply = request("GET", sense_overview_url(monitor),
+                               {"x-sense-device-id": device, "Authorization": f"bearer {token}"},
+                               timeout=SENSE_TIMEOUT_S)
+        except net.NetError as err:
+            if err.status != 401:
+                raise
+            try:
+                _, renewed = request("POST", sense_renew_url(),
+                                     {"x-sense-device-id": device, "Authorization": f"bearer {token}"},
+                                     form={"user_id": user, "refresh_token": refresh}, timeout=SENSE_TIMEOUT_S)
+            except net.NetError:
+                raise SenseLookupError("SENSE_RENEW_REFUSED") from None
+            new = renewed.get("access_token") if isinstance(renewed, dict) else None
+            if not (isinstance(new, str) and RE_SENSE_TOKEN.fullmatch(new)):
+                raise SenseLookupError("SENSE_RENEW_REFUSED") from None
+            net.register_secret(new)
+            rotated = renewed.get("refresh_token")
+            if isinstance(rotated, str):
+                net.register_secret(rotated)
+            note = ("Sense session: the stored token had expired, so it was renewed once the way Home Assistant does at "
+                    "startup (refresh token unchanged: " + ("yes" if rotated == refresh else "NO") + ").")
+            token = new
+            renewed = new = rotated = None
+            _, reply = request("GET", sense_overview_url(monitor),
+                               {"x-sense-device-id": device, "Authorization": f"bearer {token}"},
+                               timeout=SENSE_TIMEOUT_S)
     except net.NetError as err:
         raise SenseLookupError("SENSE_TOKEN_REFUSED" if err.status in (401, 403) else "SENSE_READ_FAILED") from None
     finally:
-        token = ""
+        token = refresh = user = ""
     lines = project_sense_devices(reply)
     head = (f"Sense devices ({len(lines)} lines, read-only with Home Assistant's own Sense login; tags allowlisted; "
-            "a Sense name or type is a hint, never an identity):")
-    return "\n".join([head, *lines])
+            "a Sense name or type is a hint, never an identity):") + ("\n" + note if note else "")
+    return "\n".join(fit_lines(head, lines, budget,
+                                "[{n} more lines not shown (output bound); file the Sense read on its own]"))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -398,7 +478,9 @@ def project_history(reply, entities: tuple[str, ...], start: int, budget: int) -
     lines = [f"HST1 start={start} entities={len(entities)}"]
     used = len(lines[0])
     letters = "abcdefghijklmnopqrstuvwxyzABCDEF"
-    for eid in entities:
+    # 0.3.35: the SKIPPED lines still to come and END are reserved up front, so the block always ends with END.
+    skips = [len(_skipped(eid)) + 1 for eid in entities]
+    for i, eid in enumerate(entities):
         series = by_id.get(eid, [])
         legend: dict[str, str] = {}
         changes, prev, overflow = [], start, False
@@ -418,8 +500,8 @@ def project_history(reply, entities: tuple[str, ...], start: int, budget: int) -
             prev = max(prev, t)
         line = (f"E {eid} n={len(changes)} legend=" + ",".join(f"{v}:{k}" for k, v in legend.items())
                 + (" STATES_OVERFLOW" if overflow else "") + "\nC " + " ".join(changes))
-        if used + len(line) + 1 > budget:
-            lines.append(f"E {eid} SKIPPED budget (file again with fewer entities or days)")
+        if used + len(line) + 1 + sum(skips[i + 1:]) + len("\nEND") > budget:
+            lines.append(_skipped(eid))
             used += len(lines[-1]) + 1
             continue
         lines.append(line)
@@ -428,12 +510,18 @@ def project_history(reply, entities: tuple[str, ...], start: int, budget: int) -
     return lines
 
 
-def read_history(ha, entities: tuple[str, ...], days: int, now: float | None = None, budget: int = 0) -> str:
+def _skipped(eid: str) -> str:
+    return f"E {eid} SKIPPED budget (file again with fewer entities or days)"
+
+
+def read_history(ha, entities: tuple[str, ...], days: int, now: float | None = None,
+                 budget: int = MAX_OUTPUT_CHARS) -> str:
+    """One read-only window; the returned text (header line included) is at most ``budget`` characters."""
     end = int(now if now is not None else time.time())
     start = end - days * 86400
     reply = ha.history_period(entities, start, end)
-    lines = project_history(reply, entities, start, budget or MAX_OUTPUT_CHARS - 600)
     head = f"History of {len(entities)} entities over {days} day(s), read-only (state changes only):"
+    lines = project_history(reply, entities, start, budget - len(head) - 1)
     return "\n".join([head, *lines])
 
 
@@ -450,7 +538,8 @@ def run_lookup(engine, lr: LookupRequest):
                     "(read-only, nothing is written to the device).")
     if lr.sense_device_tags:
         message += ("\nAlso reads Sense's device list, read-only, using Home Assistant's own Sense login "
-                    "(no new login, nothing changed in Sense or Home Assistant).")
+                    "(no new login, nothing changed in Sense or Home Assistant; if that login's stored token has "
+                    "expired it is renewed once, as Home Assistant does at startup).")
     if lr.history_entities:
         message += (f"\nAlso reads {lr.history_days} day(s) of history of {len(lr.history_entities)} entities: "
                     + ", ".join(lr.history_entities[:6]) + (" ..." if len(lr.history_entities) > 6 else ""))
@@ -462,22 +551,33 @@ def run_lookup(engine, lr: LookupRequest):
         rendered = engine.ha.render_template(lr.template)
     except Exception as err:  # noqa: BLE001 - template errors are reported, never retried
         return Result(LOOKUP_FAILED, [f"template error: {scrub(str(err))[:300]}"])
+    parts = sum(map(bool, (lr.zwave_config_entity, lr.history_entities, lr.sense_device_tags)))
+    if parts and len(rendered) > TEMPLATE_CHARS_WITH_PARTS:   # 0.3.35: leave the parts their room
+        cut = rendered.rfind("\n", 0, TEMPLATE_CHARS_WITH_PARTS - 100)
+        rendered = (rendered[:cut if cut > 0 else TEMPLATE_CHARS_WITH_PARTS - 100]
+                    + f"\n[template output cut at {TEMPLATE_CHARS_WITH_PARTS} characters to leave room for the other parts]")
+
+    def budget() -> int:
+        """0.3.35: the parts still to run share what is left equally (2 characters each for the blank line)."""
+        nonlocal parts
+        share = (MAX_OUTPUT_CHARS - len(rendered) - 2 * parts) // parts
+        parts -= 1
+        return share
     if lr.zwave_config_entity:
         try:
-            rendered += "\n\n" + read_zwave_config(engine.ha, lr.zwave_config_entity)
+            rendered += "\n\n" + read_zwave_config(engine.ha, lr.zwave_config_entity, budget=budget())
         except Exception as err:  # noqa: BLE001 - reported once, never retried
             return Result(LOOKUP_FAILED, [f"zwave config read error: {scrub(str(err))[:300]}"],
                           {"lookup_output": scrub(rendered)})
     if lr.history_entities:
         try:
-            rendered += "\n\n" + read_history(engine.ha, lr.history_entities, lr.history_days,
-                                              budget=max(1000, MAX_OUTPUT_CHARS - len(rendered) - 600))
+            rendered += "\n\n" + read_history(engine.ha, lr.history_entities, lr.history_days, budget=budget())
         except Exception as err:  # noqa: BLE001 - reported once, never retried
             return Result(LOOKUP_FAILED, [f"history read error: {scrub(str(err))[:300]}"],
                           {"lookup_output": scrub(rendered)})
     if lr.sense_device_tags:
         try:
-            rendered += "\n\n" + read_sense_device_tags(os.path.dirname(engine.pk.root.rstrip("/")))
+            rendered += "\n\n" + read_sense_device_tags(os.path.dirname(engine.pk.root.rstrip("/")), budget=budget())
         except SenseLookupError as err:
             return Result(LOOKUP_FAILED, [f"sense read error: {err}"], {"lookup_output": scrub(rendered)})
         except Exception as err:  # noqa: BLE001 - never echoes the exception text (it could hold a token)

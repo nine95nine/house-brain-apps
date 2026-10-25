@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.35 — 2026-10-24 (lookup output budget; Sense renew like Home Assistant; owner "fix the bug ... dive deep", "Approve renew-like-HA")
+
+- Live faults on 0.3.34 (#561):
+  - `2026-10-24-sense-history-7d-r1` lost its `END` line (6390402021). The history budget did not count its SKIPPED
+    lines, its header or `END`, and the final 20,000-character cut fell mid-line.
+  - `2026-10-24-sense-device-tags-r1` ended `SENSE_TOKEN_REFUSED` (6390505216). Home Assistant's Sense library renews
+    its token in memory and Home Assistant never writes it back, so the stored token goes stale.
+- Output budget, so no lookup loses its end:
+  - with other parts, the template part keeps at most 4,000 characters, and the Z-Wave, history and Sense parts share
+    the rest equally;
+  - history reserves its header, the SKIPPED lines still to come and `END`;
+  - Z-Wave and Sense lists keep whole lines and say how many did not fit;
+  - Sense puts the "Other tag keys" line first;
+  - `scrub()` cuts on a line boundary.
+- Sense renew like Home Assistant:
+  - only after a 401, and only once, the Deployer renews with the stored `user_id` and refresh token, as Home Assistant
+    does at every start, then reads once more;
+  - the new tokens stay in memory and are registered for redaction;
+  - the output says whether Sense kept the refresh token unchanged;
+  - a 403, a refused renew (`SENSE_RENEW_REFUSED`) or a second refusal ends the read;
+  - it never authenticates with a password and never logs out.
+- `net.request` gains an optional form body (the renew is a form POST in Home Assistant's library).
+- No new outcome: still `LOOKUP_OK` / `LOOKUP_FAILED`. AppArmor unchanged.
+
 ## 0.3.34 — 2026-10-24 (read-only Sense device-tags and history lookups; owner "This chat builds 0.3.34")
 
 - New optional lookup parts, each named in the approval message and read only after Approve:

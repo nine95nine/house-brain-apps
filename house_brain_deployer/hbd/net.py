@@ -5,6 +5,7 @@ import http.client
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -50,12 +51,15 @@ class NetError(Exception):
 
 def request(method: str, url: str, headers: dict[str, str] | None = None,
             body: Any = None, timeout: float = 30.0, raw: bool = False,
-            headers_out: dict | None = None) -> tuple[int, Any]:
+            headers_out: dict | None = None, form: dict[str, str] | None = None) -> tuple[int, Any]:
     data = None
     hdrs = dict(headers or {})
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         hdrs.setdefault("Content-Type", "application/json")
+    elif form is not None:   # 0.3.35: the Sense renew is a form POST, as in Home Assistant's own Sense library
+        data = urllib.parse.urlencode(form).encode("ascii")
+        hdrs.setdefault("Content-Type", "application/x-www-form-urlencoded")
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     try:
         with _OPENER.open(req, timeout=timeout) as resp:
