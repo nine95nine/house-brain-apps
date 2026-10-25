@@ -1,6 +1,8 @@
 # House Brain Systems AI
 
-Version 0.1.2 (shadow). Boot is manual. Only `SHADOW` mode exists. 0.1.2 adds one read-only, internal-network
+Version 0.1.3 (shadow). Boot is manual. Only `SHADOW` mode exists. 0.1.3 opens a fresh Core WebSocket for each
+cycle and retries a command once on a fresh socket when a kept one has gone stale, so the WebSocket read no
+longer fails every other cycle; the four read-only commands are unchanged. 0.1.2 added one read-only, internal-network
 route, `GET /archive/<day>.json`, so the coming Cooling AI can read archived days (see Outputs), and
 watches Cooling AI's own health block once it is installed. 0.1.1 added the Arbiter's decision,
 reason, owner, kind and shadow selection, the A/C's real call (`binary_sensor.ac_compressor_cooling`), four
@@ -13,7 +15,7 @@ archive (31 entities). The new entities' 40 days are copied first after the upda
   - `GET` to the Supervisor's `info` routes (`/info`, `/host/info`, `/resolution/info`, `/addons/self/info` and `/addons/<House Brain App>/info`), with role `default`;
   - `GET /core/api/states`;
   - `GET /core/api/history/period/...` for the 31 cooling archive entities only (states, no attributes, one day at a time);
-  - four read-only Core WebSocket commands (`system_log/list`, `repairs/list_issues`, `system_health/info`, `recorder/list_statistic_ids`) on one long-lived socket.
+  - four read-only Core WebSocket commands (`system_log/list`, `repairs/list_issues`, `system_health/info`, `recorder/list_statistic_ids`). From 0.1.3 the socket is closed at the end of every cycle, and a command that fails on a socket kept from earlier in the cycle is tried once more on a fresh one. A failure on a fresh socket is a real failure.
 
   There is no POST, state write or service call anywhere in the App. Sibling App info is cut down to slug, name, version, state, boot, hostname, ingress port, watchdog and update flag before anything is kept; their options are never stored.
 - **Finds its siblings without settings.** It reads its own slug, then checks the known House Brain App names under the same store prefix and under `local_`, once an hour.

@@ -58,6 +58,7 @@ class Client:
         self.calls = 0
         self.socket = None
         self.retry_at = 0.
+        self.ws_retries = 0
 
     def _get(self, url, timeout=10, auth=True):
         headers = {'Authorization': 'Bearer ' + self.token} if auth else {}
@@ -111,27 +112,44 @@ class Client:
               '&minimal_response&no_attributes'
         return json.loads(self._get(url, timeout=30))
 
-    # -- Core WebSocket: one long-lived socket, reconnect with backoff ----------------------
+    # -- Core WebSocket: one socket per cycle (0.1.3), one fresh retry, reconnect with backoff --
     def ws(self, message, timeout=20):
         if not isinstance(message, dict) or message.get('type') not in WS_ALLOW \
                 or set(message) != WS_ALLOW[message['type']]:
             raise TransportError('WS_COMMAND_REFUSED')
+        reused = self.socket is not None
         if self.socket is None:
             if time.monotonic() < self.retry_at:
                 raise TransportError('WS_BACKOFF')
-            try:
-                self.socket = CoreSocket(self.connect, self.token)
-            except (OSError, ValueError, TransportError):
-                self.retry_at = time.monotonic() + 60
-                raise TransportError('WS_CONNECT')
+            self._open()
         try:
-            self.calls += 1
-            if message['type'] == 'system_health/info':
-                return self.socket.system_health(timeout)
-            return self.socket.command(message, timeout)
+            return self._send(message, timeout)
+        except (OSError, ValueError, TransportError):
+            self.close()
+            if not reused:
+                raise TransportError('WS_READ')
+        # 0.1.3: a socket kept from an earlier command may have gone stale while idle. One fresh socket,
+        # once, before the read counts as failed (owner pop-up 2026-10-25 "Yes, build 0.1.3").
+        self.ws_retries += 1
+        self._open()
+        try:
+            return self._send(message, timeout)
         except (OSError, ValueError, TransportError):
             self.close()
             raise TransportError('WS_READ')
+
+    def _open(self):
+        try:
+            self.socket = CoreSocket(self.connect, self.token)
+        except (OSError, ValueError, TransportError):
+            self.retry_at = time.monotonic() + 60
+            raise TransportError('WS_CONNECT')
+
+    def _send(self, message, timeout):
+        self.calls += 1
+        if message['type'] == 'system_health/info':
+            return self.socket.system_health(timeout)
+        return self.socket.command(message, timeout)
 
     def close(self):
         if self.socket is not None:

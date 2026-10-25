@@ -393,6 +393,9 @@ class Runtime:
                 if self.hold is None and now - self.last['daily'] >= DAY_S:
                     self.daily(now)
                     self.last['daily'] = now
+                # 0.1.3: never keep the Core socket idle for 5 minutes between cycles; the next cycle opens a
+                # fresh one (one handshake per slow cycle at most).
+                self.client.close()
                 self.finish(now)
             else:
                 return self.status
