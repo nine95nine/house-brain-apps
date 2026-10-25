@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.33
+
+The App reads its own free-lane posts (live finding 2026-10-25 19:03Z, the first Sunday list: the lane's lockout
+review of the Rest problem, posted 06:07Z, showed as "AI review: not posted yet"; Work Board #942 claim 6402027801).
+The problem-review reader accepted comments from the owner's login only, and the lane posts under the GitHub App's
+own `<slug>[bot]` login, so a lockout post satisfied nothing: the problem stayed in the queue and the page said
+"not posted yet", while the lane (rightly) never posted it again. Contains 0.9.32 unchanged otherwise.
+
+- `problems.parse` accepts this App's own bot login (`problems.bot_login_of(auth)`, the connected App's slug + `[bot]`)
+  **only** for a comment that carries the `house_brain_free_review.v1` marker; every other author but the owner stays
+  ignored, and with a personal token (no App identity) nothing changes. The owner's reviews keep precedence as before
+  (newest line wins; a cloud review always replaces a free one for the same problem).
+- The reader re-reads the last 3 days of the tracking issue once when its acceptance rules change (`aireview.RULES`),
+  so a lane post made before this update counts as soon as 0.9.33 runs; the newest review of a problem still wins.
+- Tests: the mimic's mirror of the App's posts now carries the bot login, as GitHub does; `parse` unit tests for the
+  three authors; the one-time re-read; `bot_login_of`; mutants `fr-own-posts-ignored`, `fr-bot-without-marker`,
+  `fr-no-reread-after-rules`.
+
 ## 0.9.32
 
 The free lane's status where every AI can read it (owner 2026-10-25 06:0xZ: "don't you have read access? … figure out

@@ -38,6 +38,8 @@ DOC = "ai_reviews"
 AI_WAIT_HOURS = 48.0
 READ_EVERY = 600.0
 LOOKBACK = 30 * 86400.0           # first read: reviews from the last 30 days
+RULES = "0.9.33"                  # 0.9.33: the reader's acceptance rules; a change re-reads the last REREAD_DAYS once
+REREAD_DAYS = 3.0
 KEEP = 60 * 86400.0
 MAX_LINES_PER_COMMENT = 20
 PAGE = 100                        # GitHub's page size for issue comments
@@ -136,6 +138,8 @@ class AiReviews:
         if not force and now - float(doc["read_at"] or 0) < READ_EVERY:
             return
         since = doc["since"] or _iso(now - LOOKBACK)
+        if doc.get("rules") != RULES:           # 0.9.33: new acceptance rules: read the last days again, once
+            since = _iso(min(_ts(since) or now, now - REREAD_DAYS * 86400))
         self.failed = True                      # 0.9.12: until this read completes
         comments = []
         for page in range(1, MAX_PAGES + 1):    # 0.9.0 fix: the first read saw only the oldest 100 of #454's comments
@@ -159,6 +163,7 @@ class AiReviews:
         doc["reviews"] = {k: v for k, v in reviews.items() if now - float(v.get("at") or 0) < KEEP}
         doc["since"] = _iso(max(newest - 1, now - LOOKBACK))
         doc["read_at"] = now
+        doc["rules"] = RULES
         self.j.save_doc(self.DOC, doc)
         self.failed = False
 

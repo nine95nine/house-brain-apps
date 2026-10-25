@@ -48,6 +48,7 @@ import re
 import time
 
 from . import aireview as A, issues as I
+from . import ghauth as GA
 from .ha import RE_SLUG
 
 DOC = "ai_problem_reviews"
@@ -84,15 +85,37 @@ MAX_FPS = 500
 QUEUE_POST_HOURS = 1.0
 
 
-def parse(comment: dict, owner: str) -> list[dict]:
-    """One comment -> its problem reviews ``{item: key, verdict, summary, at, url}``; anything else ignored."""
+RE_BOT_SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,60}")      # a GitHub App slug (not an add-on slug: ha.RE_SLUG)
+
+
+def bot_login_of(auth) -> str:
+    """0.9.33: the login this App's own posts carry when it signs with the GitHub App (``<slug>[bot]``), else "".
+    Read from the auth's connected key store (``ghauth.Auth``: mode, provider, store.meta()['slug']); never raises.
+    (Kept here, not in ``ghauth.py``: that module is byte-identical with the Deployer's copy.)"""
+    try:
+        if auth is None or getattr(auth, "mode", "") == GA.PAT_ONLY:
+            return ""
+        provider = getattr(auth, "provider", None)
+        if provider is None or not provider.connected():
+            return ""
+        slug = str((provider.store.meta() or {}).get("slug") or "")
+        return f"{slug}[bot]" if slug and RE_BOT_SLUG.fullmatch(slug) else ""
+    except Exception:  # noqa: BLE001 - no identity known: only the owner's reviews count
+        return ""
+
+
+def parse(comment: dict, owner: str, bot: str = "") -> list[dict]:
+    """One comment -> its problem reviews ``{item: key, verdict, summary, at, url}``; anything else ignored.
+    0.9.33: the App's own bot login (``bot``, the GitHub App's ``<slug>[bot]``) is accepted only for a comment that
+    carries the free lane's marker (the lane's lockout posts); every other author but the owner is ignored."""
     if not isinstance(comment, dict):
         return []
     user = comment.get("user") or {}
-    if not isinstance(user, dict) or str(user.get("login", "")).lower() != owner.lower():
-        return []
     body, at = comment.get("body"), A._ts(comment.get("created_at"))
-    if not isinstance(body, str) or at is None:
+    if not isinstance(body, str) or at is None or not isinstance(user, dict):
+        return []
+    login = str(user.get("login", "")).lower()
+    if login != owner.lower() and not (bot and login == bot.lower() and RE_FREE_MARK.search(body)):
         return []
     url = comment.get("html_url") if isinstance(comment.get("html_url"), str) and re.fullmatch(
         r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+#issuecomment-\d+", comment["html_url"]) else ""
@@ -168,9 +191,21 @@ class ProblemReviews(A.AiReviews):
             return None
         return r
 
-    @staticmethod
-    def _parse(comment: dict, owner: str) -> list[dict]:
-        return parse(comment, owner)
+    def _parse(self, comment: dict, owner: str) -> list[dict]:
+        return parse(comment, owner, self.bot_login)
+
+    _bot_override: str | None = None
+
+    @property
+    def bot_login(self) -> str:
+        """0.9.33: this App's own login on GitHub when it signs with the GitHub App; its lockout posts carry it."""
+        if self._bot_override is not None:
+            return self._bot_override
+        return bot_login_of(getattr(self.gh, "auth", None))
+
+    @bot_login.setter
+    def bot_login(self, value: str) -> None:
+        self._bot_override = str(value)
 
     def cloud(self, item: str) -> dict | None:
         """0.9.29: a counting review by the cloud reviewer (never this App's own free-model line)."""
