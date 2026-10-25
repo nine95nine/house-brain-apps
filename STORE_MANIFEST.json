@@ -5,6 +5,11 @@
       "source_manifest_sha256": "225ca958680baed04d9ecd9a0f7ba0aad8d54ab1a06cb702194e3276797c9283",
       "version": "0.1.9-dev"
     },
+    "house_brain_cooling_ai": {
+      "files": 20,
+      "source_manifest_sha256": "7bec1b3245874e17d4db0bfcf3f48e4e15ff5642ed35f4c8ec74d765e61d220b",
+      "version": "0.1.0"
+    },
     "house_brain_deployer": {
       "files": 64,
       "source_manifest_sha256": "c5a60e5a7b91162a58b7067cbb89f304f185be7a35f665b3348102bdfccd1b86",
@@ -42,6 +47,6 @@
     }
   },
   "schema_version": "house_brain_apps_store_manifest.v1",
-  "source_commit": "18bb72e144013ba381231e0c5608568b7e43c8b9",
+  "source_commit": "9269c0ef6aa6130d42ed5dcae87f6fadc6367315",
   "source_repository": "private engineering repository"
 }

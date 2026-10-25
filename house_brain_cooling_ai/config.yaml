@@ -1,0 +1,25 @@
+name: House Brain Cooling AI
+version: "0.1.0"
+slug: house_brain_cooling_ai
+description: Shadow twin of the cooling plant. Learns how the house cools, plans each minute
+  and scores the plan against what the house did; no commands, no state writes.
+arch:
+- aarch64
+homeassistant: 2026.10.0
+startup: application
+boot: manual
+stage: experimental
+init: false
+homeassistant_api: true
+hassio_api: true
+hassio_role: default
+docker_api: false
+host_network: false
+full_access: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:snowflake-thermometer
+options:
+  mode: SHADOW
+schema:
+  mode: list(SHADOW)
