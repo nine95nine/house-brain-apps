@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.36 — 2026-10-25 (more Sense tags, compact line; owner "Build it")
+
+- The Sense device list adds four tags, each bounded:
+  - Sense's expected always-on watts (`AO=…W`, a number 0–5,000 rounded to 1 W, else left out);
+  - its always-on flag (`always-on`);
+  - the first name guess (`guess …`, ≤ 40 characters);
+  - combined devices (`combines …`), by name only: never an id, at most 5 plus a count.
+- The line shows exceptions, not defaults:
+  - `type=` once, with `(Sense: …)` only when Sense's default type differs;
+  - `hidden`, `revoked`, `pending`, `virtual`, `no-timeline` and `renamed` only when set;
+  - `was …` only for a changed original name;
+  - dates as `c=` / `f=`.
+  - The live 73-device list now takes about 9,000 characters instead of more than 20,000, so nothing is left out.
+- Unchanged: the read path, the one renew after a 401, never a password login or logout, the `.storage` boundary,
+  redaction, output budget, outcomes and AppArmor.
+
 ## 0.3.35 — 2026-10-24 (lookup output budget; Sense renew like Home Assistant; owner "fix the bug ... dive deep", "Approve renew-like-HA")
 
 - Live faults on 0.3.34 (#561):

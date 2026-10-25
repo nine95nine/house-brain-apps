@@ -42,6 +42,11 @@ renew-like-HA"):
   stored token goes stale. Like Home Assistant at every start, the Deployer then
   renews once (only after a 401) with the stored refresh token, in memory, and reads.
   It never authenticates with a password and never logs out.
+
+0.3.36 (#215, owner pop-up 2026-10-25 "Build it"; design
+``docs/architecture/SENSE_DEVICE_TAGS_0_3_36_PROPOSAL_R1.md``): the Sense list adds
+Sense's expected always-on watts, its always-on flag, the first user name guess and
+combined devices (by name only), and drops defaults so every device fits one lookup.
 """
 from __future__ import annotations
 
@@ -68,9 +73,15 @@ MAX_HISTORY_STATES = 32          # distinct states per entity in the legend; mor
 # startup makes after a 401. Never authenticate (password) or logout.
 SENSE_API_BASE = "https://api.sense.com/apiservice/api/v1/"
 SENSE_TIMEOUT_S = 10.0
+# 0.3.36 (owner pop-up 2026-10-25 "Build it"): the projected tags. A line shows exceptions, not defaults:
+# ``type=``, ``(Sense: ...)`` when Sense's default type differs, flags only when not the default, ``was`` for a changed
+# original name, ``AO=`` expected always-on watts, ``c=``/``f=`` dates, merges and combined devices by name only.
 SENSE_TAGS = ("DefaultUserDeviceType", "UserDeviceType", "UserDeviceTypeDisplayString", "DeviceListAllowed",
-              "Revoked", "Pending", "Virtual", "TimelineAllowed", "OriginalName", "NameUseredit")
+              "Revoked", "Pending", "Virtual", "TimelineAllowed", "OriginalName", "NameUseredit", "name_useredit",
+              "ExpectedAOWattage", "AlwaysOn", "NameUserGuess", "CombinedDevices")
 SENSE_DATE_TAGS = ("DateCreated", "DateFirstUsage")
+MAX_SENSE_AO_WATTS = 5000
+MAX_SENSE_COMBINED = 5
 SENSE_HINT_TAG = "PeerNames"
 MAX_SENSE_DEVICES = 300
 RE_SENSE_MONITOR = re.compile(r"^[0-9]{1,12}$")
@@ -342,8 +353,32 @@ def _date(value) -> str:
     return text[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", text) else ""
 
 
+def _flag(value) -> bool | None:
+    """Sense tags carry booleans as ``true``/``false`` or as strings; anything else is unknown (None)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    return None
+
+
+def _watts(value) -> int | None:
+    """``ExpectedAOWattage``: a number (or numeric string) within 0..MAX_SENSE_AO_WATTS, rounded to 1 W; else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            return None
+    if not isinstance(value, (int, float)) or not 0 <= value <= MAX_SENSE_AO_WATTS:   # also refuses NaN
+        return None
+    return int(round(value))
+
+
 def project_sense_devices(reply) -> list[str]:
-    """Sense ``devices/overview`` reply -> one line per device. Ids, account fields and unknown tag values drop."""
+    """Sense ``devices/overview`` reply -> one compact line per device (0.3.36). Ids, account fields and unknown tag
+    values drop; defaults are left out so every device fits, and only exceptions are shown."""
     devices = reply.get("devices") if isinstance(reply, dict) else None
     if not isinstance(devices, list):
         raise SenseLookupError("SENSE_REPLY_SHAPE")
@@ -354,17 +389,47 @@ def project_sense_devices(reply) -> list[str]:
             continue
         raw_tags = d.get("tags")
         tags: dict = raw_tags if isinstance(raw_tags, dict) else {}
-        parts = [_plain(d.get("name"), 60) or "(unnamed)", "icon=" + (_plain(d.get("icon"), 30) or "-")]
-        for key in SENSE_TAGS:
-            if key in tags and not isinstance(tags[key], (dict, list)):
-                parts.append(f"{key}={_plain(tags[key], 40)}")
-        for key in SENSE_DATE_TAGS:
-            if _date(tags.get(key)):
-                parts.append(f"{key}={_date(tags.get(key))}")
+        name = _plain(d.get("name"), 60) or "(unnamed)"
+        parts = [name, "icon=" + (_plain(d.get("icon"), 30) or "-")]
+        scalar = {k: tags[k] for k in SENSE_TAGS if k in tags and not isinstance(tags[k], (dict, list))}
+        user_type = _plain(scalar.get("UserDeviceType"), 40)
+        default_type = _plain(scalar.get("DefaultUserDeviceType"), 40)
+        if user_type or default_type:
+            parts.append("type=" + (user_type or default_type)
+                         + (f" (Sense: {default_type})" if user_type and default_type and default_type != user_type else ""))
+        for key, default, label in (("DeviceListAllowed", True, "hidden"), ("Revoked", False, "revoked"),
+                                    ("Pending", False, "pending"), ("Virtual", False, "virtual"),
+                                    ("TimelineAllowed", True, "no-timeline"), ("AlwaysOn", False, "always-on")):
+            flag = _flag(scalar.get(key))
+            if flag is not None and flag != default:
+                parts.append(label)
+        if _flag(scalar.get("NameUseredit")) or _flag(scalar.get("name_useredit")):
+            parts.append("renamed")
+        original = _plain(scalar.get("OriginalName"), 40)
+        if original and original != name:
+            parts.append("was " + original)
+        guess = _plain(scalar.get("NameUserGuess"), 40)
+        if guess and guess != name:
+            parts.append("guess " + guess)
+        watts = _watts(scalar.get("ExpectedAOWattage"))
+        if watts is not None:
+            parts.append(f"AO={watts}W")
+        dates = " ".join(f"{tag}={_date(tags.get(key))}" for key, tag in (("DateCreated", "c"), ("DateFirstUsage", "f"))
+                         if _date(tags.get(key)))
+        if dates:
+            parts.append(dates)
         merge = tags.get("MergeId")
         if merge:
             target = names.get(merge)
             parts.append(f"merged into {target}" if target else "merged (target not listed)")
+        combined = tags.get("CombinedDevices")
+        if isinstance(combined, list) and combined:
+            shown = []
+            for item in combined[:MAX_SENSE_COMBINED]:
+                ref = item.get("id") if isinstance(item, dict) else item
+                shown.append(names.get(ref) if isinstance(ref, str) and names.get(ref) else "(not listed)")
+            more = len(combined) - MAX_SENSE_COMBINED
+            parts.append("combines " + ", ".join(shown) + (f" +{more} more" if more > 0 else ""))
         hints = tags.get(SENSE_HINT_TAG)
         if isinstance(hints, list):
             scored = []

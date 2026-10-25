@@ -48,6 +48,11 @@ From 0.3.35:
   Assistant does at every start, and reads again. It never uses a password and never logs out. The output says
   whether Sense kept the refresh token unchanged.
 
+From 0.3.36 each Sense device is one short line: its type, any flag that is not the default (`hidden`,
+`always-on`, …), Sense's expected always-on watts (`AO=…W`), its first name guess, the created and first-used
+dates (`c=`, `f=`), merges, combined devices by name, and Sense's top 3 name hints. All 70-odd devices fit in
+one lookup.
+
 ## Stop recording busy entities (0.3.31)
 
 A package may contain **only** `recorder:` → `exclude:` → `entities:` and/or `entity_globs:` lists. Home Assistant
