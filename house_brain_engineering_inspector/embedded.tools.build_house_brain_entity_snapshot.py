@@ -90,6 +90,10 @@ def load_policy(policy: dict[str, Any] | None = None) -> dict[str, Any]:
     _require(type(exempt) is list and len(exempt) <= MAX_REGISTRY_EXEMPT and len(set(exempt)) == len(exempt) and all(
         type(e) is str and ENTITY_ID_RE.fullmatch(e) is not None and e.split(".", 1)[0] in p["domains"]
         for e in exempt), "POLICY_REGISTRY_EXEMPT_INVALID")
+    ext = p.get("extension_entities", [])
+    _require(type(ext) is list and len(ext) <= MAX_EXTENSION_ENTITIES and len(set(ext)) == len(ext) and all(
+        type(e) is str and ENTITY_ID_RE.fullmatch(e) is not None and e.split(".", 1)[0] in EXTENSION_DOMAINS
+        and e.split(".", 1)[0] not in p["domains"] for e in ext), "POLICY_EXTENSION_ENTITIES_INVALID")
     return p
 
 
@@ -170,6 +174,13 @@ def _registry(registry: Any) -> dict[str, tuple[str, str | None]]:
 
 MAX_HISTORY_CHANGES: Final = 200
 MAX_REGISTRY_EXEMPT: Final = 8
+# Policy 1.10.0 (Part B; owner pop-ups 2026-10-25 "Yes, after 0.1.5", "Take it over here"): exact entity ids in a few
+# more read-only domains, the ones the owner's boards show. Fixed in code: a policy edit cannot add a domain here, and
+# no blocked domain (lock, camera, alarm, person, tracker, zone, ...) is ever one. Free text (input_text), buttons,
+# scripts and notify are not listed on purpose.
+EXTENSION_DOMAINS: Final = frozenset({"climate", "weather", "switch", "light", "input_boolean", "input_number",
+                                      "input_select", "input_datetime", "timer", "counter", "number"})
+MAX_EXTENSION_ENTITIES: Final = 256
 
 
 def _history(history: Any, exported: dict[str, dict[str, Any]], history_list: list[str],
@@ -216,6 +227,7 @@ def build(states: Any, registry: Any, *, now: str, mode: str = "dry_run",
     deny_prefixes = tuple(p["owner_deny_prefixes"])
     exempt = frozenset(p["token_exemptions"])
     registry_exempt = frozenset(p.get("registry_exempt_entities", []))
+    extension = frozenset(p.get("extension_entities", []))   # their domains are never blocked (load_policy)
     aliaser = _Aliaser(p.get("owner_name_aliases", []))
     original_ids = frozenset(row.get("entity_id") for row in states if type(row) is dict)
     by_original: dict[str, dict[str, Any]] = {}
@@ -238,7 +250,7 @@ def build(states: Any, registry: Any, *, now: str, mode: str = "dry_run",
             _exclude(counts, "OWNER_DENY"); continue
         if domain in blocked:
             _exclude(counts, "BLOCKED_DOMAIN"); continue
-        if domain not in domains:
+        if domain not in domains and entity_id not in extension:
             _exclude(counts, "DOMAIN_NOT_EXPORTED"); continue
         if entity_id in reg:
             platform, device_id = reg[entity_id]
@@ -316,6 +328,17 @@ def build(states: Any, registry: Any, *, now: str, mode: str = "dry_run",
                 "export_bytes": export_bytes, "max_snapshot_bytes": bounds["max_snapshot_bytes"],
                 "export_size_ok": export_bytes <= bounds["max_snapshot_bytes"],
                 "values_included": False, "control_authority": "NONE"}
+    if export_bytes > bounds["max_snapshot_bytes"] and extension and not history:
+        # 1.10.0: the extension entities can never cost the sensor export. With history the sender first trims and
+        # then drops history (it retries without it); only a history-free build that is still too big drops them.
+        smaller = build(states, registry, now=now, mode=mode, policy={**p, "extension_entities": []}, history=history)
+        if mode == "export":
+            smaller["excluded_counts"] = dict(sorted({**smaller["excluded_counts"],
+                                                      "EXTENSION_DROPPED_SIZE_BOUND": len(extension)}.items()))
+            size = len(json.dumps(smaller, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                                  allow_nan=False).encode("utf-8"))
+            _require(size <= bounds["max_snapshot_bytes"], "SNAPSHOT_SIZE_BOUND")
+        return smaller
     _require(export_bytes <= bounds["max_snapshot_bytes"], "SNAPSHOT_SIZE_BOUND")
     return snapshot
 
