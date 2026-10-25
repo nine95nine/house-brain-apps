@@ -7,6 +7,9 @@ Values come from the same diagnostics the page shows; entity ids, device names a
 never appear (counts and roles only). Nothing here is a recommendation or a control.
 """
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+PHOENIX = ZoneInfo('America/Phoenix')
 from decimal import Decimal, ROUND_HALF_UP
 
 ENTITY = 'sensor.house_brain_energy_ai_status'
@@ -15,7 +18,7 @@ HEARTBEAT_S = 900          # re-publish unchanged content every 15 minutes, so r
 ATTRIBUTES = ('version', 'mode', 'physical_actions', 'summary', 'data_status', 'plan', 'always_on',
               'this_month', 'bank_runway', 'credit_headroom', 'stay_put', 'heat_and_use', 'panels',
               'outage_planning', 'solar_used_at_home', 'forecast_trust', 'energy_counters', 'scorecard',
-              'updated')
+              'credit_plan', 'advice', 'updated')    # 0.1.5: + credit_plan, advice (21 + 3 defaults = the 24 cap)
 
 
 def money(value):
@@ -43,10 +46,47 @@ def _data_health(status):
     return head + (('; idle: ' + ', '.join(idle)) if idle else '')
 
 
+def _clock(at):
+    return datetime.fromtimestamp(at, PHOENIX).strftime('%a %H:%M')
+
+
 def _plan(status):
     plan = status.get('plan_status') or {}
     reasons = plan.get('reasons') or []
+    moves = plan.get('moves') or []
+    if plan.get('status') == 'SHADOW_PROPOSAL' and moves:
+        # 0.1.5: learned templates; a suggestion only, never a command.
+        parts = [f"{m['template']} {_clock(m['usual_start'])} -> {_clock(m['proposed_start'])}" if m.get('moved')
+                 else f"{m['template']} keep {_clock(m['usual_start'])}" for m in moves]
+        benefit = (plan.get('result') or {}).get('modeled_benefit') or 0
+        return 'SHADOW suggestion: ' + '; '.join(parts) + (f' (saves about {money(benefit)} modeled)' if benefit else '')
     return (plan.get('status') or 'UNAVAILABLE') + ((': ' + ', '.join(map(str, reasons))) if reasons else '')
+
+
+def _credit_plan(i):
+    c = i.get('credit_plan') or {}
+    if c.get('status') != 'ESTIMATED':
+        return 'not available: ' + str(c.get('reason') or c.get('status') or 'no projection yet')
+    return (f"true-up {c['true_up_month']} in {c['days_left']} days: about {_num(c['surplus_on_peak_kwh'])} kWh "
+            f"on-peak credit would sell cheaply (worth up to {money(c['value_if_used_dollars'])} if used); about "
+            f"{_num(c['kwh_per_weekday'])} kWh per weekday fits 12:00-19:00; today: {c['today']}")
+
+
+def _advice(i, diag):
+    parts = []
+    h = i.get('cooling_hint') or {}
+    if h.get('status') == 'ESTIMATED':
+        parts.append(f"cooling is cheaper {h['cheaper_to_cool']}"
+                     + (f" until {h['on_peak_covered_until']}" if h.get('on_peak_covered_until') else ''))
+    n = i.get('night_extra') or {}
+    if n.get('status') == 'ESTIMATED' and n.get('extra_w'):
+        parts.append(f"night load {_num(n['extra_w'])} W above Sense always-on (about "
+                     f"{money(n['dollars_per_month_1_to_5am'])}/month for 1-5 am alone)")
+    t = diag.get('load_templates') or {}
+    waiting = len(set(t.get('proposed') or {}) - set(t.get('approved') or []))
+    parts.append(f"load templates: {len(t.get('approved') or [])} approved, {waiting} to review on the page"
+                 + (f", {len(t['needs_review'])} changed" if t.get('needs_review') else ''))
+    return '; '.join(parts)
 
 
 def lines(status):
@@ -109,6 +149,8 @@ def lines(status):
         'energy_counters': (f"{len(findings)} counter(s) flagged: " + ', '.join(sorted(set(map(str, findings.values()))))
                             if findings else 'no stuck counters seen'),
         'scorecard': f"{card.get('distinct_proposals') or 0} shadow proposals, none carried out, no savings claimed",
+        'credit_plan': _credit_plan(i),
+        'advice': _advice(i, diag),
     }
 
 

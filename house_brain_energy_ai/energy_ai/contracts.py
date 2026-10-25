@@ -66,7 +66,7 @@ def sample(state, binding, now):
 
 
 def mark_idle(values, states):
-    """A detection device sitting at 0 W is idle, not stale (R14, first live run 2026-10-20).
+    """A detection device sitting at 0 W is idle, not stale (R14, first live run 2026-10-20); so is solar at night (0.1.5).
 
 Home Assistant moves a state's timestamps only when the value is written, and the Sense
 device sensors are written when the reading changes, so a device that was switched off hours
@@ -75,14 +75,22 @@ last reading is exactly 0 W/kW and not from the future does STALE_OR_FUTURE beco
 No value is filled in: IDLE samples are never stored or used as measurements.
 """
     fresh = {v["family"] for v in values if v["role"] == "load" and v["quality"] == "GOOD"}
+    # 0.1.5 (live 0.1.4 read DEGRADED: solar STALE_OR_FUTURE every evening): solar at 0 W is idle only while
+    # Home Assistant's sun.sun says the sun is below the horizon; in daylight a silent solar reading stays a fault.
+    night = (states.get("sun.sun") or {}).get("state") == "below_horizon"
+    any_load = any(v["role"] == "load" and v["quality"] == "GOOD" for v in values)
     for v in values:
-        if (v["quality"] != "STALE_OR_FUTURE" or not v["role"].startswith("detection:")
-                or v["family"] not in fresh or v["source_at"] is None or v["source_at"] > v["observed_at"]):
+        solar_night = v["role"] == "solar" and night and any_load
+        if (v["quality"] != "STALE_OR_FUTURE" or not (v["role"].startswith("detection:") and v["family"] in fresh
+                                                      or solar_night)
+                or v["source_at"] is None or v["source_at"] > v["observed_at"]):
             continue
         state = states.get(v["entity"]) or {}
         try:
+            # Inverters often stop reporting a few watts above 0 at dusk, so solar may sit at up to 20 W.
             if (state.get("attributes", {}).get("unit_of_measurement") in {"W", "kW"}
-                    and number(state.get("state")) == 0):
+                    and (number(state.get("state")) == 0 or solar_night and 0 <= number(state.get("state")) * (
+                        1000 if state["attributes"]["unit_of_measurement"] == "kW" else 1) <= 20)):
                 v["quality"] = "IDLE"
         except (ValueError, TypeError, OverflowError):
             continue

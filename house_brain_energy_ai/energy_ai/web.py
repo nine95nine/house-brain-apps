@@ -75,7 +75,7 @@ class Ingress:
                     if not 0<size<=4096:
                         raise ValueError()
                     payload=json.loads(self.rfile.read(size))
-                    if self.path not in {"/pause","/review","/model/rollback"} or not isinstance(payload,dict):
+                    if self.path not in {"/pause","/review","/model/rollback","/template"} or not isinstance(payload,dict):
                         raise ValueError()
                     done=Event()
                     result={}

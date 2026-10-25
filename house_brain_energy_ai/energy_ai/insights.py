@@ -10,9 +10,9 @@
 Every figure is an estimate on base charges; anything the data cannot attribute stays "unknown".
 """
 from calendar import monthrange
-from datetime import datetime
+from datetime import datetime, timedelta
 import statistics
-from .planning import TZ, period
+from .planning import TZ, holiday, period
 from .rateplan import season
 
 ALWAYS_ON_KEY = 'insights:always-on-floor'   # 0.1.4: the floor, not the 1-5 am median (old key kept, unread)
@@ -372,4 +372,69 @@ def credit_headroom(runway, tariff, now):
             'basis': 'banked on-peak credit only offsets on-peak use and its leftover is paid out at the true-up '
                      'rate; off-peak use is billed at the off-peak rate. Statement-based projection; the owning '
                      'lanes (pool, EV, cooling) decide whether anything moves', 'recommendation': None,
+            'physical_actions': False}
+
+
+def _true_up_deadline(true_up_month):
+    """The true-up statement (statement month YYYY-MM) closes on the 2nd of that month, local midnight."""
+    year, month = int(true_up_month[:4]), int(true_up_month[5:7])
+    return datetime(year, month, 2, tzinfo=TZ).timestamp()
+
+
+def credit_plan(headroom, now):
+    """0.1.5 (owner pop-up 2026-10-25 "all the above"): true-up countdown and today's credit-burn window.
+
+    Banked on-peak credit left at the true-up sells at the low payout rate, while off-peak use is billed, so until
+    then flexible use is cheapest on weekday on-peak hours. Spread evenly over the weekdays left. Information only."""
+    if (headroom or {}).get('status') != 'ESTIMATED':
+        return {'status': 'NOT_AVAILABLE', 'reason': (headroom or {}).get('reason') or (headroom or {}).get('status'),
+                'recommendation': None}
+    deadline = _true_up_deadline(headroom['true_up_month'])
+    day = _local(now).date()
+    weekdays = [day + timedelta(days=d) for d in range(max(0, int((deadline - now) // 86400)) + 1)]
+    weekdays = [d for d in weekdays if d.weekday() < 5 and not holiday(d)
+                and datetime(d.year, d.month, d.day, 19, tzinfo=TZ).timestamp() <= deadline]
+    today_ok = bool(weekdays) and weekdays[0] == day and _local(now).hour < 19
+    per_day = round(headroom['shiftable_on_peak_kwh'] / len(weekdays), 1) if weekdays else 0.
+    return {'status': 'ESTIMATED', 'true_up_month': headroom['true_up_month'],
+            'days_left': max(0, int((deadline - now) // 86400)), 'weekdays_left': len(weekdays),
+            'surplus_on_peak_kwh': headroom['shiftable_on_peak_kwh'], 'kwh_per_weekday': per_day,
+            'value_if_used_dollars': headroom['value_if_shifted_dollars'],
+            'today': 'weekday on-peak 12:00-19:00' if today_ok else 'not an on-peak day',
+            'basis': 'surplus on-peak credit / weekdays left before the true-up statement closes; shifting more '
+                     'than this would be billed on-peak later', 'recommendation': None, 'physical_actions': False}
+
+
+def cooling_hint(runway, tariff, now):
+    """Which hours cooling energy is paid for (for the Cooling AI lane): on-peak is covered by banked credit until
+    the first billed on-peak month; off-peak is billed once its bank is empty. Information only."""
+    if (runway or {}).get('status') != 'PROJECTED':
+        return {'status': 'NOT_AVAILABLE', 'recommendation': None}
+    first = runway.get('first_billed_month') or {}
+    current = _local(now).strftime('%Y-%m')
+    rates = tariff['charges']['energy_per_kwh'][season(_local(now).month)]
+    on_covered = first.get('on_peak') is None or first['on_peak'] > current
+    off_billed = first.get('off_peak') is not None and first['off_peak'] <= current
+    return {'status': 'ESTIMATED', 'on_peak_covered_until': first.get('on_peak'),
+            'off_peak_billed_since': first.get('off_peak'),
+            'on_peak_cost_per_kwh': 0. if on_covered else rates['on_peak'],
+            'off_peak_cost_per_kwh': rates['off_peak'] if off_billed else 0.,
+            'cheaper_to_cool': ('on-peak (credit-covered)' if on_covered and off_billed else
+                                'off-peak' if not on_covered else 'either (both covered)'),
+            'basis': 'statement-based bank runway; marginal energy rate only, comfort decisions stay with Cooling',
+            'recommendation': None, 'physical_actions': False}
+
+
+def night_extra(base, sense_always_on_w, tariff, now):
+    """Overnight load above Sense's 24 h always-on floor (for example a night vent fan or A/C), priced at the
+    off-peak rate it is billed at. Information only."""
+    floor = (base or {}).get('always_on_floor_w')
+    if floor is None or sense_always_on_w is None:
+        return {'status': 'NOT_AVAILABLE', 'recommendation': None}
+    extra = max(0., floor - sense_always_on_w)
+    rate = tariff['charges']['energy_per_kwh'][season(_local(now).month)]['off_peak']
+    kwh_month = extra / 1000 * 5 * 30          # 1-5 am only: a lower bound for the whole night
+    return {'status': 'ESTIMATED', 'extra_w': round(extra), 'kwh_per_month_1_to_5am': round(kwh_month, 1),
+            'dollars_per_month_1_to_5am': round(kwh_month * rate, 2),
+            'basis': 'quietest 1-5 am hour minus Sense always-on; whole-night use is higher', 'recommendation': None,
             'physical_actions': False}

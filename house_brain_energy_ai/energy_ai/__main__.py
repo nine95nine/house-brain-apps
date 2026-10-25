@@ -107,6 +107,10 @@ def main():
                         runtime.pause(payload["paused"])
                         runtime.status={**runtime.status,"state":"PAUSED" if runtime.paused else "RESUMING"}
                         result["paused"]=runtime.paused
+                    elif route=="/template":
+                        if set(payload)!={"template","approved"}:
+                            raise ValueError("TEMPLATE_DECISION_ONLY")
+                        result.update(runtime.approve_template(payload["template"],payload["approved"]))
                     elif route=="/model/rollback":
                         if set(payload)!={"role"}:
                             raise ValueError("ROLLBACK_ROLE_ONLY")

@@ -15,6 +15,7 @@ from .store import Store, encode
 from .forecast import hourly, evaluate, seasonal_many, predict
 from .analytics import baseload, robust_anomaly, cycles, clusters, IdentityRegistry
 from .planning import energy_integral, BankObjective, Job, schedule
+from . import templates
 from .reviewed import evaluate_private_inputs
 from .context import load_context, enroll, update_passive_evidence
 from .model_audit import ModelAudit
@@ -101,6 +102,10 @@ class Runtime:
             self.store.put("last_train",0)
         self.store.put("backfill",progress)
         return progress
+
+    def approve_template(self, template_id, approved):
+        """Owner decision on the page (0.1.5): approve or withdraw one learned template. Shadow planning only."""
+        return templates.approve(self.store,getattr(self,"template_proposals",{}),template_id,approved,time.time())
 
     def pause(self, paused):
         if type(paused) is not bool:
@@ -213,6 +218,12 @@ class Runtime:
                     detections[binding.entity]["duration_check"]=robust_anomaly(
                         [e["duration_s"] for e in events[:-1]],events[-1]["duration_s"])
         diagnostics["sense_detections"]=detections
+        # 0.1.5: flexible-load templates learned from these devices' own cycles; planning uses approved ones only.
+        roles={b.entity:b.role for b in self.bindings if b.role.startswith("detection:")}
+        self.template_proposals=templates.propose(detections,detection_events,roles)
+        approved_templates,drifted_templates=templates.review(self.store,self.template_proposals)
+        diagnostics["load_templates"]={"proposed":self.template_proposals,"approved":sorted(approved_templates),
+                                       "needs_review":drifted_templates,"physical_actions":False}
         diagnostics["passive_correlations"]=update_passive_evidence(self.store,states,now,detection_events,self.adapters['telemetry'])
         diagnostics["forecast_audit"]=forecast_audit
         if "grid" in series:
@@ -241,6 +252,8 @@ class Runtime:
                            "bank_runway":insights.bank_runway(self.retained_bill),
                            "self_use":insights.self_use(hours.get("solar",[]),exports)}
             self.insights["credit_headroom"]=insights.credit_headroom(self.insights["bank_runway"],self.tariff,now)
+            self.insights["credit_plan"]=insights.credit_plan(self.insights["credit_headroom"],now)
+            self.insights["cooling_hint"]=insights.cooling_hint(self.insights["bank_runway"],self.tariff,now)
             temps=self.store.rollup("weather:outdoor-temperature",[],now)
             fitted=weather.weather_load(hours.get("load",[]),temps)
             self.insights["weather_load"]=fitted
@@ -248,8 +261,15 @@ class Runtime:
                 temps,fitted.get("kwh_per_cooling_degree_hour") if fitted["status"]=="SCORED" else None)
             self.last_rateplan=now
         diagnostics["rate_plan"]=self.rate_plan
+        sense_floor=(states.get(self.adapters.get("sense_always_on_entity") or "sensor.always_on_power") or {})
+        try:
+            sense_floor_w=float(sense_floor.get("state")) if (sense_floor.get("attributes") or {}).get(
+                "unit_of_measurement")=="W" else None
+        except (TypeError,ValueError):
+            sense_floor_w=None
         diagnostics["insights"]={**self.insights,"counter_health":insights.counter_health(
-            self.store,states,now,load["value"] if load else None)}
+            self.store,states,now,load["value"] if load else None),
+            "night_extra":insights.night_extra(diagnostics["baseload"],sense_floor_w,self.tariff,now)}
         plan_digest=None
         plan={"status":"BLOCKED","reasons":["BILLING_CYCLE_BANK_AND_JOB_CONFIGURATION_REQUIRED"]}
         planning=context.get("planning")
@@ -292,6 +312,12 @@ class Runtime:
                           "context_revision":context["revision"],"context_evidence":context["evidence_ref"]}
                 except (ValueError,KeyError,TypeError):
                     plan={"status":"BLOCKED","reasons":["PLANNING_CONFIGURATION_INVALID"]}
+        if context.get("planning") is None and not self.paused and not budget_hold and not essential_bad:
+            # 0.1.5: no delivered packet, so the half-hour context is built here from the approved templates.
+            plan=templates.plan(approved_templates,forecasts,self.retained_bill,self.tariff,now)
+            if plan["status"]=="SHADOW_PROPOSAL":
+                plan_digest=hashlib.sha256(encode({"templates":approved_templates,"forecasts":forecasts,
+                                                  "bank":plan["bank_kwh"]}).encode()).hexdigest()
         opportunities=[{"id":"NATIVE_QUALIFICATION","owner":"Energy AI engineering/release lane",
                         "reason":"ARM64 and HAOS validation and installation approval required",
                         "supported_value_dollars":None},
