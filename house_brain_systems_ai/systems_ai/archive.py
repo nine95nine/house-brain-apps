@@ -1,4 +1,5 @@
-"""Archive keeper (0.1.0): the cooling season's full-detail history, kept before the recorder purges it.
+"""Archive keeper (0.1.0; 0.1.1 adds the Arbiter's decision labels): the cooling season's full-detail
+history, kept before the recorder purges it.
 
 Owner pop-up 2026-10-24 "Yes, add to Systems AI 0.1" (AI family plan F1, rolling archive; the season
 archive proposal docs/architecture/COOLING_SEASON_DATA_ARCHIVE_PROPOSAL_R1.md, windows A and B). It reads
@@ -18,7 +19,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 PHOENIX = timezone(timedelta(hours=-7))
-# The 18 entities of the archive proposal's History list (core for #112, #116 or #45).
+# The 18 entities of the archive proposal's History list (core for #112, #116 or #45), plus 13 in 0.1.1.
 ENTITIES = (
     'sensor.evap_local_dew_point_consensus', 'sensor.evap_local_outdoor_temperature',
     'sensor.evap_local_outdoor_humidity', 'sensor.evap_local_wet_bulb_temperature',
@@ -28,17 +29,30 @@ ENTITIES = (
     'switch.backyard_zen_16_multirelay_2', 'switch.backyard_zen_16_multirelay_3',
     'sensor.evap_actual_relay_mode', 'input_select.cooling_arbiter_v2_phase',
     'sensor.evap_v24_eligibility_code', 'sensor.air_conditioning_power',
-    'sensor.attic_thermometer', 'sensor.attic_thermometer_2')
-# Relays, the relay mode, the Arbiter phase and the eligibility code are states, not quantities: kept as
-# exact change edges, never averaged (a mean of two codes is not a code).
-EDGE_ENTITIES = frozenset(e for e in ENTITIES if e.startswith(('switch.', 'input_select.'))) | {
-    'sensor.evap_actual_relay_mode', 'sensor.evap_v24_eligibility_code'}
+    'sensor.attic_thermometer', 'sensor.attic_thermometer_2',
+    # 0.1.1 (owner pop-up 2026-10-25 "Yes, 0.1.1 now"): the Arbiter's decision labels and the A/C's real
+    # call, which Cooling AI learns against (archive proposal "core": decision and reason). Plant data only.
+    'sensor.cooling_arbiter_v2_decision', 'input_text.cooling_arbiter_v2_last_reason',
+    'input_select.cooling_arbiter_v2_owner', 'input_select.cooling_arbiter_v2_kind',
+    'sensor.cooling_arbiter_v2_shadow_selection', 'binary_sensor.ac_compressor_cooling',
+    'binary_sensor.cooling_arbiter_v2_wet_evap_eligible', 'binary_sensor.cooling_arbiter_v2_vent_start_ok',
+    'binary_sensor.cooling_arbiter_v2_vent_comfort_stop', 'binary_sensor.cooling_arbiter_v2_evap_permitted',
+    'sensor.evap_local_estimated_supply_temperature', 'sensor.cooling_arbiter_v2_vent_floor',
+    'sensor.aps_energy_price_now')
+# Relays, the relay mode, the Arbiter phase, owner, kind, decision, reason, shadow selection, the eligibility
+# code and every on/off flag are states, not quantities: kept as exact change edges, never averaged (a mean of
+# two codes is not a code).
+EDGE_ENTITIES = frozenset(e for e in ENTITIES if e.startswith(('switch.', 'input_select.', 'input_text.',
+                                                               'binary_sensor.'))) | {
+    'sensor.evap_actual_relay_mode', 'sensor.evap_v24_eligibility_code', 'sensor.cooling_arbiter_v2_decision',
+    'sensor.cooling_arbiter_v2_shadow_selection'}
 # Restricted domains of contracts/house_brain_privacy_data_classes.v1.json: never read, whatever the list says.
 REFUSED_DOMAINS = ('person', 'device_tracker', 'zone', 'geo_location', 'camera', 'image', 'lock',
                    'alarm_control_panel')
-RE_ENTITY = re.compile(r'(sensor|switch|input_select)\.[a-z0-9_]{1,80}')
-# A state word: letters, digits, spaces and . _ : + - only (no comma, quote or newline: the CSV stays plain).
-RE_TEXT = re.compile(r'[A-Za-z0-9_.:+ -]{1,64}')
+RE_ENTITY = re.compile(r'(sensor|switch|input_select|input_text|binary_sensor)\.[a-z0-9_]{1,80}')
+# A state word: letters, digits, spaces and . _ : + - | only (no comma, quote or newline: the CSV stays plain).
+# 0.1.1: `|` and up to 128 characters, for the Arbiter decision `ACTION|PHASE|OWNER|KIND|REASON|FLAG`.
+RE_TEXT = re.compile(r'[A-Za-z0-9_.:+| -]{1,128}')
 PURGE_DAYS = 40
 BUCKET_S = 300
 LOOKBACK_S = 3600  # read from an hour before midnight, so the day opens with the state then held

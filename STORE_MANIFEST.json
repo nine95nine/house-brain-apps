@@ -37,11 +37,11 @@
     },
     "house_brain_systems_ai": {
       "files": 21,
-      "source_manifest_sha256": "0262d6a5ba9fd7ca441bc59b41141eedb01d2de90f0c7f2af2d7312dd22025ba",
-      "version": "0.1.0"
+      "source_manifest_sha256": "7cfab57d2274c87a91ed0dcb329b8e8902f023d8fcb9c804354f82c59d8e61a9",
+      "version": "0.1.1"
     }
   },
   "schema_version": "house_brain_apps_store_manifest.v1",
-  "source_commit": "769da5a10b5d32b69d06a67e41ae0832db2cda4b",
+  "source_commit": "46a88985fd7f529a74ef6adcedacd0428117fd92",
   "source_repository": "private engineering repository"
 }

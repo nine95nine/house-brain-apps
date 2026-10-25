@@ -1,7 +1,9 @@
 # House Brain Systems AI
 
-Unreleased source candidate (0.1.0, shadow). Store publication, installation and every action stay
-separate owner gates. Boot is manual. Only `SHADOW` mode exists.
+Version 0.1.1 (shadow). Boot is manual. Only `SHADOW` mode exists. 0.1.1 adds the Arbiter's decision,
+reason, owner, kind and shadow selection, the A/C's real call (`binary_sensor.ac_compressor_cooling`), four
+eligibility flags, the modelled evap supply temperature, the vent floor and the APS price to the cooling
+archive (31 entities). The new entities' 40 days are copied first after the update (about 9 hours).
 
 ## What it does
 
