@@ -19,7 +19,7 @@ MAX_FUTURE_SKEW_SECONDS: Final = 60
 MAX_TRANSPORT_AGE_SECONDS: Final = 300
 # Broker allows 300 seconds at ingestion and retains a fresh read for 300 more.
 MAX_SOURCE_AGE_SECONDS: Final = 600
-QUALIFIED_BROKER_VERSIONS: Final = frozenset({"0.3.0", "0.4.0", "0.5.0", "0.5.1", "0.5.2", "0.6.0"})
+QUALIFIED_BROKER_VERSIONS: Final = frozenset({"0.3.0", "0.4.0", "0.5.0", "0.5.1", "0.5.2", "0.6.0", "0.6.1"})
 # Observer wire identity (source.observer_version): exactly the Broker's ACCEPTED_OBSERVER_VERSIONS.
 # Observer 0.2.3 and 0.2.4 still publish "0.2.2" (their CHANGELOG), so they need no entry here.
 QUALIFIED_OBSERVER_VERSIONS: Final = frozenset({"0.1.0", "0.2.0", "0.2.1", "0.2.2"})
@@ -107,10 +107,10 @@ def validate_envelope(envelope: Any, *, now: datetime | None = None) -> tuple[di
     if set(snapshot) != {"schema_version", "source", "generated_at", "sequence",
                          "data_quality", "platform", "maintenance", "targets", "authority"}:
         _fail("SNAPSHOT_KEYS_INVALID")
-    # Exact Broker allowlist. From 0.3.0 to 0.6.0 (live since 2026-10-11) the Broker's
+    # Exact Broker allowlist. From 0.3.0 to 0.6.1 (0.6.0 live since 2026-10-11) the Broker's
     # core.mjs changed only BROKER_VERSION, so the GET /v1/snapshot envelope differs only
-    # in this string (0.6.0 changed the route's sign-in, not its body). Each release in
-    # between (0.4.0, 0.5.0, 0.5.1, 0.5.2) was checked the same way; see
+    # in this string (0.6.0 changed the route's sign-in, 0.6.1 added the keyMatches RPC; neither
+    # touched the body). Each release in between (0.4.0, 0.5.0, 0.5.1, 0.5.2) was checked the same way; see
     # docs/validation/AI_ACCESS_VERSION_ALLOWLIST_FIX_2026-10-11.md. Any other version,
     # including a future one, stays unqualified until its envelope is checked again.
     if type(relay["version"]) is not str or relay["version"] not in QUALIFIED_BROKER_VERSIONS:

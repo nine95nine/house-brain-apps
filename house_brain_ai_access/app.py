@@ -87,7 +87,7 @@ HA_REQUEST_STATES = ('FULL_STOP', 'READ_ONLY', 'ARMED_NORMAL')
 S6_CONTAINER_ENV = Path('/run/s6/container_environment')
 SUPERVISOR_TOKEN_PATTERN = re.compile(r'[\x21-\x7e]{16,4096}', re.ASCII)
 UID = GID = 10001
-MANIFEST_SHA = '27e262fbeea6f4043e8c656c90bf2f71dfaa601d4b0fdc4061f8e170127e9d91'
+MANIFEST_SHA = '67eb7e063f422e45272ea7b3133cbf2b36dfe7832753873f2de03aac8b792644'
 LOCK_SHA = 'bd5359643ba4e382fe84f72728eb8c1954496fad201eb687babf861c8b2932b5'
 SCOPES = 'engineering.read.status,engineering.read.platform,engineering.read.backup'
 KEY_PATTERN = re.compile(r'[A-Za-z0-9._~+/-]{20,4096}={0,2}', re.ASCII)
@@ -343,7 +343,7 @@ class _NoHeartbeatRedirect(urlrequest.HTTPRedirectHandler):
         return None
 
 
-HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.8-dev'
+HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.9-dev'
 
 # 0.1.5-dev connector heads-up. Perimeter 0.4.4 answers an accepted heartbeat with `X-HB-Connectors`
 # (house_brain_ai_connectors.v1): per provider the last good sign-in/refresh, its expiry (90 days idle) and the

@@ -26,6 +26,7 @@ from .inspectormove import JOB as INSMOVE_JOB, TXN as INSMOVE_TXN, InspectorMove
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
+from . import systemsai as SA
 from .manifest import (ASK_UPDATE_NOW, ENERGY_AI_SETTINGS, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE,
                        RE_REQUEST_ID, ROTATE_KEYS_NOW, STAGE_LOCAL_APP_SOURCE, Manifest, ManifestError, parse)
 from .energyai import PENDING_DOC as ENERGY_PENDING_DOC, EnergyDelivery
@@ -371,6 +372,7 @@ class Service:
         self.scout_run_timeout = scout_run_timeout
         self.poll = poll
         self.engine: Engine | None = None
+        self.family_last: tuple | None = None           # 0.9.30: (state, when) of the last family sensor publish
         self.updater: Updater | None = None
         self.system: SystemUpdater | None = None
         self.entities: EntityUpdater | None = None         # 0.7.0: HACS and device firmware
@@ -550,6 +552,7 @@ class Service:
                     self.watcher.free_lane = self.free_lane
             self.watcher.credentials = self.gh.auth.summary if hasattr(self.gh, "auth") else None
             self.watcher.relay_url = self.o.relay_credential_url
+            self.watcher.systems_ai = self.ha.systems_ai_read                # 0.9.30: Systems AI relay
             # 0.7.3: hold list (all update paths) and the after-update check (Core, OS and App updates).
             self.holds = Holds(self.j, dot_zero=self.o.hold_core_dot_zero)
             self.after = AfterUpdate(self.ha, self.j, settings, AfterPolicy(
@@ -1015,6 +1018,7 @@ class Service:
             except Exception as err:  # noqa: BLE001 - the last reviews read stand
                 LOG.warning("AI problem review read waits: %s", net.redact(str(err))[:200])
         summary = self.watcher.check()
+        self._publish_family()
         if self.free_lane is not None:                         # 0.9.29: drafts, comparisons, lockout posts
             try:
                 self.free_lane.cycle(self.watcher._state()["open"], VERSION, self.o.dry_run)
@@ -1025,6 +1029,17 @@ class Service:
                                  **self._waiting_attrs(), **self._keys_attrs(),
                                  "needs_review": self.needs_review(),           # 0.9.26
                                  **({"free_reviewer": self.free_lane.status()} if self.free_lane is not None else {})})
+
+    def _publish_family(self) -> None:
+        """0.9.30: relay Systems AI's digest into the one family sensor (owner pop-up "Maintenance relays it")."""
+        fam = getattr(self.watcher, "family_now", None)
+        if fam is None:
+            return                                      # Systems AI not installed: no family sensor
+        state, attrs = SA.family_state(fam[0])
+        now = time.time()
+        if SA.due(self.family_last, state, now):
+            self.ha.publish_family(state, attrs)
+            self.family_last = (state, now)
 
     def _skipped_attrs(self) -> dict:
         """0.9.15: installed-App rows the last list read skipped, by reason ({} when none)."""

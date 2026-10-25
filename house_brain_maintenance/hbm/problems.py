@@ -184,11 +184,14 @@ class ProblemReviews(A.AiReviews):
         return None if r is None or r.get("free") else r
 
     def cloud_at(self) -> float | None:
-        """0.9.29: when the cloud reviewer last posted any counting problem review (None: never seen / not read)."""
+        """0.9.29: when the cloud reviewer last posted any counting problem review (None: never seen / not read).
+        0.9.31: a clock not yet written (the first reads after the update see no new comment) is seeded from the
+        newest stored cloud review, so a reviewer already silent at update time still counts as silent."""
         doc = self._doc()
         if not float(doc.get("read_at") or 0):
             return None
-        return float(doc.get("cloud_at") or 0) or None
+        stored = [float(r.get("at") or 0) for r in doc.get("reviews", {}).values() if isinstance(r, dict) and not r.get("free")]
+        return max([float(doc.get("cloud_at") or 0), *stored]) or None
 
     def detail(self, key: str) -> dict | None:
         """0.9.23: what the Messages page shows for a problem: the verdict in words, the summary, the AI's steps and

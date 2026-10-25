@@ -233,6 +233,14 @@ KEY_NO_RESTART = frozenset({"scout_inventory"})
 INSPECTOR_SLUG = "local_house_brain_engineering_inspector"
 RE_AI_ACCESS_SLUG = re.compile(r"^(?:local|[0-9a-f]{8})_house_brain_ai_access$")
 RE_ENERGY_AI_SLUG = re.compile(r"^[0-9a-f]{8}_house_brain_energy_ai$")   # 0.9.24: the store Energy AI App only
+# 0.9.30 (AI family plan step 4; owner pop-ups 2026-10-20 "Maintenance relays it", "Maintenance pulls /proposals"):
+# the store Systems AI App's two read-only routes on the internal Supervisor network, and the one family sensor.
+RE_SYSTEMS_AI_SLUG = re.compile(r"^[0-9a-f]{8}_house_brain_systems_ai$")
+RE_SIBLING_HOST = re.compile(r"^[0-9a-f]{8}-house-brain-systems-ai$")
+SYSTEMS_AI_PATHS = ("/digest", "/proposals")
+SYSTEMS_AI_MAX_BYTES = 16384
+FAMILY_ENTITY = "sensor.house_brain_family_status"
+SIBLING_URL = "http://{host}:{port}{path}"     # the internal Supervisor network (tests point it at the mimic)
 RE_SECRET_OPTION = re.compile(r"(?:key|token|password|secret|pass)$", re.I)
 
 
@@ -375,6 +383,7 @@ _STATIC_ALLOW: tuple[tuple[str, str], ...] = (
     ("GET", r"/core/api/"),
     ("POST", r"/core/api/services/notify/mobile_app_[a-z0-9_]{1,80}"),
     ("POST", r"/core/api/states/" + re.escape(STATUS_ENTITY)),
+    ("POST", r"/core/api/states/" + re.escape(FAMILY_ENTITY)),        # 0.9.30: Systems AI digest, relayed
     # Recovery Report (0.3.0), read-only except its own persistent notification:
     ("GET", r"/core/logs"),
     ("GET", r"/core/logs/boots/-1"),
@@ -1077,6 +1086,46 @@ class HomeAssistant:
         prefix = self.self_slug().split("_", 1)[0]
         slug = f"{prefix}_house_brain_energy_ai"
         return slug if RE_ENERGY_AI_SLUG.fullmatch(slug) else None
+
+    def systems_ai_slug(self) -> str | None:
+        """0.9.30: the Systems AI App of this App's own store (None: not resolvable here)."""
+        prefix = self.self_slug().split("_", 1)[0]
+        slug = f"{prefix}_house_brain_systems_ai"
+        return slug if RE_SYSTEMS_AI_SLUG.fullmatch(slug) else None
+
+    def systems_ai_read(self, path: str) -> dict:
+        """0.9.30: GET Systems AI's /digest or /proposals over the internal network.
+
+        The host and port come from Systems AI's own info, projected at once to a hostname that must be
+        exactly its store hostname and an integer port; options and the raw reply are never kept. The
+        request carries no Authorization header (the Supervisor token never leaves for a sibling), no
+        query, no redirect, and at most 16 KiB comes back."""
+        if path not in SYSTEMS_AI_PATHS:
+            raise ForbiddenCall(f"systems ai path {path}")
+        slug = self.systems_ai_slug()
+        if slug is None:
+            raise ForbiddenCall("systems ai slug")
+        data = self._supervisor("GET", f"/addons/{slug}/info")
+        host, port, state = data.get("hostname"), data.get("ingress_port"), data.get("state")
+        if state != "started":
+            raise HAError("SYSTEMS_AI_NOT_STARTED", str(state if state in SAFE_STATES else "unknown"))
+        expected = slug.replace("_", "-")
+        if not isinstance(host, str) or host != expected or not RE_SIBLING_HOST.fullmatch(host) \
+                or type(port) is not int or not 1 <= port <= 65535:
+            raise ForbiddenCall("systems ai endpoint")
+        _, body = net.request("GET", SIBLING_URL.format(host=host, port=port, path=path), {}, timeout=10,
+                              max_bytes=SYSTEMS_AI_MAX_BYTES)
+        if not isinstance(body, dict):
+            raise HAError("SYSTEMS_AI_SHAPE", path)
+        return body
+
+    def publish_family(self, state: str, attributes: dict) -> None:
+        """0.9.30: the one family status sensor for Companion (Systems AI's digest, relayed)."""
+        try:
+            self._call("POST", f"/core/api/states/{FAMILY_ENTITY}",
+                       body={"state": state[:255], "attributes": attributes}, timeout=15)
+        except (net.NetError, HAError, ForbiddenCall):
+            pass  # visibility only
 
     @contextmanager
     def energy_target(self, slug: str):

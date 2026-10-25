@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.9-dev
+
+Broker version allowlist (2026-10-25; owner pop-up "Ship AI Access 0.1.9-dev"; Work Board #942 claim 6391607736). Broker
+0.6.1 went live on 2026-10-24 22:15Z (free reviewer lane R1: the `keyMatches` RPC; `core.mjs` changed only
+`BROKER_VERSION`). The 0.1.8-dev runtime accepted `relay.version` up to `0.6.0`, so every live snapshot read through this
+App was refused `BROKER_VERSION_UNQUALIFIED` until this update, the same failure as 2026-10-11
+(`docs/validation/AI_ACCESS_VERSION_ALLOWLIST_FIX_2026-10-11.md`).
+- `runtime/tools/house_brain_ai_snapshot_handlers.py` is again byte-identical to the canonical file (product commit
+  `5efe7d2b63dc`): `QUALIFIED_BROKER_VERSIONS` gains `0.6.1`. Nothing else in the runtime changed.
+- `runtime/RUNTIME_SOURCE_MANIFEST.json` regenerated; `app.py` `MANIFEST_SHA` follows; the User-Agent is
+  `house-brain-ai-access/0.1.9-dev`.
+- **Unchanged:** every sensor, the bridge allowlist, the heartbeat, the kill switch and the vendor lock.
+
 ## 0.1.8-dev
 
 Which refusals (owner pop-up 2026-10-18 "Show the reasons (Recommended)", Work Board #942 row 74). After AI perimeter

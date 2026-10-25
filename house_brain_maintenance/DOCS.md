@@ -5,7 +5,7 @@ suggested fix. It never changes anything without a rule you chose: every update 
 waits for your approval on your iPhone, unless you switch on automatic installs of low-risk
 bug-fix updates at night.
 
-## What it does (0.9.27)
+## What it does (0.9.30)
 
 **App updates.** About once an hour it looks for Apps with an update waiting, one at a time:
 
@@ -343,6 +343,24 @@ once I click them on my pop-up ... with the solution that the AI took, or with t
 - Send anything to an App's input (stdin). The one exception (0.9.24, owner pop-up 2026-10-20 "I approve the
   exception"): after your Approve of an Energy AI settings request, one message with the exact bytes it pinned,
   to the store Energy AI App only. See "Energy AI settings" below.
+
+## Systems AI relay — from 0.9.30
+
+Owner pop-ups 2026-10-20 "Maintenance relays it" and "Maintenance pulls /proposals" (AI family plan step 4).
+Only when the store House Brain Systems AI App is installed; nothing to set up.
+
+- **Family status sensor.** On every problem check this App reads Systems AI's `/digest` on the internal
+  Supervisor network (its own store hostname and port only, no token sent, at most 16 KiB) and writes the one
+  sensor `sensor.house_brain_family_status` for Companion: the family word (`OK`, `WATCH`, `PROBLEMS`, `HELD`,
+  `DEGRADED`, `FAILED` or `UNKNOWN`) as its state, the line and one short line per App as attributes. It writes when
+  the word changes, otherwise at most every 30 minutes (about 50 recorder rows a day). Systems AI stopped or not
+  answering: `UNKNOWN`, never `OK`.
+- **Suggestions in "Needs your decision".** It reads `/proposals` the same way. Each suggestion (only *restart* or
+  *start* of a House Brain App) becomes a normal problem with the Fix button, so nothing runs until you tap and
+  approve. Never offered: an App this App already reports (one problem, one owner), a manual-start App, this App,
+  the Scout and Systems AI itself; the fix checks the target again when you approve. Expired or malformed
+  suggestions, and every suggestion while Systems AI reports itself `FAILED`, are dropped. If `/proposals` cannot be
+  read, the suggestions already shown stay (never a false clear).
 
 ## Energy AI settings — from 0.9.24
 

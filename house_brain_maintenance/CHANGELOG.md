@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.31
+
+Lockout clock fix (owner pop-up 2026-10-25 "Build 0.9.31 now"; Work Board #942 claim 6391607736; 0.9.30 is the AI
+family's). Contains 0.9.30 unchanged otherwise.
+
+- `problems.py` `cloud_at()`: when the clock field was never written (the first reads after an update see no new
+  comment), it is seeded from the newest stored cloud review, so a cloud reviewer already silent at update time still
+  counts as silent and lockout posting can begin. Mutant `fr-clock-not-seeded`.
+## 0.9.30
+
+Systems AI relay (AI family plan step 4; owner pop-ups 2026-10-20 "Maintenance relays it" and "Maintenance pulls
+/proposals"; Work Board #942). Contains 0.9.27 unchanged otherwise. Built as 0.9.25, renumbered by owner pop-up
+2026-10-24 "Mine becomes 0.9.30" after 0.9.26 merged first; 0.9.27 is the Maintenance chat's history measurement.
+
+- **Family status sensor** `sensor.house_brain_family_status`: Systems AI's `/digest`, read on the internal
+  network (its own store hostname only, no token, 16 KiB at most), written when the word changes or every 30
+  minutes at most. Not reachable: `UNKNOWN`.
+- **Systems AI's suggestions** (`/proposals`: restart or start a House Brain App) appear as normal problems with the
+  Fix button; your tap approves, as before. One owner per problem; never a manual-start App, this App, the Scout
+  or Systems AI itself. Unreadable suggestions stay as they were (never a false clear).
+- Nothing happens when Systems AI is not installed.
+
 ## 0.9.29
 
 Free reviewer lane (reviewer session message 2026-10-24 14:30Z; owner pop-ups 2026-10-24 "Go straight to lockout mode",

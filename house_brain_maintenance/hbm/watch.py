@@ -28,6 +28,7 @@ from typing import Callable
 
 from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issues as I, net
 from . import problems as PR
+from . import systemsai as SA
 from .ha import AI_ACTIVITY_ENTITY, AI_CONNECTORS_ENTITY, DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
 
@@ -135,6 +136,9 @@ class Watcher:
         self.queue_posts = True                               # 0.9.19: "problems waiting for AI review" posts
         self.issue_url = ""                                   # 0.9.23: the tracking issue (set by the Service)
         self.last_post_url = ""                               # 0.9.23: the newest report this App posted there
+        # 0.9.30: Systems AI's internal /digest and /proposals reads (set by the Service; None = off)
+        self.systems_ai: Callable[[str], dict] | None = None
+        self.family_now: tuple | None = None                  # 0.9.30: (projected digest or None,); None = not installed
 
     # -- state -------------------------------------------------------------------------
     def _state(self) -> dict:
@@ -309,6 +313,7 @@ class Watcher:
             findings += I.from_stopped_apps(stopped, getattr(self, "app_names", {}), now)
         if "disk" not in failed:
             findings += self._disk_findings(st, now)
+        findings += self._systems_ai_findings(findings, now, failed)      # 0.9.30: after every other source
         current = {f.key: f for f in findings}
         skipped_sources = {src for src in failed}
         push_now: list[I.Finding] = []
@@ -453,6 +458,48 @@ class Watcher:
             failed.append(PR.STALL_SOURCE)
             return []
         return PR.stalled(waits, now)
+
+    def _systems_ai_findings(self, findings: list[I.Finding], now: float, failed: list[str]) -> list[I.Finding]:
+        """0.9.30: Systems AI's proposals as problems with the normal Fix button, and its digest for the family
+        sensor. Not installed: nothing. Installed but not running: the family sensor says UNKNOWN and no proposal
+        is shown. Unreadable proposals: keep what is open (never a false clear)."""
+        self.family_now = None
+        if self.systems_ai is None:
+            return []
+        if getattr(self, "apps_now", None) is None:
+            failed.append(SA.SOURCE)                    # the App list was not read: nothing known
+            return []
+        slug = self.ha.systems_ai_slug()
+        states = dict(self.apps_now)
+        if slug is None or slug not in states:
+            return []
+        self.family_now = (None,)
+        if states[slug] != "started":
+            return []
+        try:
+            self.family_now = (SA.project_digest(self.systems_ai("/digest")),)
+        except (HAError, net.NetError, ForbiddenCall, ValueError, TypeError):
+            pass
+        try:
+            rows = SA.project_proposals(self.systems_ai("/proposals"), now)
+        except (HAError, net.NetError, ForbiddenCall, ValueError, TypeError):
+            rows = None
+        if rows is None:
+            failed.append(SA.SOURCE)
+            return []
+        names = {s: n for s, n in (getattr(self, "app_names", {}) or {}).items() if SA.RE_TARGET.fullmatch(s)}
+        taken = {f.action.ref for f in findings if f.action} | {str(f.facts.get("slug")) for f in findings
+                                                                 if f.source == "app" and f.facts.get("slug")}
+        blocked = {self.ha.self_slug(), self.ha.scout, slug} | self.kept_rollbacks()
+        offered = []
+        for r in rows:                                  # never offered for a manual-start App (fix_target checks again)
+            if r["target"] in names and r["target"] not in taken and r["target"] not in blocked:
+                try:
+                    if self.ha.app_boot(r["target"]) == "auto":
+                        offered.append(r)
+                except (HAError, net.NetError, ForbiddenCall):
+                    pass
+        return SA.from_proposals(offered, names, taken, blocked)
 
     def _relay_findings(self, failed: list[str]) -> list[I.Finding]:
         if not self.relay_url:
