@@ -1,0 +1,40 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>House Brain Systems AI</title><style>
+body{font:16px system-ui;background:#101b26;color:#e9f0f5;margin:0;padding:24px;max-width:1100px}h1{font-size:28px}h2{font-size:19px;color:#7bddd2}section{background:#1a2b3b;border-radius:12px;padding:18px;margin:15px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}.muted{color:#aabfce}#state{font-weight:bold}.line{white-space:pre-wrap;overflow-wrap:anywhere}
+</style><h1>House Brain Systems AI</h1><p class="muted">Watches the House Brain Apps and Home Assistant's health · read-only · fixes go through Maintenance after your Approve</p>
+<section><span id="state">Connecting…</span><p id="why" class="muted"></p></section>
+<section><h2>In plain words</h2><p class="line" id="plain"></p></section>
+<section><h2>Open problems</h2><p class="line" id="problems"></p><p class="muted">Problems Maintenance already reports are counted here, never raised twice.</p></section>
+<section><h2>Forecasts</h2><p class="line" id="forecasts"></p><p class="muted">A trend is called a forecast only after it beat "no change" on at least 5 scored days; until then it is an early estimate.</p></section>
+<section><h2>House Brain Apps</h2><p class="line" id="apps"></p></section>
+<section><h2>Error budgets</h2><p class="line" id="slo"></p></section>
+<section><h2>System log</h2><p class="line" id="logs"></p></section>
+<section><h2>What changed recently</h2><p class="line" id="changes"></p></section>
+<section><h2>Suggestions for Maintenance</h2><p class="line" id="proposals"></p><p class="muted">Shadow only: counted, never carried out by this App.</p></section>
+<section><h2>Cooling archive</h2><p class="line" id="archive"></p><p class="muted">Home Assistant forgets full detail after 40 days; this App keeps 5-minute values of the cooling plant (no presence or location) for 120 days. Download a day: <input id="day" type="date"> <a id="dl" href="#">CSV</a></p></section>
+<section><h2>Readings no AI should trust</h2><p class="line" id="untrusted"></p></section>
+<section><h2>Full evidence</h2><details><summary>Tap to open</summary><pre id="raw"></pre></details></section>
+<script>
+const $=x=>document.getElementById(x);let s={};
+const t=x=>x==null?'not available yet':x;
+const when=x=>x?new Date(x*1000).toLocaleString():'';
+function fc(name,label,unit,scale){let f=(s.forecasts||{})[name]||{};let v=f.in_30_days;let card=(f.scorecard||{})['30']||{};let word=card.proven?'Forecast':'Early estimate';let out=label+': ';if(!v)return out+'learning (needs about 2 days of readings)';out+=word+' in 30 days '+(v.value*scale).toFixed(1)+' '+unit+' (range '+(v.low*scale).toFixed(1)+'–'+(v.high*scale).toFixed(1)+'), trend '+(v.slope_per_day*scale>=0?'+':'')+(v.slope_per_day*scale).toFixed(2)+' '+unit+'/day';let c=f.crossing;if(c&&c.status==='ESTIMATED')out+='; limit reached in about '+c.days.toFixed(0)+' days ('+c.earliest_days.toFixed(0)+'–'+c.latest_days.toFixed(0)+')';return out;}
+function render(){$('state').textContent=s.state+' · '+(s.version||'')+(s.hold_reason?' · held: '+s.hold_reason:'');$('why').textContent='Physical actions: none. Control authority: none.';
+let v=s.view||{};let p=s.open_problems||[];let mine=p.filter(x=>x.owner!=='maintenance');
+$('plain').textContent=[mine.length?mine.length+' problem(s) open; the most serious: '+mine[0].reason.toLowerCase().replaceAll('_',' ')+' ('+mine[0].subject+').':'No open problems of its own.',
+'Database: '+(v.db_mib!=null?(v.db_mib/1024).toFixed(2)+' GB':'not read yet')+'. Disk free: '+t((v.disk||{}).free_gb)+' GB. Memory free: '+t((v.memory||{}).free)+' MB, swap '+t((v.memory||{}).swap_pct)+' %.',
+'Maintenance open problems: '+t(v.maintenance_open_problems)+'.','Good time to ask you on the phone: '+((v.good_time_to_ask||{}).status||'unknown')+' ('+((v.good_time_to_ask||{}).why||'')+').'].join('\n');
+$('problems').textContent=p.length?p.map(x=>x.severity+' · '+x.reason.toLowerCase().replaceAll('_',' ')+' · '+x.subject+' · owner '+x.owner+(x.flapping?' · flapping':'')+' · since '+when(x.since)).join('\n'):'None.';
+$('forecasts').textContent=[fc('db_mib','Database','GB',1/1024),fc('disk_free_gb','Disk free','GB',1),fc('mem_free','Memory free','MB',1),fc('mem_swap_pct','Swap','%',1)].join('\n');
+let a=v.apps||{};$('apps').textContent=Object.keys(a).length?Object.entries(a).map(([k,x])=>x.name+': '+x.state+(x.health?' · health '+x.health+(x.health_reasons.length?' ('+x.health_reasons.join(', ')+')':''):' · no self-health yet')+(x.update_available?' · update waiting':'')).join('\n'):'Not read yet.';
+$('slo').textContent=Object.entries(s.error_budgets||{}).map(([k,x])=>k+': '+(x.availability==null?'learning':(x.availability*100).toFixed(2)+' % (target 99.5 %), budget used '+(x.budget_used*100).toFixed(0)+' %')+(x.alert?' · burning fast':'')).join('\n')||'Learning.';
+let l=v.logs||{};$('logs').textContent=l.status?('Watching '+l.templates+' message kinds. Today most: '+(l.today_top||[]).slice(0,5).map(x=>x.integration+' '+x.count).join(', ')+'.\nNew kinds in the last day: '+((l.new_templates_24h||[]).length)+'.\nUnusual error rates: '+((l.unusual_integrations||[]).map(x=>x.integration+' '+x.count).join(', ')||'none')+'.'):'Learning.';
+$('changes').textContent=(s.changes||[]).slice(-12).reverse().map(c=>when(c.at)+' · '+c.kind+' · '+c.subject+': '+c.before+' → '+c.after).join('\n')||'None seen yet.';
+$('proposals').textContent=(s.proposals||[]).map(x=>x.kind+' '+x.target+' ('+x.reason.toLowerCase().replaceAll('_',' ')+')').join('\n')||'None.';
+let ar=s.archive||{};$('archive').textContent=ar.status?(ar.status==='BACKFILLING'?'Copying history: '+ar.entity_days_waiting+' entity-days still to read (one a minute).':'Up to date; one new day is copied each night.')+' Kept from '+t(ar.earliest_day)+' · '+ar.rows+' values.':'Starting.';
+$('untrusted').textContent=(s.untrusted_readings||[]).map(x=>x.what+': '+x.why).join('\n');
+$('raw').textContent=JSON.stringify(s,null,2);}
+async function refresh(){try{let r=await fetch('./status',{cache:'no-store'});if(!r.ok)throw Error();s=await r.json();render();}catch(e){$('state').textContent='Not reachable; retrying.';}}
+$('day').onchange=()=>{$('dl').href='./archive/'+$('day').value+'.csv';};
+refresh();setInterval(refresh,30000);
+</script></html>
