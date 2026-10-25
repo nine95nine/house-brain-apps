@@ -48,6 +48,11 @@ From 0.3.35:
   Assistant does at every start, and reads again. It never uses a password and never logs out. The output says
   whether Sense kept the refresh token unchanged.
 
+From 0.3.38 a lookup can also read Home Assistant's **long-term statistics** (`statistics_entities`, up to 16;
+hourly up to 31 days, daily up to a year, monthly up to 3 years): the mean, min, max or change per period, posted
+as compact rows (code `STS1`). It is read-only and named in the approval message. Use it for power and energy
+sensors, whose values are too varied for the on/off history.
+
 From 0.3.36 each Sense device is one short line: its type, any flag that is not the default (`hidden`,
 `always-on`, …), Sense's expected always-on watts (`AO=…W`), its first name guess, the created and first-used
 dates (`c=`, `f=`), merges, combined devices by name, and Sense's top 3 name hints. All 70-odd devices fit in

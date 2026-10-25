@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.38 — 2026-10-25 (read-only Recorder statistics lookup; owner "All of the above and any other method")
+
+- Built as 0.3.37 and renumbered by owner pop-up "Mine becomes 0.3.38": the Deployer lane released 0.3.37 first (#1301).
+
+- New optional lookup part, named in the approval message and read only after Approve:
+  - `statistics_entities` (≤ 16), with `statistics_period` (hour/day/month, default hour), `statistics_days` (hour
+    ≤ 31, day ≤ 366, month ≤ 1,096) and `statistics_types` (mean/min/max/change; default mean/min/max).
+  - It makes one WebSocket `recorder/statistics_during_period` read of the long-term statistics already recorded and
+    posts it as `STS1` rows, with the same budget rules as `HST1` (SKIPPED whole, `END` always kept).
+  - The guard admits only the message the lookup builds: exactly six fields, ids, period, types and a bounded window.
+- Sense `NameUserGuess` is a true/false flag and is now shown as `name-guessed` (0.3.36 printed "guess true").
+- No new outcome. AppArmor, the Sense renew and every other part are unchanged.
+
 ## 0.3.37 — 2026-10-25 (Go back retired on the moved history; owner pop-up "Retire it", after #985 M9 passed)
 
 - #985 M9 passed: one clean week on the moved history (2026-10-18 → 2026-10-25), and the old local Deployer is being

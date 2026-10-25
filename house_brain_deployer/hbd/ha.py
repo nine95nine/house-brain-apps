@@ -8,6 +8,7 @@ the ``ha`` CLI is never invoked (see the #223 R4 ``apps``/``addons`` escape).
 """
 from __future__ import annotations
 
+import calendar
 import hashlib
 import hmac
 import json
@@ -55,9 +56,15 @@ _HTTP_ALLOW: tuple[tuple[str, re.Pattern], ...] = (
 RE_HISTORY_ENTITY = re.compile(r"^[a-z_]{2,32}\.[a-z0-9_]{1,96}$")
 MAX_HISTORY_IDS = 16
 MAX_HISTORY_WINDOW_S = 7 * 86400
+# 0.3.38: Recorder long-term statistics (read-only). One window per owner-approved lookup; the window is bounded per
+# period so a reply stays small (hour: 31 days, day: 366 days, month: 3 years).
+STATISTICS_PERIODS = {"hour": 31 * 86400, "day": 366 * 86400, "month": 1096 * 86400}
+STATISTICS_TYPES = frozenset({"mean", "min", "max", "change"})
+RE_WS_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "system_log/list", "config/auth/list",
                        "http/config", "repairs/list_issues",
                        "zwave_js/get_config_parameters",  # 0.3.29: read-only, one device per owner-approved lookup
+                       "recorder/statistics_during_period",  # 0.3.38: read-only, one window per owner-approved lookup
                        # 0.3.30: Companion setup (reads, plus one pinned pipeline create)
                        "config_entries/subentries/list", "config/entity_registry/list",
                        "assist_pipeline/pipeline/list", "assist_pipeline/pipeline/create"})
@@ -148,6 +155,8 @@ def _ws_guard(msg: dict) -> None:
             set(msg) != {"type", "device_id"} or not isinstance(msg.get("device_id"), str)
             or not RE_DEVICE_ID.fullmatch(msg["device_id"])):
         raise ForbiddenCall("ws zwave config read takes exactly one device id")
+    if kind == "recorder/statistics_during_period":
+        _statistics_guard(msg)
     if kind in ("config/entity_registry/list", "assist_pipeline/pipeline/list") and set(msg) != {"type"}:
         raise ForbiddenCall("ws read takes no parameters")
     if kind == "config_entries/subentries/list" and (
@@ -160,6 +169,29 @@ def _ws_guard(msg: dict) -> None:
                 or fields["prefer_local_intents"] is not False
                 or fields["wake_word_entity"] is not None or fields["wake_word_id"] is not None):
             raise ForbiddenCall("ws pipeline create must be the Companion pipeline")
+
+
+def _statistics_guard(msg: dict) -> None:
+    """0.3.38: exactly the read the statistics lookup builds: ≤ 16 entity-shaped ids, a known period, known types,
+    a UTC window within the period's bound. No units conversion, no other field."""
+    if set(msg) != {"type", "start_time", "end_time", "statistic_ids", "period", "types"}:
+        raise ForbiddenCall("ws statistics fields")
+    ids, types, period = msg.get("statistic_ids"), msg.get("types"), msg.get("period")
+    if (not isinstance(ids, list) or not ids or len(ids) > MAX_HISTORY_IDS or len(set(map(str, ids))) != len(ids)
+            or not all(isinstance(i, str) and RE_HISTORY_ENTITY.fullmatch(i) for i in ids)):
+        raise ForbiddenCall("ws statistics ids")
+    if period not in STATISTICS_PERIODS:
+        raise ForbiddenCall("ws statistics period")
+    if (not isinstance(types, list) or not types or len(set(map(str, types))) != len(types)
+            or not all(isinstance(t, str) and t in STATISTICS_TYPES for t in types)):
+        raise ForbiddenCall("ws statistics types")
+    start, end = msg.get("start_time"), msg.get("end_time")
+    if not (isinstance(start, str) and isinstance(end, str) and RE_WS_TIME.fullmatch(start) and RE_WS_TIME.fullmatch(end)):
+        raise ForbiddenCall("ws statistics window")
+    span = calendar.timegm(time.strptime(end, "%Y-%m-%dT%H:%M:%SZ")) - calendar.timegm(
+        time.strptime(start, "%Y-%m-%dT%H:%M:%SZ"))
+    if not 0 < span <= STATISTICS_PERIODS[period]:
+        raise ForbiddenCall("ws statistics window")
 
 
 class HomeAssistant:
@@ -325,6 +357,22 @@ class HomeAssistant:
             return sock.command({"type": "http/config"})
         finally:
             sock.close()
+
+    def statistics_during_period(self, entity_ids, start_ts: int, end_ts: int, period: str, types) -> dict:
+        """0.3.38: Recorder ``recorder/statistics_during_period`` for one owner-approved lookup. Read-only (it answers
+        from the long-term statistics already recorded); the caller projects the result."""
+        stamp = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))  # noqa: E731
+        msg = {"type": "recorder/statistics_during_period", "start_time": stamp(start_ts), "end_time": stamp(end_ts),
+               "statistic_ids": list(entity_ids), "period": period, "types": list(types)}
+        _statistics_guard(msg)
+        sock = self.ws()
+        try:
+            result = sock.command(msg)
+        finally:
+            sock.close()
+        if not isinstance(result, dict):
+            raise HAError("STATISTICS_SHAPE")
+        return result
 
     def zwave_config_parameters(self, device_id: str) -> dict:
         """0.3.29: ``zwave_js/get_config_parameters`` for one device. Read-only: Z-Wave JS answers from the

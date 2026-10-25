@@ -47,6 +47,15 @@ renew-like-HA"):
 ``docs/architecture/SENSE_DEVICE_TAGS_0_3_36_PROPOSAL_R1.md``): the Sense list adds
 Sense's expected always-on watts, its always-on flag, the first user name guess and
 combined devices (by name only), and drops defaults so every device fits one lookup.
+
+0.3.38 (#215, owner pop-up 2026-10-25 "All of the above and any other method"): an
+optional ``statistics_entities`` part (up to 16 ids) with ``statistics_period``
+(hour/day/month), ``statistics_days`` and ``statistics_types`` reads one Recorder
+long-term statistics window through the read-only WebSocket command
+``recorder/statistics_during_period``, after Approve only, and posts compact rows
+(``STS1``). Numeric power sensors cannot be posted as ``HST1`` state changes; hourly
+mean/min/max can. Sense's ``NameUserGuess`` turned out to be a true/false flag and is
+shown as ``name-guessed``.
 """
 from __future__ import annotations
 
@@ -69,6 +78,10 @@ RE_DEVICE_ID = re.compile(r"^[0-9a-f]{32}$")
 MAX_HISTORY_ENTITIES = 16
 MAX_HISTORY_DAYS = 7
 MAX_HISTORY_STATES = 32          # distinct states per entity in the legend; more are reported, not guessed
+# 0.3.38: statistics part. Days per period mirror the guard in hbd/ha.py (hour 31, day 366, month 1096).
+MAX_STATISTICS_DAYS = {"hour": 31, "day": 366, "month": 1096}
+STATISTICS_TYPES = ("mean", "min", "max", "change")
+DEFAULT_STATISTICS_TYPES = ("mean", "min", "max")
 # 0.3.34: the Sense URLs the Deployer can build: the device overview and (0.3.35) the renew that Home Assistant's own
 # startup makes after a 401. Never authenticate (password) or logout.
 SENSE_API_BASE = "https://api.sense.com/apiservice/api/v1/"
@@ -118,6 +131,10 @@ class LookupRequest:
     sense_device_tags: bool = False
     history_entities: tuple[str, ...] = field(default_factory=tuple)
     history_days: int = 0
+    statistics_entities: tuple[str, ...] = field(default_factory=tuple)
+    statistics_period: str = ""
+    statistics_days: int = 0
+    statistics_types: tuple[str, ...] = field(default_factory=tuple)
 
 
 def is_lookup(raw_bytes: bytes) -> bool:
@@ -157,7 +174,8 @@ def parse_lookup(raw_bytes: bytes) -> LookupRequest:
         raise ManifestError("TYPE")
     required = {"schema", "request_id", "title", "requested_by", "tracking_issue", "template"}
     unknown = set(data) - required - {"note", "zwave_config_entity", "sense_device_tags", "history_entities",
-                                      "history_days"}
+                                      "history_days", "statistics_entities", "statistics_period", "statistics_days",
+                                      "statistics_types"}
     if required - set(data):
         raise ManifestError("MISSING_KEY", sorted(required - set(data))[0])
     if unknown:
@@ -199,9 +217,25 @@ def parse_lookup(raw_bytes: bytes) -> LookupRequest:
     if isinstance(days, bool) or not isinstance(days, int) or (
             hist and not 1 <= days <= MAX_HISTORY_DAYS) or (not hist and days != 0):
         raise ManifestError("RANGE", "history_days")
+    stats = data.get("statistics_entities", [])
+    if (not isinstance(stats, list) or len(stats) > MAX_HISTORY_ENTITIES or len(set(map(str, stats))) != len(stats)
+            or not all(isinstance(e, str) and RE_ENTITY_ID.fullmatch(e) for e in stats)):
+        raise ManifestError("PATTERN", "statistics_entities")
+    period = data.get("statistics_period", "hour" if stats else "")
+    if (stats and period not in MAX_STATISTICS_DAYS) or (not stats and period != ""):
+        raise ManifestError("PATTERN", "statistics_period")
+    sdays = data.get("statistics_days", 1 if stats else 0)
+    if isinstance(sdays, bool) or not isinstance(sdays, int) or (
+            stats and not 1 <= sdays <= MAX_STATISTICS_DAYS[period]) or (not stats and sdays != 0):
+        raise ManifestError("RANGE", "statistics_days")
+    stypes = data.get("statistics_types", list(DEFAULT_STATISTICS_TYPES) if stats else [])
+    if (not isinstance(stypes, list) or len(set(map(str, stypes))) != len(stypes)
+            or not all(isinstance(t, str) and t in STATISTICS_TYPES for t in stypes)
+            or (stats and not stypes) or (not stats and stypes)):
+        raise ManifestError("PATTERN", "statistics_types")
     return LookupRequest(rid, sanitize_text(title, 80), data["requested_by"], issue, template,
                          sanitize_text(note, 300), hashlib.sha256(raw_bytes).hexdigest(), zwave,
-                         sense, tuple(hist), days)
+                         sense, tuple(hist), days, tuple(stats), period, sdays, tuple(stypes))
 
 
 def scrub(output: str) -> str:
@@ -408,8 +442,11 @@ def project_sense_devices(reply) -> list[str]:
         original = _plain(scalar.get("OriginalName"), 40)
         if original and original != name:
             parts.append("was " + original)
-        guess = _plain(scalar.get("NameUserGuess"), 40)
-        if guess and guess != name:
+        guessed = _flag(scalar.get("NameUserGuess"))   # 0.3.38: live data shows a true/false flag, not a name
+        guess = "" if guessed is not None else _plain(scalar.get("NameUserGuess"), 40)
+        if guessed:
+            parts.append("name-guessed")
+        elif guess and guess != name:
             parts.append("guess " + guess)
         watts = _watts(scalar.get("ExpectedAOWattage"))
         if watts is not None:
@@ -590,6 +627,76 @@ def read_history(ha, entities: tuple[str, ...], days: int, now: float | None = N
     return "\n".join([head, *lines])
 
 
+# ---------------------------------------------------------------------------------------------
+# 0.3.38: Recorder long-term statistics (read-only window, compact STS1 rows)
+
+
+def _num(value) -> str:
+    """A statistic value as at most 5 significant digits; empty when missing or not a number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value in (
+            float("inf"), float("-inf")):
+        return ""
+    text = f"{value:.5g}"
+    return text if "e" not in text else f"{value:.0f}"
+
+
+def _row_start(value) -> int | None:
+    """Recorder rows carry ``start`` as epoch milliseconds (current Core) or an ISO string (older Core)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value / 1000) if value > 1e11 else int(value)
+    return _epoch(value)
+
+
+def project_statistics(reply, entities: tuple[str, ...], start: int, period: str, types: tuple[str, ...],
+                       budget: int) -> list[str]:
+    """``STS1`` lines: per entity ``<seconds since previous row, base 36>:<v1>,<v2>,...`` in ``types`` order.
+
+    Like ``HST1``: an entity that does not fit is ``SKIPPED`` whole, the SKIPPED lines still to come and ``END`` are
+    reserved up front, and nothing is ever cut silently. Values are rounded to 5 significant digits."""
+    by_id = reply if isinstance(reply, dict) else {}
+    lines = [f"STS1 start={start} period={period} types={','.join(types)} entities={len(entities)}"]
+    used = len(lines[0])
+    skips = [len(_stat_skipped(eid)) + 1 for eid in entities]
+    for i, eid in enumerate(entities):
+        rows = by_id.get(eid) if isinstance(by_id.get(eid), list) else []
+        tokens, prev = [], start
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            t = _row_start(row.get("start"))
+            if t is None:
+                continue
+            tokens.append(_b36(t - prev) + ":" + ",".join(_num(row.get(k)) for k in types))
+            prev = max(prev, t)
+        line = f"S {eid} n={len(tokens)}\nV " + " ".join(tokens)
+        if used + len(line) + 1 + sum(skips[i + 1:]) + len("\nEND") > budget:
+            lines.append(_stat_skipped(eid))
+            used += len(lines[-1]) + 1
+            continue
+        lines.append(line)
+        used += len(line) + 1
+    lines.append("END")
+    return lines
+
+
+def _stat_skipped(eid: str) -> str:
+    return f"S {eid} SKIPPED budget (file again with fewer entities, fewer days or fewer types)"
+
+
+def read_statistics(ha, entities: tuple[str, ...], days: int, period: str, types: tuple[str, ...],
+                    now: float | None = None, budget: int = MAX_OUTPUT_CHARS) -> str:
+    """One read-only statistics window; the returned text (header line included) is at most ``budget`` characters."""
+    end = int(now if now is not None else time.time())
+    start = end - days * 86400
+    reply = ha.statistics_during_period(entities, start, end, period, types)
+    head = (f"Statistics of {len(entities)} entities over {days} day(s), period {period}, read-only "
+            f"(Recorder long-term statistics):")
+    lines = project_statistics(reply, entities, start, period, types, budget - len(head) - 1)
+    return "\n".join([head, *lines])
+
+
 def run_lookup(engine, lr: LookupRequest):
     """Ask the owner, then render read-only. Returns an engine Result."""
     from .engine import REJECTED, TIMED_OUT, Result
@@ -608,6 +715,10 @@ def run_lookup(engine, lr: LookupRequest):
     if lr.history_entities:
         message += (f"\nAlso reads {lr.history_days} day(s) of history of {len(lr.history_entities)} entities: "
                     + ", ".join(lr.history_entities[:6]) + (" ..." if len(lr.history_entities) > 6 else ""))
+    if lr.statistics_entities:
+        message += (f"\nAlso reads {lr.statistics_days} day(s) of {lr.statistics_period}ly statistics of "
+                    f"{len(lr.statistics_entities)} entities: " + ", ".join(lr.statistics_entities[:6])
+                    + (" ..." if len(lr.statistics_entities) > 6 else ""))
     outcome = engine._ask(lr.request_id, "LOOKUP", "House Brain Deployer: approve lookup?", message,
                           engine.s.timing.approval_timeout)
     if outcome != approval.APPROVE:
@@ -616,7 +727,7 @@ def run_lookup(engine, lr: LookupRequest):
         rendered = engine.ha.render_template(lr.template)
     except Exception as err:  # noqa: BLE001 - template errors are reported, never retried
         return Result(LOOKUP_FAILED, [f"template error: {scrub(str(err))[:300]}"])
-    parts = sum(map(bool, (lr.zwave_config_entity, lr.history_entities, lr.sense_device_tags)))
+    parts = sum(map(bool, (lr.zwave_config_entity, lr.history_entities, lr.statistics_entities, lr.sense_device_tags)))
     if parts and len(rendered) > TEMPLATE_CHARS_WITH_PARTS:   # 0.3.35: leave the parts their room
         cut = rendered.rfind("\n", 0, TEMPLATE_CHARS_WITH_PARTS - 100)
         rendered = (rendered[:cut if cut > 0 else TEMPLATE_CHARS_WITH_PARTS - 100]
@@ -639,6 +750,13 @@ def run_lookup(engine, lr: LookupRequest):
             rendered += "\n\n" + read_history(engine.ha, lr.history_entities, lr.history_days, budget=budget())
         except Exception as err:  # noqa: BLE001 - reported once, never retried
             return Result(LOOKUP_FAILED, [f"history read error: {scrub(str(err))[:300]}"],
+                          {"lookup_output": scrub(rendered)})
+    if lr.statistics_entities:
+        try:
+            rendered += "\n\n" + read_statistics(engine.ha, lr.statistics_entities, lr.statistics_days,
+                                                 lr.statistics_period, lr.statistics_types, budget=budget())
+        except Exception as err:  # noqa: BLE001 - reported once, never retried
+            return Result(LOOKUP_FAILED, [f"statistics read error: {scrub(str(err))[:300]}"],
                           {"lookup_output": scrub(rendered)})
     if lr.sense_device_tags:
         try:
