@@ -8,7 +8,7 @@ import signal
 from threading import Event, Thread
 import time
 
-from .archive import day_csv
+from .archive import day_csv, day_json
 from .health import build, digest, proposals
 from .interlock import safety_interlock
 from .runtime import Runtime
@@ -43,7 +43,8 @@ def main():
         signal.signal(sig, lambda *_: stop.set())
     server = Server(lambda: {**runtime.status, 'safety_interlock': runtime.hold or 'ALLOW'}, lambda: build(runtime, time.time()),
                     lambda: digest(runtime, time.time()), lambda: proposals(runtime, time.time()),
-                    lambda day: day_csv(runtime.store.path, day))
+                    lambda day: day_csv(runtime.store.path, day),
+                    archive_json=lambda day: day_json(runtime.store.path, day))
     thread = Thread(target=server.run, daemon=True)
     thread.start()
     try:

@@ -1,6 +1,8 @@
 # House Brain Systems AI
 
-Version 0.1.1 (shadow). Boot is manual. Only `SHADOW` mode exists. 0.1.1 adds the Arbiter's decision,
+Version 0.1.2 (shadow). Boot is manual. Only `SHADOW` mode exists. 0.1.2 adds one read-only, internal-network
+route, `GET /archive/<day>.json`, so the coming Cooling AI can read archived days (see Outputs), and
+watches Cooling AI's own health block once it is installed. 0.1.1 added the Arbiter's decision,
 reason, owner, kind and shadow selection, the A/C's real call (`binary_sensor.ac_compressor_cooling`), four
 eligibility flags, the modelled evap supply temperature, the vent floor and the APS price to the cooling
 archive (31 entities). The new entities' 40 days are copied first after the update (about 9 hours).
@@ -10,12 +12,12 @@ archive (31 entities). The new entities' 40 days are copied first after the upda
 - **Reads, never writes.** It makes three kinds of request:
   - `GET` to the Supervisor's `info` routes (`/info`, `/host/info`, `/resolution/info`, `/addons/self/info` and `/addons/<House Brain App>/info`), with role `default`;
   - `GET /core/api/states`;
-  - `GET /core/api/history/period/...` for the 18 cooling archive entities only (states, no attributes, one day at a time);
+  - `GET /core/api/history/period/...` for the 31 cooling archive entities only (states, no attributes, one day at a time);
   - four read-only Core WebSocket commands (`system_log/list`, `repairs/list_issues`, `system_health/info`, `recorder/list_statistic_ids`) on one long-lived socket.
 
   There is no POST, state write or service call anywhere in the App. Sibling App info is cut down to slug, name, version, state, boot, hostname, ingress port, watchdog and update flag before anything is kept; their options are never stored.
 - **Finds its siblings without settings.** It reads its own slug, then checks the known House Brain App names under the same store prefix and under `local_`, once an hour.
-- **Self-health.** It reads each App that serves `house_brain_app_health.v1` (Energy AI 0.1.2 and later) at `http://<hostname>:<ingress port>/health`. It checks the block with the shared validator: unknown, stale, invalid or unreachable is never OK.
+- **Self-health.** It reads each App that serves `house_brain_app_health.v1` (Energy AI 0.1.2 and later; Cooling AI from 0.1.0) at `http://<hostname>:<ingress port>/health`. It checks the block with the shared validator: unknown, stale, invalid or unreachable is never OK.
 - **Learns:**
   - database size (hourly, from `system_health/info`), disk free (`/host/info`), memory free and swap (System Monitor sensors);
   - errors per integration per day, against its own 14-day median and spread;
@@ -38,6 +40,7 @@ archive (31 entities). The new entities' 40 days are copied first after the upda
 - **Internal network only** (the /23 holding the Supervisor proxy address, and loopback; never the LAN):
   - `GET /health`: this App's own `house_brain_app_health.v1`.
   - `GET /digest`: one family status line of at most 255 characters, plus one line per App. Maintenance relays it into the one family sensor for Companion; owner decision 2026-10-20, built on the Maintenance side as a separate release.
+  - `GET /archive/YYYY-MM-DD.json` (0.1.2): one local day of the cooling archive, rows `[entity, time, value, text, kind]`, plus each entity's read status for that day (`DONE`, `EMPTY`, `FAILED` or `NOT_READ`, and whether the purge had cut into it), so a gap is never read as a value. Schema `house_brain_systems_ai_archive_day.v1`. Read by Cooling AI (owner decision 2026-10-25 "Read Systems AI's archive"). Anything but an exact day is refused.
   - `GET /proposals`: at most 10 suggestions, only `start_app` or `restart_app` for a House Brain App slug, each open at least 15 minutes and not flapping, expiring after 1 hour. Maintenance may show them under "Needs your decision"; nothing happens without the owner's Approve. They are counted in a shadow scorecard (`executed: false`).
 - Any other method gets HTTP 405 `READ_ONLY_APP`.
 

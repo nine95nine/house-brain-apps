@@ -14,6 +14,7 @@ stays in this App's own database for 120 days (about 10 MB for a cooling season,
 which the owner's backups copy off the Pi; one day downloads as CSV from the ingress page. No attribute,
 person, location or camera data is read or kept.
 """
+import json
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -237,3 +238,31 @@ def day_csv(path, day):
     finally:
         db.close()
     return '\n'.join(lines) + '\n'
+
+
+ARCHIVE_DAY_SCHEMA = 'house_brain_systems_ai_archive_day.v1'
+
+
+def day_json(path, day):
+    """0.1.2 (owner pop-up 2026-10-25 "Read Systems AI's archive"): one local day for Cooling AI, read-only, on the
+    internal network only. Rows are [entity, at, value, text, kind]; `status` says, per entity, whether that day was
+    read (DONE, EMPTY, FAILED or not yet) and whether the purge had cut into it, so a reader never mistakes a gap for
+    a value. Its own read-only connection, like day_csv."""
+    if not isinstance(day, str) or RE_DAY.fullmatch(day) is None:
+        raise ValueError('ARCHIVE_DAY_INVALID')
+    start = local_midnight(day)
+    db = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=3)
+    try:
+        rows = [[entity, at, value, text, kind] for entity, at, value, text, kind in db.execute(
+            'SELECT entity, at, value, text, kind FROM archive WHERE at >= ? AND at < ? ORDER BY entity, at',
+            (start, start + 86400))]
+        book = db.execute("SELECT value FROM kv WHERE key='archive:days'").fetchone()
+    finally:
+        db.close()
+    days = json.loads(book[0]) if book else {}
+    status = {}
+    for entity in ENTITIES:
+        rec = (days.get(entity) or {}).get(day) or {}
+        status[entity] = {'status': rec.get('status') or 'NOT_READ', 'partial': bool(rec.get('partial'))}
+    return {'schema_version': ARCHIVE_DAY_SCHEMA, 'day': day, 'timezone': 'America/Phoenix', 'bucket_s': BUCKET_S,
+            'rows': rows, 'status': status, 'physical_actions': False}

@@ -16,6 +16,7 @@ INGRESS_PEERS = {"172.30.32.2", "127.0.0.1", "::1"}
 SUPERVISOR_NETWORK = ipaddress.ip_interface("172.30.32.2/23").network
 HEALTH_BROKEN = {"CYCLE_OVERDUE", "HEALTH_SELF_CHECK_FAILED"}
 RE_ARCHIVE = re.compile(r"/archive/(20[0-9]{2}-[01][0-9]-[0-3][0-9])\.csv")
+RE_ARCHIVE_JSON = re.compile(r"/archive/(20[0-9]{2}-[01][0-9]-[0-3][0-9])\.json")   # 0.1.2: internal only
 
 
 def internal_peer(address):
@@ -27,10 +28,11 @@ def internal_peer(address):
 
 
 class Server:
-    def __init__(self, status, health, digest, proposals, archive_csv=None, port=8099):
+    def __init__(self, status, health, digest, proposals, archive_csv=None, port=8099, archive_json=None):
         owner = self
         self.status, self.health, self.digest, self.proposals = status, health, digest, proposals
         self.archive_csv = archive_csv
+        self.archive_json = archive_json
 
         class Handler(BaseHTTPRequestHandler):
             def setup(self):
@@ -59,6 +61,14 @@ class Server:
                         doc = owner.health()
                         return self.respond(503 if HEALTH_BROKEN & set(doc["reasons"]) else 200, doc)
                     return self.respond(200, owner.digest() if self.path == "/digest" else owner.proposals())
+                match = RE_ARCHIVE_JSON.fullmatch(self.path)
+                if match and owner.archive_json is not None:      # 0.1.2: Cooling AI, internal network only
+                    if not internal_peer(peer):
+                        return self.respond(403, {"error": "INTERNAL_PEER_REFUSED"})
+                    try:
+                        return self.respond(200, owner.archive_json(match.group(1)))
+                    except Exception:  # noqa: BLE001 - a bad day or an unreadable file is a refusal, not a crash
+                        return self.respond(404, {"error": "ARCHIVE_DAY_UNAVAILABLE"})
                 if peer not in INGRESS_PEERS:
                     return self.respond(403, {"error": "INGRESS_REQUIRED"})
                 if self.path in ("/", ""):

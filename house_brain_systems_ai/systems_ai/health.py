@@ -25,7 +25,7 @@ INPUT_REASONS = {'core_api': 'CORE_API_UNREADABLE', 'supervisor_api': 'SUPERVISO
 SHORT = {'house_brain_energy_ai': 'Energy AI', 'house_brain_maintenance': 'Maintenance',
          'house_brain_deployer': 'Deployer', 'house_brain_ai_access': 'AI Access',
          'house_brain_engineering_inspector': 'Inspector', 'house_brain_engineering_observer': 'Observer',
-         'house_brain_maintenance_inventory_scout': 'Scout'}
+         'house_brain_maintenance_inventory_scout': 'Scout', 'house_brain_cooling_ai': 'Cooling AI'}
 
 
 def build(runtime, now):

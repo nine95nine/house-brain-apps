@@ -27,9 +27,10 @@ RE_SELF = re.compile(r'([0-9a-f]{8})_house_brain_systems_ai')
 # The House Brain Apps this overseer looks for (store prefix and local copies).
 FAMILY = ('house_brain_energy_ai', 'house_brain_maintenance', 'house_brain_deployer', 'house_brain_ai_access',
           'house_brain_engineering_inspector', 'house_brain_engineering_observer',
-          'house_brain_maintenance_inventory_scout')
-# Apps that serve house_brain_app_health.v1 at GET /health on their ingress port.
-HEALTH_PUBLISHERS = frozenset({'house_brain_energy_ai'})
+          'house_brain_maintenance_inventory_scout', 'house_brain_cooling_ai')
+# Apps that serve house_brain_app_health.v1 at GET /health on their ingress port. 0.1.2: Cooling AI
+# (design R1, owner pop-up 2026-10-25 "Approve design") serves it from its first release.
+HEALTH_PUBLISHERS = frozenset({'house_brain_energy_ai', 'house_brain_cooling_ai'})
 APP_HEALTH_REASONS = {'DEGRADED': 'APP_HEALTH_DEGRADED', 'FAILED': 'APP_HEALTH_FAILED', 'STALE': 'APP_HEALTH_STALE',
                       'INVALID': 'APP_HEALTH_INVALID', 'UNREACHABLE': 'APP_HEALTH_UNREACHABLE'}
 FAST_S, SLOW_S, HOURLY_S, DAY_S, INSTALLED_REFRESH_S = 60, 300, 3600, 86400, 3600
