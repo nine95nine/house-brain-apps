@@ -19,6 +19,7 @@ It reuses the accepted #60 surfaces unchanged: restricted-category name tokens f
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
@@ -198,11 +199,16 @@ def _history(history: Any, exported: dict[str, dict[str, Any]], history_list: li
                                             and type(r.get("state")) is str for r in rows), "HISTORY_INVALID")
         if entity_id not in exported:
             _exclude(counts, "HISTORY_ENTITY_NOT_EXPORTED"); continue
-        changes = [{"at": r["at"], "state": r["state"][:max_chars]} for r in rows if TS_RE.fullmatch(r["at"])]
+        changes = [{"at": _second(r["at"]), "state": r["state"][:max_chars]} for r in rows if TS_RE.fullmatch(r["at"])]
         if scan_content(changes):
             _exclude(counts, "HISTORY_CONTENT_DETECTOR"); continue
         out[entity_id] = sorted(changes, key=lambda c: c["at"])[-MAX_HISTORY_CHANGES:]
     return out
+
+
+def _second(stamp: str) -> str:
+    """A TS_RE timestamp as whole-second UTC ("...T04:00:00Z"): 0.2.20 room for Part B, 12 bytes a stamp."""
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def build(states: Any, registry: Any, *, now: str, mode: str = "dry_run",
@@ -303,7 +309,9 @@ def build(states: Any, registry: Any, *, now: str, mode: str = "dry_run",
                                 "untrusted_text": True}
         for stamp in ("last_changed", "last_updated"):
             if type(row.get(stamp)) is str and TS_RE.fullmatch(row[stamp]):
-                item[stamp] = row[stamp]
+                item[stamp] = _second(row[stamp])
+        if "last_changed" in item and item.get("last_updated") == item["last_changed"]:
+            del item["last_updated"]  # absent last_updated means the same second as last_changed
         exported.append(item)
         by_original[entity_id] = item
     exported.sort(key=lambda e: e["entity_id"])
@@ -328,9 +336,9 @@ def build(states: Any, registry: Any, *, now: str, mode: str = "dry_run",
                 "export_bytes": export_bytes, "max_snapshot_bytes": bounds["max_snapshot_bytes"],
                 "export_size_ok": export_bytes <= bounds["max_snapshot_bytes"],
                 "values_included": False, "control_authority": "NONE"}
-    if export_bytes > bounds["max_snapshot_bytes"] and extension and not history:
-        # 1.10.0: the extension entities can never cost the sensor export. With history the sender first trims and
-        # then drops history (it retries without it); only a history-free build that is still too big drops them.
+    if export_bytes > bounds["max_snapshot_bytes"] and extension:
+        # The extension entities can never cost the sensor export or its history: they are dropped first, with the
+        # same history (0.2.20; 0.2.19 trimmed and then dropped history before dropping them).
         smaller = build(states, registry, now=now, mode=mode, policy={**p, "extension_entities": []}, history=history)
         if mode == "export":
             smaller["excluded_counts"] = dict(sorted({**smaller["excluded_counts"],

@@ -21,7 +21,7 @@
     {
       "flat": "embedded.tools.build_house_brain_entity_snapshot.py",
       "path": "tools/build_house_brain_entity_snapshot.py",
-      "sha256": "ea1cd6b2bc30434e6528edb3dde79b4a8bf5f27c60ee298ff105a6e17baa1743"
+      "sha256": "9caf98f008f4cda2876b993a96a4858abde965394b2da38cb074a19ade20a2d3"
     },
     {
       "flat": "embedded.tools.evaluate_network_dependency_posture.py",
