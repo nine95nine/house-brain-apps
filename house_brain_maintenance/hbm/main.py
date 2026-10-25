@@ -1005,6 +1005,11 @@ class Service:
         whether anything waits. Nothing about the items themselves is added here."""
         line = (f"<!-- {NEEDS_REVIEW_SCHEMA} "
                 + json.dumps({**self.needs_review(), "app": VERSION}, separators=(",", ":")) + " -->")
+        if self.free_lane is not None:                  # 0.9.32: the free lane's status, readable by every AI chat
+            try:
+                line += "\n" + self.free_lane.line()
+            except Exception:  # noqa: BLE001 - the post itself matters more than its status line
+                pass
         head, sep, rest = text.partition("\n")
         return f"{head}\n{line}{sep}{rest}" if sep else f"{text}\n{line}"
 

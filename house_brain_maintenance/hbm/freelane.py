@@ -55,8 +55,29 @@ KEEP_DAYS = 14
 MIN_COMPARED = 10                  # the lane's own check: below this agreement, lockout posts stop
 MIN_AGREEMENT = 0.6
 MAX_FACTS = 8
+RETRY_HOURS = 6.0                  # 0.9.32: a problem whose answer could not be read is not asked again for this long
 TIMEOUT = 60.0
 MODEL_WORDS = {"gemma-4-26b": "Gemma 4 26B"}
+STATUS_SCHEMA = "house_brain_free_reviewer.v1"       # 0.9.32: the lane's status line on every post (counts, no text)
+SHAPE_KEYS = ("answer_chars", "answer_json", "answer_keys", "finish_reason", "completion_tokens", "json_mode")
+
+
+def closed_shape(raw) -> dict:
+    """0.9.32: the Companion's answer shape (sizes, flags, key names), in a closed form. Never any text."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    for k in SHAPE_KEYS:
+        v = raw.get(k)
+        if k == "answer_keys":
+            if isinstance(v, list):
+                out[k] = [re.sub(r"[^A-Za-z0-9_]", "", str(x))[:24] for x in v[:8] if isinstance(x, str)]
+        elif k == "finish_reason":
+            if isinstance(v, str):
+                out[k] = re.sub(r"[^A-Za-z0-9_]", "", v)[:24]
+        elif isinstance(v, bool) or (isinstance(v, int) and 0 <= v <= 10 ** 7):
+            out[k] = v
+    return out
 
 
 def companion_url(value: str, broker_base: str) -> str:
@@ -92,7 +113,10 @@ def _doc(raw) -> dict:
            "day": str(doc.get("day") or ""), "neurons": int(doc.get("neurons") or 0), "calls": int(doc.get("calls") or 0),
            "agreement": doc.get("agreement") if isinstance(doc.get("agreement"), dict) else {},
            "ran_at": float(doc.get("ran_at") or 0), "posted_at": float(doc.get("posted_at") or 0),
-           "last_reason": str(doc.get("last_reason") or "")}
+           "last_reason": str(doc.get("last_reason") or ""), "last_shape": closed_shape(doc.get("last_shape")),
+           "last_at": float(doc.get("last_at") or 0),
+           "skip": {str(k): float(v) for k, v in (doc.get("skip") or {}).items() if isinstance(v, (int, float))}
+           if isinstance(doc.get("skip"), dict) else {}}
     out["drafts"] = {k: v for k, v in out["drafts"].items() if isinstance(v, dict) and PR.RE_KEY.fullmatch(str(k))}
     return out
 
@@ -189,7 +213,7 @@ def parse_result(status: int, body) -> dict:
         return {"error": f"bad_answer_{status}"}
     if status != 200 or body.get("ok") is not True:
         reason = str(body.get("reason") or f"http_{status}")
-        return {"error": re.sub(r"[^A-Za-z0-9_]", "", reason)[:40] or f"http_{status}"}
+        return {"error": re.sub(r"[^A-Za-z0-9_]", "", reason)[:40] or f"http_{status}", "shape": closed_shape(body.get("shape"))}
     if body.get("schema") != RESULT_SCHEMA or body.get("verdict") not in VERDICTS:
         return {"error": "bad_answer_shape"}
     steps = [str(s)[:120] for s in body.get("steps") or [] if isinstance(s, str) and s][:3]
@@ -244,9 +268,21 @@ class FreeLane:
     def status(self) -> dict:
         doc = self._load()
         a = agreement(doc)["_all"]
+        verdicts: dict = {}
+        for d in doc["drafts"].values():
+            verdicts[str(d.get("verdict"))] = verdicts.get(str(d.get("verdict")), 0) + 1
         return {"mode": self.mode if self.url else "off", "neurons_today": doc["neurons"], "calls_today": doc["calls"],
                 "drafts": len(doc["drafts"]), "posted": sum(1 for d in doc["drafts"].values() if d.get("posted_at")),
-                "agree": a["agree"], "disagree": a["disagree"], "last_reason": doc["last_reason"]}
+                "agree": a["agree"], "disagree": a["disagree"], "last_reason": doc["last_reason"],
+                "last_shape": doc["last_shape"], "verdicts": verdicts,
+                "last_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(doc["last_at"])) if doc["last_at"] else None,
+                "cloud_at": (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.reviews.cloud_at()))
+                             if self.reviews is not None and self.reviews.cloud_at() else None)}
+
+    def line(self) -> str:
+        """0.9.32: the machine line for every post on the tracking issue: the status above, nothing else (no problem
+        text, no model text), so any AI chat with GitHub read access can see what the lane did."""
+        return f"<!-- {STATUS_SCHEMA} " + json.dumps(self.status(), separators=(",", ":"), sort_keys=True) + " -->"
 
     def digest_line(self) -> str:
         doc = self._load()
@@ -292,6 +328,7 @@ class FreeLane:
 
     def _draft(self, doc: dict, open_recs: dict, now: float) -> dict:
         made = 0
+        doc["skip"] = {k: t for k, t in doc["skip"].items() if t > now}
         for key, rec in candidates(open_recs, self.reviews, now):
             if made >= MAX_PER_RUN:
                 break
@@ -299,20 +336,26 @@ class FreeLane:
             d = doc["drafts"].get(key)
             if d is not None and d.get("fp") == fp:
                 continue                                                # drafted already for these facts
+            if key in doc["skip"]:
+                continue                                                # 0.9.32: its last answer was unreadable; later
             earlier = self.reviews.cloud_before(key)                # the cloud's older word on this key, for context
             if not budget_left(doc):
                 doc["last_reason"] = "daily_budget_used"
                 break
             doc["calls"] += 1
             out = self.ask(key, rec, earlier)
+            doc["last_at"] = now
             if "error" in out:
                 doc["last_reason"] = out["error"]
+                doc["last_shape"] = out.get("shape") or {}                 # 0.9.32: what came back, never the text
                 self.j.audit("free_review", "FREE_REVIEW_FAILED", key=key, reason=out["error"])
                 if out["error"].startswith("bad_answer") or out["error"] == "REVIEW_UNPARSED":
-                    continue                                            # this one problem: try the next
+                    doc["skip"][key] = now + RETRY_HOURS * 3600         # this one problem: not again for a while
+                    continue                                            # try the next
                 break                                                   # the Companion said no: nothing more this run
             doc["neurons"] += out["neurons"]
             doc["last_reason"] = "ok"
+            doc["last_shape"] = {}
             doc["drafts"][key] = {"fp": fp, "kind": str(rec.get("source") or "other"), "verdict": out["verdict"],
                                   "summary": out["summary"], "steps": out["steps"], "model": out["model"],
                                   "neurons": out["neurons"], "at": now, "source": "model"}

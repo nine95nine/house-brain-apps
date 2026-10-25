@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.32
+
+The free lane's status where every AI can read it (owner 2026-10-25 06:0xZ: "don't you have read access? … figure out
+how you can make that happen"; Work Board #942 claim 6394191603). The read-only perimeter exports a fixed attribute
+list for the status sensor, so `free_reviewer` was invisible to the AI chats. Contains 0.9.31 unchanged otherwise.
+
+- Every post on the tracking issue carries `<!-- house_brain_free_reviewer.v1 {…} -->` right after the needs-review
+  stamp: mode, calls and Neurons today, drafts (and their verdicts), posted, agreement, `last_reason`, `last_at`,
+  the cloud reviewer's last review time, and `last_shape` (the Companion's answer shape from a refusal: sizes, JSON
+  found, key names, finish reason, tokens, JSON mode). Never any problem or model text.
+- `freelane.py` keeps `last_shape` and `last_at`; Companion 0.1.6 puts the shape in its `REVIEW_UNPARSED` body.
+
 ## 0.9.31
 
 Lockout clock fix (owner pop-up 2026-10-25 "Build 0.9.31 now"; Work Board #942 claim 6391607736; 0.9.30 is the AI
