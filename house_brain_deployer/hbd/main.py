@@ -831,7 +831,11 @@ class Service:
             data_dir = self._data_dir()
             state = legacy_migrate.history_state(data_dir,
                                                  running_moved=getattr(self, "migrated_runtime", None) is not None)
-            offer = (state in ("selected", "moved") and legacy_migrate.selection_present(data_dir)
+            # 0.3.37 (owner pop-up 2026-10-25 "Retire it", after #985 M9 passed): offered only between Select and the
+            # restart, when it is an exact undo. Once the Deployer runs on the moved history, the previous history
+            # lacks every later result and Undo record, so the page never offers it; the emergency option
+            # return_to_previous_history stays.
+            offer = (state == "selected" and legacy_migrate.selection_present(data_dir)
                      and not self._install_open())
             if offer and owner is None:
                 owner = self.ensure_engine().s.owner_user_id
@@ -845,6 +849,11 @@ class Service:
         by = self.board.take_back() if self.board is not None else None
         if not by:
             return False
+        if getattr(self, "migrated_runtime", None) is not None:
+            # 0.3.37: a tap that was rendered before the restart (stale page) is refused on the moved history.
+            LOG.warning("Go back refused: the Deployer runs on the moved history; the previous history lacks every "
+                        "later result and Undo record. Emergency only: the option return_to_previous_history.")
+            return False
         if self._install_open():
             LOG.warning("Go back refused: an install is still open; it is recovered first.")
             return False
@@ -855,15 +864,10 @@ class Service:
             return False
         LOG.warning("Go back (owner): the moved-history selection was renamed to %s; restart the Deployer to use the "
                     "previous history.", name)
-        if getattr(self, "migrated_runtime", None) is not None:
-            # Review 2026-10-13 (HIGH): the moved runtime now refuses every wrapped call; hold this run cleanly
-            # instead of letting the next call fail the loop. The restart then uses the previous history.
-            self.contained = "GO_BACK_RESTART_NEEDED"
-        else:
-            try:
-                self.j.audit("", "LEGACY_GO_BACK", by=by, renamed_to=name or "")
-            except Exception:  # noqa: BLE001,S110 - the log line above remains
-                pass
+        try:
+            self.j.audit("", "LEGACY_GO_BACK", by=by, renamed_to=name or "")
+        except Exception:  # noqa: BLE001,S110 - the log line above remains
+            pass
         return True
 
     def _execute_undo(self, rid: str) -> bool:
@@ -1177,7 +1181,8 @@ def build_service(options_path: str, data_dir: str, *, startup_provider=None) ->
         withdrawn = legacy_migrate.withdraw_at_startup(data_dir)
         if withdrawn:
             LOG.warning("return_to_previous_history: the moved-history selection was renamed to %s; this start "
-                        "uses the previous history. Turn the option off again.", withdrawn)
+                        "uses the previous history. Results and Undo records made on the moved history are not in it. "
+                        "Turn the option off again.", withdrawn)
     owner_context = None
     if startup_provider is not None:
         runtime = startup_hold(data_dir, provider=startup_provider, ha=ha, settings_for=settings_for)

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.37 — 2026-10-25 (Go back retired on the moved history; owner pop-up "Retire it", after #985 M9 passed)
+
+- #985 M9 passed: one clean week on the moved history (2026-10-18 → 2026-10-25), and the old local Deployer is being
+  removed. The page's "Go back to the previous history" pointed at the history as it stood at Select (2026-10-17): it
+  lacks every later result and Undo record, and 37 request folders filed since would look new again.
+- The page now offers Go back only while a selection waits for the restart (an exact undo). On the moved history it is
+  never offered, and a tap from a page rendered before the restart is refused (logged, nothing changed).
+- Unchanged: Unselect requests, the emergency option `return_to_previous_history` (its log line now says what is not in
+  the previous history), Prepare/Select/Reset, startup on the moved history.
+- Tests: `test_go_back_is_retired_once_running_on_the_moved_history` replaces the old moved-history Go back test;
+  mutants RT01–RT02 (LM27 removed with the code path it guarded).
+
 ## 0.3.36 — 2026-10-25 (more Sense tags, compact line; owner "Build it")
 
 - The Sense device list adds four tags, each bounded:

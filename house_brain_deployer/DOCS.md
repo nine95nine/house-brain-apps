@@ -220,6 +220,11 @@ From 0.3.25 the page shows **History in use** and, while a selection exists, an 
 history** button (the same as Unselect or the option; it applies at the next restart). Installs made by the old
 Deployer get no Undo button.
 
+From 0.3.37 (after the one-week check passed) that button is offered **only between Select and the restart**, when it
+is an exact undo. Once the Deployer runs on the moved history it is gone: the previous history no longer holds the
+results and Undo records made since, so going back would lose them. Emergency only: the option
+`return_to_previous_history` still exists (turn it on, restart, then turn it off again).
+
 From 0.3.26, a result or install that is in **both** histories with different entries no longer stops Prepare: today's
 Deployer's entry is kept, and the old Deployer's entry is saved unchanged beside the moved history. The Prepare and
 Select asks say how many there were; Reject if the number looks wrong.
