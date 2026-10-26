@@ -53,6 +53,30 @@ def cycle(runtime, client, config, now):
     return runtime.status
 
 
+def handle(runtime,route,payload,result):
+    """One page command, run on the main loop. A template decision names its own refusal (0.1.6), so the page can
+    show it on that template's line; every other refusal stays the generic one."""
+    try:
+        if route=="/pause":
+            runtime.pause(payload["paused"])
+            runtime.status={**runtime.status,"state":"PAUSED" if runtime.paused else "RESUMING"}
+            result["paused"]=runtime.paused
+        elif route=="/template":
+            if set(payload)!={"template","approved"}:
+                raise ValueError("TEMPLATE_DECISION_ONLY")
+            result.update(runtime.approve_template(payload["template"],payload["approved"]))
+        elif route=="/model/rollback":
+            if set(payload)!={"role"}:
+                raise ValueError("ROLLBACK_ROLE_ONLY")
+            result.update(runtime.rollback_model(payload["role"]))
+        else:
+            result.update(runtime.identities.review(at=time.time(),**payload))
+    except (ValueError,TypeError,KeyError) as error:
+        known=route=="/template" and isinstance(error,ValueError) and str(error).startswith("TEMPLATE_")
+        result["error"]=str(error) if known else "REVIEW_OR_BINDING_INVALID"
+    return result
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--options",default="/data/options.json")
@@ -102,23 +126,7 @@ def main():
         while not stop.is_set():
             try:
                 route,payload,done,result=commands.get_nowait()
-                try:
-                    if route=="/pause":
-                        runtime.pause(payload["paused"])
-                        runtime.status={**runtime.status,"state":"PAUSED" if runtime.paused else "RESUMING"}
-                        result["paused"]=runtime.paused
-                    elif route=="/template":
-                        if set(payload)!={"template","approved"}:
-                            raise ValueError("TEMPLATE_DECISION_ONLY")
-                        result.update(runtime.approve_template(payload["template"],payload["approved"]))
-                    elif route=="/model/rollback":
-                        if set(payload)!={"role"}:
-                            raise ValueError("ROLLBACK_ROLE_ONLY")
-                        result.update(runtime.rollback_model(payload["role"]))
-                    else:
-                        result.update(runtime.identities.review(at=time.time(),**payload))
-                except (ValueError,TypeError,KeyError):
-                    result["error"]="REVIEW_OR_BINDING_INVALID"
+                handle(runtime,route,payload,result)
                 done.set()
             except Empty:
                 pass

@@ -18,6 +18,7 @@ DRIFT_SHARE = 0.3            # an approved template whose live watts or length d
 MAX_SLOTS = 16               # 8 hours
 MAX_JOBS = 4                 # the scheduler's limit
 UNCERTAINTY_DOLLARS = 0.10   # a proposal must beat this to differ from the usual time
+CONFIRMED = 'SENSE_AI_CONFIRMED'
 
 
 def _local(at):
@@ -48,18 +49,22 @@ def propose(detections, detection_events, roles):
                      'usual_start_hour': int(statistics.median(_local(e['start']).hour for e in events)),
                      'runs_7d': len(events),
                      'identity': info.get('identity') if confirmed else None,
-                     'identity_source': 'SENSE_AI_CONFIRMED' if confirmed else 'SENSE_DEVICE_NAME_ONLY'}
+                     'identity_source': CONFIRMED if confirmed else 'SENSE_DEVICE_NAME_ONLY'}
     return out
 
 
 def approve(store, proposals, template_id, approved, at):
-    """Owner decision from the page. Approval copies the proposal as it is now; a refusal removes it."""
+    """Owner decision from the page. Approval copies the proposal as it is now; a refusal removes it.
+    0.1.6: only a template whose identity the Sense AI confirmed can be approved. A Sense device name alone is not an
+    identity (Sense's "Heat Pump" is a nonstop load, not a shiftable heat pump: Sense R2 §14/§15)."""
     if type(approved) is not bool or not isinstance(template_id, str):
         raise ValueError('TEMPLATE_DECISION_INVALID')
     saved = store.get(TEMPLATE_KEY, {})
     if approved:
         if template_id not in proposals:
             raise ValueError('TEMPLATE_NOT_PROPOSED')
+        if proposals[template_id].get('identity_source') != CONFIRMED:
+            raise ValueError('TEMPLATE_IDENTITY_NOT_CONFIRMED')
         saved[template_id] = {**proposals[template_id], 'approved_at': at}
     else:
         saved.pop(template_id, None)
@@ -68,11 +73,14 @@ def approve(store, proposals, template_id, approved, at):
 
 
 def review(store, proposals):
-    """Approved templates still matching their device, and the ones that drifted (need a new approval)."""
+    """Approved templates still matching their device, and the ones that need the owner again: drifted, or (0.1.6)
+    whose identity is not, or no longer, confirmed by the Sense AI. Only the first are planned."""
     active, drifted = {}, []
     for tid, t in store.get(TEMPLATE_KEY, {}).items():
         now_t = proposals.get(tid)
-        if now_t and (abs(now_t['watts'] - t['watts']) > DRIFT_SHARE * t['watts']
+        if t.get('identity_source') != CONFIRMED or (now_t and now_t.get('identity_source') != CONFIRMED):
+            drifted.append(tid)
+        elif now_t and (abs(now_t['watts'] - t['watts']) > DRIFT_SHARE * t['watts']
                       or abs(now_t['slots'] - t['slots']) > max(1, DRIFT_SHARE * t['slots'])):
             drifted.append(tid)
         else:

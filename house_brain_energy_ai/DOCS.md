@@ -95,6 +95,15 @@ paragraph per statement against the same period a year earlier, with weather, EV
 shares kept unknown; and an 80% forecast interval learned on older hours and checked on newer ones.
 Each one waits until it has enough data, makes no recommendation and adds no alert or request.
 
+Load templates (0.1.5): a bound Sense detection device with 3 or more runs at its usual power in the
+last 7 days gets a template (watts, length, usual start, runs). The shadow planner suggests times
+only for templates the owner approved on the page; nothing is switched. 0.1.6:
+- only a template whose identity the Sense AI confirmed can be approved. A Sense device name alone
+  is not an identity: Sense's "Heat Pump" is a nonstop load, not a shiftable heat pump (Sense R2 §14
+  and §15). Such a template is listed with no Approve button until its identity is confirmed;
+- an approval made before that rule is not planned, and the page asks for it to be withdrawn;
+- the result of Approve or Withdraw appears on that template's line straight away.
+
 The page starts with an "In plain words" section and a short weekly summary built from fixed
 templates (no language model). It also adds a bank runway: the next 12 billing months per bucket,
 each repeating that month's most recent statement, with the December true-up payout. Energy
