@@ -82,8 +82,8 @@ def ask(ha: HomeAssistant, notify_service: str, owner_user_id: str, *, stage: st
             INBOX.answered(key)
         elif decision.detail != "shutting down":
             INBOX.missed(key, stage, title, message)   # listed on the page with Approve / Decline
-            if decision.outcome == TIMEOUT and stage not in ("UPDATE", "SYSTEM", "PIFW", "JOB", "STAGE"):
-                # (updates send their own missed note; one-shot chat requests are re-filed by the chat)
+            if decision.outcome == TIMEOUT and stage not in ("UPDATE", "SYSTEM", "PIFW", "STAGE"):
+                # (updates send their own missed note; 0.9.35: a chat-filed request (JOB) waits on the page too)
                 inform(ha, notify_service, "Maintenance: missed ask",
                        f"Missed: {title[:90]}. Open the Maintenance page to approve or decline it.",
                        tag="hbm-missed", url=open_url)

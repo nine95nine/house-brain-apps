@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.35
+
+Missed requests you can still answer (owner 2026-10-26: "you've got to figure out a way how to see what I'm saying,
+because I'm missing a lot of these, not on purpose"; pop-up "Build 0.9.35"; Work Board #942 claim 6420180691). A
+chat-filed request (`ADDON_SETTINGS`, `ENERGY_AI_SETTINGS`, every job that asks) used to ask on the phone only and
+count a 15-minute silence as Reject, and the Maintenance page then said "cannot be resumed here". Contains 0.9.34
+unchanged otherwise.
+
+- A missed request ask (stage `JOB`) is listed under **Needs your decision** with Approve / Decline, like a missed
+  update; the owner's page decision re-runs that request on the next poll (`PAGE_RERUN`), its ask is answered from
+  the page (no push, not counted against the daily ask limit), and the result is posted as usual. Only a request
+  the ledger holds as `REJECTED` and whose manifest is still on the request branch runs again; a Decline keeps it
+  rejected. A timeout still ends the run as Reject (unchanged); the page decision is a fresh owner decision.
+- The "Missed ask, open the Maintenance page" phone note now goes out for a missed request too.
+- Every decision made on the page is one line on the tracking issue ("### House Brain Maintenance: page decision",
+  stage, request id, the ask's title, Approved/Declined), so the chats see what was tapped. Never the ask's text.
+- Tests: `test_l4_missed_requests.py` (listed and resumable with the note; approve re-runs without a push or the ask
+  limit and posts the line; decline stays rejected; a DONE request never re-runs and a stale decision is dropped; a
+  re-run skips the limit but a new request still waits); `test_l1_inbox.py` updated; mutants `pm-job-not-resumable`,
+  `pm-rerun-done-too`, `pm-rerun-without-decision`, `pm-rerun-counts-against-limit`, `pm-missed-note-suppressed`,
+  `pm-page-line-dropped`.
+
 ## 0.9.34
 
 Two settings of the Google Drive Backup App, changed for you on one Approve (owner pop-ups 2026-10-26 "Build 0.9.34",

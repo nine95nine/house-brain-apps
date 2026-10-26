@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from . import VERSION, approval, ghauth, ghpage, net
 from .github import REQUESTS_DIR, RE_REPO, GitHub
 from .ha import RE_SLUG, RE_UPDATE_ENTITY, HAError, HomeAssistant, RE_SWITCH, ForbiddenCall
-from .jobs import DONE, FAILED, FAILED_MANUAL, REFUSED, Engine, Result, Settings
+from .jobs import DONE, FAILED, FAILED_MANUAL, REFUSED, REJECTED, Engine, Result, Settings
 from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Updater
 from .system import JOBS as SYSTEM_JOBS, ROLLED_BACK, SystemPolicy, SystemUpdater
 from .entities import JOBS as ENTITY_JOBS, EntityPolicy, EntityUpdater
@@ -755,6 +755,7 @@ class Service:
                 self.report_writer_identity()
             except Exception as err:  # noqa: BLE001 - a report problem never stops the App; retried next start
                 LOG.warning("writer lock report waits: %s", net.redact(str(err))[:200])
+        self.poll_page_decisions()                      # 0.9.35: every page tap is visible on the tracking issue
         txn = self.j.load_txn()
         if txn:
             self.ensure_engine()
@@ -1187,7 +1188,14 @@ class Service:
         ids = [r for r in self.gh.list_request_ids(head) if RE_REQUEST_ID.fullmatch(r)]
         # Skip handled ids first, then cap: an old backlog can never hide new requests.
         unseen = [r for r in ids if self.key(r) not in ledger]
-        for request_id in unseen[:MAX_REQUESTS_PER_POLL]:
+        # 0.9.35 (owner 2026-10-26, "you've got to figure out a way … I'm missing a lot of these"): a request whose
+        # phone ask was missed (ledger REJECTED) and that the owner then decided on the Maintenance page runs again
+        # now; its ask is answered from the page decision (no push, not counted against the daily ask limit).
+        rerun = [r for r in self.inbox.decided_requests("JOB")
+                 if r in ids and r not in unseen and (ledger.get(self.key(r)) or {}).get("outcome") == REJECTED]
+        for request_id in rerun[:1] + unseen[:MAX_REQUESTS_PER_POLL]:
+            if request_id in rerun:
+                self.j.audit(request_id, "PAGE_RERUN")
             try:
                 raw = self.gh.read_file(f"{REQUESTS_DIR}/{request_id}/manifest.json", head)
             except net.NetError:
@@ -1204,7 +1212,7 @@ class Service:
                 self.finish(request_id, manifest.job, digest, manifest.tracking_issue,
                             Result(REFUSED, ["request_id does not match its directory"]))
                 continue
-            if (manifest.job not in NO_APPROVAL_JOBS
+            if (manifest.job not in NO_APPROVAL_JOBS and request_id not in rerun
                     and self.j.approvals_requested_since(86400) >= self.o.max_approval_requests_per_day):
                 if request_id not in self.rate_noted:  # once per request (the poll now goes on every minute)
                     self.rate_noted.add(request_id)
@@ -1283,6 +1291,30 @@ class Service:
         except (HAError, net.NetError, ForbiddenCall) as err:
             result = Result(FAILED, [f"{net.redact(str(err))[:200]}; check the App's Settings screen"])
         self.finish(m.request_id, m.job, m.digest, issue, result)
+
+    def poll_page_decisions(self) -> None:
+        """0.9.35: one line per decision the owner made on the Maintenance page since the last poll, so the chats
+        see what was tapped (never the decision's text beyond its title). A post failure keeps the lines."""
+        if self.inbox is None:
+            return
+        rows = self.inbox.drain_log()
+        if not rows:
+            return
+        lines = []
+        for r in rows:
+            when = time.strftime("%H:%MZ", time.gmtime(float(r.get("at") or 0)))
+            head = str(r.get("key") or "").partition("|")[0]
+            rid = head.partition(":")[2]
+            what = f"{r.get('stage')} `{rid}`" if rid else r.get("stage") or "?"
+            title = str(r.get("title") or "")
+            verb = "Approved" if r.get("choice") == "approve" else "Declined"
+            lines.append(f"- {when} {verb} on the page: {what}" + (f" ({title})" if title else "")
+                         + (": it runs on this poll." if r.get("choice") == "approve" else "."))
+        try:
+            self.report_text("### House Brain Maintenance: page decision\n\n" + "\n".join(lines))
+        except Exception as err:  # noqa: BLE001 - keep the lines for the next poll
+            LOG.warning("page decision report waits: %s", net.redact(str(err))[:200])
+            self.inbox._log = rows + self.inbox._log
 
     def poll_energy_pending(self) -> bool:
         doc = self.j.load_doc(ENERGY_PENDING_DOC, {})

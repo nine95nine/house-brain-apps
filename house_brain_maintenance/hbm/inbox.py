@@ -35,7 +35,9 @@ import time
 
 RE_REQUEST = re.compile(r"(?m)^Request: ([A-Za-z0-9][A-Za-z0-9._:@/-]{0,119})\s*$")   # fix ids: fix-app:<slug>
 RESUMABLE = frozenset({"UPDATE", "SYSTEM", "OSBOOT", "OSBACK", "PIFW", "FIX", "AFTER", "MIGRATE", "MIGRATE_REMOVE",
-                       "KEYS", "SCOUTMOVE"})
+                       "KEYS", "SCOUTMOVE",
+                       "JOB"})   # 0.9.35: a chat-filed request whose phone ask was missed (owner 2026-10-26)
+LOG_MAX = 50                    # 0.9.35: page decisions not yet reported on the tracking issue
 DECISION_TTL = 24 * 3600.0
 MISSED_TTL = 7 * 86400.0
 CONFIRM_TTL = 600.0
@@ -63,6 +65,7 @@ class Inbox:
         self._decisions: dict[str, dict] = {}
         self._offered: dict[str, dict] = {}
         self._confirm: dict[str, dict] = {}
+        self._log: list[dict] = []               # 0.9.35: decisions to report (drained by the poll)
         self.nonce = secrets.token_hex(12)
         self._load()
 
@@ -78,6 +81,7 @@ class Inbox:
         if isinstance(doc, dict):
             self._missed = {k: v for k, v in (doc.get("missed") or {}).items() if isinstance(v, dict)}
             self._decisions = {k: v for k, v in (doc.get("decisions") or {}).items() if isinstance(v, dict)}
+            self._log = [v for v in (doc.get("log") or []) if isinstance(v, dict)][-LOG_MAX:]
 
     def _save(self) -> None:
         if not self.path:
@@ -85,7 +89,7 @@ class Inbox:
         try:
             fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path), prefix=".inbox.")
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"missed": self._missed, "decisions": self._decisions}, fh)
+                json.dump({"missed": self._missed, "decisions": self._decisions, "log": self._log[-LOG_MAX:]}, fh)
             os.replace(tmp, self.path)
         except OSError:                                  # the inbox stays in memory; never break an ask
             pass
@@ -109,6 +113,26 @@ class Inbox:
             self._missed.pop(key, None)
             self._save()
             return d["choice"]
+
+    def drain_log(self) -> list[dict]:
+        """0.9.35: the page decisions made since the last drain (oldest first), consumed."""
+        with self._lock:
+            out, self._log = list(self._log), []
+            if out:
+                self._save()
+            return out
+
+    def decided_requests(self, stage: str) -> list[str]:
+        """0.9.35: request ids with an unconsumed page decision for ``stage`` (``<stage>:<request id>|…``)."""
+        with self._lock:
+            self._expire()
+            out = []
+            for k in self._decisions:
+                head, _, _ = k.partition("|")
+                st, _, rid = head.partition(":")
+                if st == stage and rid and rid not in out:
+                    out.append(rid)
+            return out
 
     def has_decisions(self) -> bool:
         with self._lock:
@@ -197,6 +221,10 @@ class Inbox:
             if c is None:
                 return 409, "", ""
             self._decisions[c["key"]] = {"choice": c["choice"], "at": self.clock(), "by": "page"}
+            item = self._missed.get(c["key"]) or self._offered.get(c["key"]) or {}
+            self._log = (self._log + [{"key": c["key"], "choice": c["choice"], "at": self.clock(),
+                                       "stage": str(item.get("stage") or c["key"].split(":", 1)[0])[:16],
+                                       "title": str(item.get("title") or "")[:120]}])[-LOG_MAX:]   # 0.9.35
             self.nonce = secrets.token_hex(12)           # the list's buttons are single use too
             self._save()
         if self._wake is not None:
