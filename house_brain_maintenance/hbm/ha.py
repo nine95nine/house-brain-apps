@@ -103,6 +103,16 @@ boundary is this module:
   body, and **one** ``POST /addons/<slug>/stdin`` whose raw bytes hash to the frame pinned by ``energy_pin_frame``.
   Its log is read through the existing House Brain App log route. Never stop, restart, update or uninstall it,
   never this App, never another App, never nested with another target.
+* 0.9.34 (owner pop-ups 2026-10-26 "Build 0.9.34", "06:45 Arizona", "Both"): exactly one *Drive settings target*
+  at a time, ``with ha.drive_settings_target(slug)``, only for the installed Google Drive Backup App
+  (``<repository hash>_hassio_google_drive_backup``) during one owner-approved ADDON_SETTINGS request or the
+  "Fix it" of a backup problem. Inside it the guard allows that App's ``GET /addons/<slug>/info`` (its option values
+  are pinned on the first read; every password-, token-, key- or secret-named value is registered as a secret at
+  once and never leaves this process), ``POST /addons/<slug>/options`` whose option *names* are the ones just read
+  (plus, at most, the two settings when the App never stored them) and which change nothing but
+  ``backup_time_of_day`` (``HH:MM`` or empty) and ``exclude_addons`` (App slugs, comma separated, or empty), and
+  ``POST /addons/<slug>/restart`` with an empty body (the Supervisor applies new options at the next start). Never
+  the password, never stop, update or uninstall it, never this App, never another App, never nested.
 
 The ``ha`` CLI is never used (#223 R4 ``apps``/``addons`` escape).
 """
@@ -118,7 +128,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import net
-from .manifest import STAGE_APPS
+from .manifest import RE_TIME_OF_DAY, STAGE_APPS
 
 STATUS_ENTITY = "sensor.house_brain_maintenance_status"
 APPROVAL_EVENT = "mobile_app_notification_action"
@@ -233,6 +243,12 @@ KEY_NO_RESTART = frozenset({"scout_inventory"})
 INSPECTOR_SLUG = "local_house_brain_engineering_inspector"
 RE_AI_ACCESS_SLUG = re.compile(r"^(?:local|[0-9a-f]{8})_house_brain_ai_access$")
 RE_ENERGY_AI_SLUG = re.compile(r"^[0-9a-f]{8}_house_brain_energy_ai$")   # 0.9.24: the store Energy AI App only
+# 0.9.34: the Google Drive Backup App (sabeechen/hassio-google-drive-backup, store hash prefix) and the only two of
+# its settings this App may change. Its ``backup_password`` is never among them.
+RE_DRIVE_BACKUP_SLUG = re.compile(r"^[0-9a-f]{8}_hassio_google_drive_backup$")
+DRIVE_SETTINGS_NAMES = ("backup_time_of_day", "exclude_addons")
+RE_EXCLUDE_ADDONS = re.compile(r"^[a-z0-9_,\- ]{0,2000}$")
+RE_SECRET_OPTION_NAME = re.compile(r"password|token|secret|key|credential", re.I)
 # 0.9.30 (AI family plan step 4; owner pop-ups 2026-10-20 "Maintenance relays it", "Maintenance pulls /proposals"):
 # the store Systems AI App's two read-only routes on the internal Supervisor network, and the one family sensor.
 RE_SYSTEMS_AI_SLUG = re.compile(r"^[0-9a-f]{8}_house_brain_systems_ai$")
@@ -634,6 +650,34 @@ def energy_call_ok(energy: dict, method: str, path: str, body: Any) -> bool:
     return False
 
 
+def drive_values_ok(opts: dict) -> bool:
+    """0.9.34: the two settings this App may write, well-formed (the add-on's own schema: ``match(^[0-2]\\d:[0-5]\\d$)?``
+    and ``str?``)."""
+    tod = opts.get("backup_time_of_day", "")
+    excl = opts.get("exclude_addons", "")
+    return (isinstance(tod, str) and (tod == "" or (RE_TIME_OF_DAY.fullmatch(tod) is not None and int(tod[:2]) <= 23))
+            and isinstance(excl, str) and RE_EXCLUDE_ADDONS.fullmatch(excl) is not None)
+
+
+def drive_settings_call_ok(drive: dict, method: str, path: str, body: Any) -> bool:
+    """True only for the exact calls of one open ``drive_settings_target`` (0.9.34)."""
+    slug = drive["slug"]
+    if method == "GET":
+        return path == f"/addons/{slug}/info" and body is None
+    if method != "POST":
+        return False
+    if path == f"/addons/{slug}/restart":
+        return body in (None, {})
+    if path == f"/addons/{slug}/options":
+        opts = body.get("options") if isinstance(body, dict) and set(body) == {"options"} else None
+        base = drive.get("options")
+        return (isinstance(opts, dict) and isinstance(base, dict)
+                and frozenset(base) <= frozenset(opts) <= frozenset(base) | frozenset(DRIVE_SETTINGS_NAMES)
+                and all(opts[k] == v for k, v in base.items() if k not in DRIVE_SETTINGS_NAMES)
+                and drive_values_ok(opts))
+    return False
+
+
 def key_call_ok(key: dict, method: str, path: str, body: Any) -> bool:
     """True only for the exact calls of one open ``key_target`` (0.8.0)."""
     slug = key["slug"]
@@ -816,6 +860,7 @@ class HomeAssistant:
         self._obsmove: dict | None = None         # 0.9.8: {"old", "new"} during the Observer switch to the store
         self._insmove: dict | None = None         # 0.9.9: {"old", "new"} during the Inspector switch to the store
         self._energy: dict | None = None          # 0.9.24: {"slug", "options", "frame_sha256", "frame_sent"}
+        self._drive: dict | None = None           # 0.9.34: {"slug", "options"} (the Google Drive Backup App)
         self._self_slug: str | None = None
         # 0.6.1 shared Core socket (see shared_ws)
         self._shared_lock = threading.Lock()
@@ -900,13 +945,16 @@ class HomeAssistant:
         energy = self._energy
         if energy is not None and energy_call_ok(energy, method, path, body):
             return                                # 0.9.24: only inside energy_target (see the module docstring)
+        drive = self._drive
+        if drive is not None and drive_settings_call_ok(drive, method, path, body):
+            return                                # 0.9.34: only inside drive_settings_target (see the module docstring)
         raise ForbiddenCall(f"{method} {path}")
 
     def _busy(self) -> bool:
         return any(t is not None for t in (self._target, self._fix, self._system, self._os_act, self._pifw,
                                            self._migrate, self._legacy, self._obsmove, self._insmove,
                                            self._entity,
-                                           self._stage, self._key, self._energy))
+                                           self._stage, self._key, self._energy, self._drive))
 
     @contextmanager
     def fix_target(self, kind: str, ref: str):
@@ -1173,6 +1221,62 @@ class HomeAssistant:
         if energy is None or energy["frame_sha256"] is not None:
             raise ForbiddenCall("energy frame pinned twice or outside the job")
         energy["frame_sha256"] = hashlib.sha256(bytes(frame)).hexdigest()
+
+    # -- 0.9.34 Google Drive Backup App settings (only inside drive_settings_target) ----------------
+    def drive_backup_slug(self) -> str | None:
+        """The one installed Google Drive Backup App, or None (not installed, or more than one)."""
+        slugs = [a.slug for a in self.installed_apps() if RE_DRIVE_BACKUP_SLUG.fullmatch(a.slug)]
+        return slugs[0] if len(slugs) == 1 else None
+
+    @contextmanager
+    def drive_settings_target(self, slug: str):
+        """0.9.34: open the Google Drive Backup App's info read, its two-setting write and its restart."""
+        if not isinstance(slug, str) or not RE_DRIVE_BACKUP_SLUG.fullmatch(slug) \
+                or slug in ("self", self.self_slug(), self.scout, self.observer):
+            raise ForbiddenCall("drive settings target")
+        if self._busy():
+            raise ForbiddenCall("nested drive settings target")
+        self._drive = {"slug": slug, "options": None}
+        try:
+            yield
+        finally:
+            self._drive = None
+
+    def drive_settings_read(self) -> tuple[str, str, dict]:
+        """0.9.34, only inside ``drive_settings_target``: (state, version, the two settings as stored, "" when
+        never set). The whole option set is pinned on the first read; secret-named values are registered as
+        secrets at once and are never returned."""
+        drive = self._drive
+        if drive is None:
+            raise ForbiddenCall("drive settings read outside a Drive settings job")
+        data = self._supervisor("GET", f"/addons/{drive['slug']}/info")
+        options = data.get("options") if isinstance(data, dict) else None
+        if not isinstance(options, dict) or not drive_values_ok(options):
+            raise HAError("DRIVE_APP_OPTIONS")
+        for name, value in options.items():
+            if isinstance(value, str) and value and RE_SECRET_OPTION_NAME.search(str(name)):
+                net.register_secret(value)
+        if drive["options"] is None:
+            drive["options"] = dict(options)
+        state = data.get("state")
+        version = data.get("version")
+        return (state if state in SAFE_STATES else "unknown"), (version if isinstance(version, str) else ""), \
+            {name: str(options.get(name, "")) for name in DRIVE_SETTINGS_NAMES}
+
+    def drive_settings_write(self, settings: dict) -> None:
+        """0.9.34: write the pinned options back with only the two settings replaced (``settings`` names ⊆ the two)."""
+        drive = self._drive or {}
+        base = drive.get("options")
+        if not isinstance(base, dict):
+            raise ForbiddenCall("drive settings write before the read")
+        if not set(settings) <= set(DRIVE_SETTINGS_NAMES):
+            raise ForbiddenCall("drive settings name")
+        self._supervisor("POST", f"/addons/{drive.get('slug')}/options",
+                         body={"options": {**base, **{k: str(v) for k, v in settings.items()}}}, timeout=60)
+
+    def drive_settings_restart(self) -> None:
+        drive = self._drive or {}
+        self._supervisor("POST", f"/addons/{drive.get('slug')}/restart", body={}, timeout=300)
 
     def energy_send_frame(self, frame: bytes) -> None:
         """The one stdin write. The Supervisor appends the terminating newline."""

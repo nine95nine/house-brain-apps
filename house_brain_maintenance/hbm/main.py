@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from . import VERSION, approval, ghauth, ghpage, net
 from .github import REQUESTS_DIR, RE_REPO, GitHub
-from .ha import RE_SLUG, RE_UPDATE_ENTITY, HAError, HomeAssistant, RE_SWITCH
+from .ha import RE_SLUG, RE_UPDATE_ENTITY, HAError, HomeAssistant, RE_SWITCH, ForbiddenCall
 from .jobs import DONE, FAILED, FAILED_MANUAL, REFUSED, Engine, Result, Settings
 from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Updater
 from .system import JOBS as SYSTEM_JOBS, ROLLED_BACK, SystemPolicy, SystemUpdater
@@ -27,9 +27,10 @@ from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
 from .watch import Watcher, WatchPolicy
 from . import systemsai as SA
-from .manifest import (ASK_UPDATE_NOW, ENERGY_AI_SETTINGS, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE,
+from .manifest import (ADDON_SETTINGS, ASK_UPDATE_NOW, ENERGY_AI_SETTINGS, HOLD_UPDATE, NO_APPROVAL_JOBS, RELEASE_UPDATE,
                        RE_REQUEST_ID, ROTATE_KEYS_NOW, STAGE_LOCAL_APP_SOURCE, Manifest, ManifestError, parse)
 from .energyai import PENDING_DOC as ENERGY_PENDING_DOC, EnergyDelivery
+from .drivesettings import DriveSettings
 from .upgradeinfo import UpgradeInfo
 from .pifirmware import JOB as PIFW_JOB, FirmwarePolicy, PiFirmware
 from .cfrelay import RE_CONTROL_URL, CfRelay, control_url_from_broker, safe_cycle as cf_safe_cycle
@@ -1226,6 +1227,9 @@ class Service:
             if manifest.job == ENERGY_AI_SETTINGS:
                 self.energy_request(manifest, head)
                 return True
+            if manifest.job == ADDON_SETTINGS:
+                self.addon_settings_request(manifest)
+                return True
             result = self.ensure_engine().run(manifest)
             self.finish(request_id, manifest.job, manifest.digest, manifest.tracking_issue, result)
             return True  # at most one request per poll
@@ -1267,6 +1271,17 @@ class Service:
                                          "off on the next poll"])
             else:
                 result = Result(FAILED, [f"preflight: {reason}; nothing asked or changed"])
+        self.finish(m.request_id, m.job, m.digest, issue, result)
+
+    def addon_settings_request(self, m: Manifest) -> None:
+        """0.9.34 ADDON_SETTINGS: read the Google Drive Backup App's two settings, ask once, write, restart, report."""
+        engine = self.ensure_engine()
+        issue = m.tracking_issue or self.o.report_issue or None
+        self.j.record(self.key(m.request_id), m.digest, "APPLYING")
+        try:
+            result = DriveSettings(self.ha, self.j, engine.s, engine._ask).run(m)
+        except (HAError, net.NetError, ForbiddenCall) as err:
+            result = Result(FAILED, [f"{net.redact(str(err))[:200]}; check the App's Settings screen"])
         self.finish(m.request_id, m.job, m.digest, issue, result)
 
     def poll_energy_pending(self) -> bool:

@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issues as I, net
+from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issues as I, net, drivesettings as DS
 from . import problems as PR
 from . import systemsai as SA
 from .ha import AI_ACTIVITY_ENTITY, AI_CONNECTORS_ENTITY, DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
@@ -53,7 +53,8 @@ RELAY_READ_EVERY = 20 * 3600       # the relay self-tests weekly; one read a day
 FIXED = "FIXED"
 NOT_FIXED = "NOT_FIXED"
 # 0.9.23: a report comment this App posted (its address is the message link)
-PAGE_FIX_KINDS = ("restart_app", "start_app", "reload_entry", "apply_suggestion", "relabel_stats")   # 0.9.23
+PAGE_FIX_KINDS = ("restart_app", "start_app", "reload_entry", "apply_suggestion", "relabel_stats",
+                  "drive_backup_settings")   # 0.9.23; 0.9.34 the Google Drive Backup App's two settings
 
 
 def fix_rid(key: str) -> str:
@@ -213,6 +214,7 @@ class Watcher:
                 installed = [s for s, _ in self.apps_now]
                 out += B.completeness(inventory, running, names)
                 out += B.radio_freshness(inventory, installed, names, now)
+                out = DS.attach_fix(out, installed)                  # 0.9.34
             return out
 
         def disk() -> list[I.Finding]:
@@ -247,7 +249,8 @@ class Watcher:
                 drive = None
             self.locations_now = self.ha.backup_locations()
             findings += I.from_offsite(self.locations_now, now, drive)
-            findings += B.automatic_health(getattr(self.ha, "backup_auto", None), now)   # 0.8.5
+            findings += DS.attach_fix(B.automatic_health(getattr(self.ha, "backup_auto", None), now),   # 0.8.5
+                                      [s for s, _ in self.apps_now] if self.apps_now is not None else [])  # 0.9.34
         except Exception:  # noqa: BLE001 - older Core without backup/info, or Core restarting
             failed.append("offsite")
         return findings, failed
@@ -1038,6 +1041,8 @@ class Watcher:
             return self._power_cycle(f)
         if a.kind == "relabel_stats":
             return self._relabel(f)
+        if a.kind == DS.FIX_KIND:                       # 0.9.34: its own target, never a fix_target route
+            return DS.DriveSettings(self.ha, self.j, self.s, None, self.clock).fix(a.ref, fix_rid(f.key))
         try:
             with self.ha.fix_target(a.kind, a.ref):
                 if a.kind == "restart_app":

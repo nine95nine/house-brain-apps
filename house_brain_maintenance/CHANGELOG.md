@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.34
+
+Two settings of the Google Drive Backup App, changed for you on one Approve (owner pop-ups 2026-10-26 "Build 0.9.34",
+"06:45 Arizona", "Both"; Maintenance deep dive R2, Work Board #942 claim 6407699448). Two backup makers ran at the
+same minute (Home Assistant's own automatic backup, which runs at a random moment inside about an hour of its set
+time, and the Google Drive Backup App at a fixed minute): they blocked each other ("system is not running - freeze"),
+the App's copies left out an App installed later, and the owner chose to keep both makers and stagger them rather
+than switch to one. Contains 0.9.33 unchanged otherwise.
+
+- New request `ADDON_SETTINGS` (`addon: google_drive_backup`; `backup_time_of_day` HH:MM and/or `include_all_addons:
+  true`; or `undo: true`): reads that App's settings through the Supervisor, shows the before and after of the two
+  values on the phone, and on Approve writes them back with every other option byte-identical, restarts the App
+  once (the Supervisor applies options at the next start) and reads the values back. The two replaced values are
+  kept for `undo`. Its password is never read into a message, never set and never shown; the owner sets that in the
+  App's own screen.
+- The backup problems "Home Assistant's last automatic backup did not finish" and "Your newest full backup misses
+  … App(s)" get a **Fix it** when that App is installed: the same change with the owner's chosen defaults (06:45,
+  every App included), through the usual Approve.
+- Guard: a new Drive settings target in `hbm/ha.py` (that App's slug only; `GET info`, `POST options` with the names
+  just read and only the two settings changed, `POST restart`; never nested, never another App).
+- Tests: `test_l1_drive_settings.py` (manifest, guard matrix, description), `test_l4_drive_settings.py` (approve,
+  undo, reject, already set, not installed, time only, a write the App does not take, Fix it, wrong slug); mutants
+  `ds-slug-any-store`, `ds-guard-off`, `ds-names-free`, `ds-other-values-change`, `ds-values-unchecked`,
+  `ds-target-nests`, `ds-no-approval`, `ds-undo-not-kept`, `ds-fix-through-fix-target`.
+
 ## 0.9.33
 
 The App reads its own free-lane posts (live finding 2026-10-25 19:03Z, the first Sunday list: the lane's lockout

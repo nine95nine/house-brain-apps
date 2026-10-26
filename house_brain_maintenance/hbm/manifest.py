@@ -112,6 +112,15 @@ JOBS[HISTORY_MEASURE] = (frozenset({"day"}), frozenset({"chunk", "max_minutes"})
 NO_APPROVAL_JOBS = NO_APPROVAL_JOBS | {HISTORY_MEASURE}
 RE_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MEASURE_CHUNK_DEFAULT, MEASURE_MINUTES_DEFAULT = 25, 30
+# 0.9.34 (owner pop-ups 2026-10-26 "Build 0.9.34", "06:45 Arizona", "Both"): change two settings of the Google Drive
+# Backup App (sabeechen/hassio-google-drive-backup) through the Supervisor: its daily backup time and whether every
+# App is included (its ``exclude_addons`` list emptied). It asks the owner first and restarts that App once so the
+# new settings are in use. The App's password is never read into a message, never set and never shown by this job.
+# ``undo`` restores the two values the last run replaced (kept in this App's own memory).
+ADDON_SETTINGS = "ADDON_SETTINGS"
+ADDON_KINDS = ("google_drive_backup",)
+RE_TIME_OF_DAY = re.compile(r"^[0-2][0-9]:[0-5][0-9]$")
+JOBS[ADDON_SETTINGS] = (frozenset({"addon"}), frozenset({"backup_time_of_day", "include_all_addons", "undo"}))
 _TOP = frozenset({"schema", "request_id", "job", "requested_by", "tracking_issue", "note", "params"})
 _REQUIRED_TOP = frozenset({"schema", "request_id", "job", "requested_by", "params"})
 
@@ -167,6 +176,11 @@ class Manifest:
     energy_bundle_sha256: str | None = None
     energy_source_commit: str | None = None
     energy_expected_current: str | None = None
+    # 0.9.34 ADDON_SETTINGS
+    addon: str | None = None
+    addon_time_of_day: str | None = None
+    addon_include_all: bool | None = None
+    addon_undo: bool = False
     # 0.9.27 HISTORY_MEASURE
     measure_day: str | None = None
     measure_chunk: int = 25
@@ -249,6 +263,8 @@ def parse(raw: bytes) -> Manifest:
         log.update(legacy_phase=phase, custody_sha256=digest)
     if job == ENERGY_AI_SETTINGS:
         log.update(_energy(params))
+    if job == ADDON_SETTINGS:
+        log.update(_addon_settings(params))
     fp = params.get("expect_key_fingerprint")
     if fp is not None and (not isinstance(fp, str) or not RE_SHA256.fullmatch(fp)):
         raise ManifestError("EXPECT_KEY_FINGERPRINT")
@@ -303,6 +319,26 @@ def _energy(params: dict) -> dict:
         raise ManifestError("ENERGY_EXPECTED_CURRENT")
     return {"energy_operation": op, "energy_version": version, "energy_manifest_sha256": manifest,
             "energy_bundle_sha256": bundle, "energy_source_commit": commit, "energy_expected_current": current}
+
+
+def _addon_settings(params: dict) -> dict:
+    """0.9.34: one known App; either ``undo`` alone, or at least one of the two settings, each well-formed."""
+    addon = params["addon"]
+    if addon not in ADDON_KINDS:
+        raise ManifestError("ADDON")
+    if "undo" in params:
+        if params["undo"] is not True or set(params) != {"addon", "undo"}:
+            raise ManifestError("ADDON_UNDO_FIELDS")
+        return {"addon": addon, "addon_undo": True}
+    if not ({"backup_time_of_day", "include_all_addons"} & set(params)):
+        raise ManifestError("ADDON_NO_CHANGE")
+    tod = params.get("backup_time_of_day")
+    if tod is not None and (not isinstance(tod, str) or not RE_TIME_OF_DAY.fullmatch(tod) or int(tod[:2]) > 23):
+        raise ManifestError("ADDON_TIME")
+    include = params.get("include_all_addons")
+    if include is not None and include is not True:
+        raise ManifestError("ADDON_INCLUDE")
+    return {"addon": addon, "addon_time_of_day": tod, "addon_include_all": include}
 
 
 def _utc(value: Any, code: str) -> float:
