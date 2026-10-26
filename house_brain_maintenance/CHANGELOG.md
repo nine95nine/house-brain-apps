@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.37
+
+The pause is visible, and the firmware self-clear works on a real device (owner 2026-10-26, after 0.9.36 went live
+at 19:20Z: the Tesla pause `fw-front-yard-tesla-update-2026-38-5-11` did not clear although the car was back, and
+the status sensor only said `STARTED`; "create something internally for you to see that"). Contains 0.9.36
+unchanged otherwise.
+
+- **The pause is on the status sensor.** While the App is paused, `sensor.house_brain_maintenance_status` reads
+  `PAUSED` with `request_id` and `reason` (for a firmware pause the result of the latest device check, for any other
+  pause "the owner clears it: option clear_freeze_for = this request id"), published once per reason; `RESUMED`
+  when a firmware pause clears. The sensor is exported by the House Brain read-only perimeter, so any AI chat can
+  read the App's state without asking the owner.
+- **The self-clear measures against the baseline the pause kept.** 0.9.36 required *no* entity of the device
+  unavailable, which a car never satisfies (some entities stay unavailable for good). The 24 h watch now leaves the
+  device's pre-install baseline in the `firmware_pause` doc; a pause is cleared when no more entities are unavailable
+  than before the install. A pause without a baseline (left by 0.9.35) clears once the update entity reports and the
+  device is not entirely unavailable. An update entity that is `unavailable`/`unknown` never counts as back.
+- **The update entity is found by its id**, not only by the exact version in the request id: when the car offers a
+  newer version meanwhile, the pause still finds its device.
+- Tests: `test_l4_firmware_pause.py` (baseline kept and compared; no baseline; device or update entity unavailable;
+  version moved on; status sensor once per reason, RESUMED, any pause visible); mutants `dp-slug-match-dropped`,
+  `dp-baseline-ignored`, `dp-pause-doc-not-kept`, `dp-update-entity-state-ignored`,
+  `dp-all-unavailable-counts-as-back`, `dp-pause-not-shown`, `dp-pause-shown-every-poll`.
+
 ## 0.9.36
 
 A firmware device that is not back is watched, not a reason to pause the App (owner 2026-10-26: the Tesla car's

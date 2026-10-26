@@ -32,6 +32,7 @@ from .updates import (AUTO_LOW_RISK, DONE, DRY_RUN_OK, FAILED, FAILED_MANUAL, RE
 
 DOC = "entity_updates"
 WATCH_DOC = "firmware_watch"      # 0.9.36: one firmware install whose device has not reported back yet
+PAUSE_DOC = "firmware_pause"      # 0.9.37: the device baseline behind a firmware pause (for the self-clear)
 JOBS = {"hacs": "UPDATE_HACS", "hacs_integration": "UPDATE_HACS", "firmware": "UPDATE_FIRMWARE"}
 
 
@@ -547,6 +548,9 @@ class EntityUpdater:
                                          f"{to}; the update did not take", f"{to} will not be offered again"], facts)
         if time.time() >= float(doc.get("until") or 0):
             self.j.save_doc(WATCH_DOC, {})
+            # 0.9.37: the pause remembers the device's baseline, so "back" means "no worse than before the install"
+            self.j.save_doc(PAUSE_DOC, {"request_id": rid, "entity_id": doc.get("entity_id"),
+                                        "baseline": doc.get("baseline")})
             mem = self._mem()
             mem["quarantine"][str(doc.get("entity_id"))] = to
             self._save(mem)
@@ -557,23 +561,46 @@ class EntityUpdater:
 
     def device_back(self, rid: str) -> tuple[bool, str] | None:
         """0.9.36: for a pause left by a firmware install (``fw-…``): is that device healthy now? None when the
-        request id names no update entity this App can see."""
+        request id names no update entity this App can see. 0.9.37: the entity is found by its id even when the
+        offered version moved on, and "healthy" is measured against the baseline the pause kept (no more entities
+        unavailable than before the install); without one, the update entity must report and the device must not be
+        entirely unavailable (a car keeps some entities unavailable for good)."""
         try:
             ents = self.ha.update_entities()
         except (HAError, net.NetError):
             return None
+        found = None
         for e in ents:
-            if any(request_id_for("firmware", e.entity_id, v or "") == rid for v in (e.installed, e.latest)):
-                if not e.device_id:
-                    return True, f"{e.entity_id} reports {e.installed} (no device to check)"
-                try:
-                    health = self.ha.entity_health(device_id=e.device_id)
-                except (HAError, net.NetError) as err:
-                    return False, f"health read failed ({net.redact(str(err))[:80]})"
-                if health["unavailable"]:
-                    return False, f"{health['unavailable']} of {health['total']} entities still unavailable"
-                return True, f"{e.entity_id} reports {e.installed}; all {health['total']} entities available"
-        return None
+            slug = request_id_for("firmware", e.entity_id, "")
+            if any(request_id_for("firmware", e.entity_id, v or "") == rid for v in (e.installed, e.latest)) \
+                    or (rid.startswith(slug + "-") and (found is None or len(slug) > len(found[0]))):
+                found = (slug, e)
+        if found is None:
+            return None
+        e = found[1]
+        if e.state in ("unavailable", "unknown"):
+            return False, f"{e.entity_id} is {e.state}"
+        if not e.device_id:
+            return True, f"{e.entity_id} reports {e.installed} (no device to check)"
+        try:
+            health = self.ha.entity_health(device_id=e.device_id)
+        except (HAError, net.NetError) as err:
+            return False, f"health read failed ({net.redact(str(err))[:80]})"
+        pause = self.j.load_doc(PAUSE_DOC, {})
+        base = (pause.get("baseline") or {}) if isinstance(pause, dict) and pause.get("request_id") == rid else None
+        if base is not None:
+            before = int(base.get("unavailable") or 0)
+            if health["unavailable"] > before:
+                return False, (f"{health['unavailable']} of {health['total']} entities unavailable "
+                               f"(before the install: {before})")
+            return True, (f"{e.entity_id} reports {e.installed}; {health['unavailable']} of {health['total']} "
+                          f"entities unavailable, as before the install ({before})")
+        if health["total"] and health["unavailable"] >= health["total"]:
+            return False, f"all {health['total']} entities of the device still unavailable"
+        if health["unavailable"]:
+            return True, (f"{e.entity_id} reports {e.installed}; {health['unavailable']} of {health['total']} "
+                          "entities unavailable (no baseline kept for this pause; the update entity reports)")
+        return True, f"{e.entity_id} reports {e.installed}; all {health['total']} entities available"
 
     def _rollback(self, txn: dict, why: str) -> Outcome:
         rid = txn["request_id"]

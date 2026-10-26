@@ -18,7 +18,7 @@ from .ha import RE_SLUG, RE_UPDATE_ENTITY, HAError, HomeAssistant, RE_SWITCH, Fo
 from .jobs import DONE, FAILED, FAILED_MANUAL, REFUSED, REJECTED, Engine, Result, Settings
 from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Updater
 from .system import JOBS as SYSTEM_JOBS, ROLLED_BACK, SystemPolicy, SystemUpdater
-from .entities import JOBS as ENTITY_JOBS, WATCH_DOC, EntityPolicy, EntityUpdater
+from .entities import PAUSE_DOC, JOBS as ENTITY_JOBS, WATCH_DOC, EntityPolicy, EntityUpdater
 from .migrate import JOB as MIGRATE_JOB, MigratePolicy, Migrator
 from .scoutmove import JOB as SCOUTMOVE_JOB, ScoutMove
 from .observermove import JOB as OBSMOVE_JOB, TXN as OBSMOVE_TXN, ObserverMove, ObserverMovePolicy
@@ -395,6 +395,7 @@ class Service:
         self.obsmove: ObserverMove | None = None           # 0.9.8: Engineering Observer local -> store switch
         self.insmove: InspectorMove | None = None          # 0.9.9: Engineering Inspector local -> store switch
         self._writer_reported = False                      # 0.9.4: lock identity posted on #454 once per start
+        self.pause_shown: tuple[str, str] | None = None     # 0.9.37: the (pause, reason) on the status sensor
         self.watcher: Watcher | None = None
         self.after_reports: AfterReports | None = None   # 0.9.26: this App's own after-update reports
         self.connector: ghpage.Connector | None = None   # GitHub connection page (Credential Autopilot)
@@ -724,19 +725,30 @@ class Service:
             self.j.clear_freeze()
             self.j.audit(rid, "FREEZE_CLEARED_BY_OWNER")
             return None
+        why = "the owner clears it: option clear_freeze_for = this request id"
         if rid and rid.startswith("fw-") and not self.j.load_txn():
             # 0.9.36: a pause left by a firmware install whose device has since come back clears by itself
             self.ensure_engine()
             back = self.entities.device_back(rid) if self.entities is not None else None
             if back and back[0]:
                 self.j.clear_freeze()
+                self.j.save_doc(PAUSE_DOC, {})
                 self.j.audit(rid, "FREEZE_CLEARED_DEVICE_BACK", detail=back[1][:200])
+                self.pause_shown = None
+                self.status("RESUMED", {"request_id": rid, "version": VERSION, "dry_run": self.o.dry_run})
                 try:
                     self.report_text(f"### House Brain Maintenance: pause cleared\n\n- `{rid}`: {back[1]}. "
                                      "Automation resumes.")
                 except Exception as err:  # noqa: BLE001 - the pause is cleared either way
                     LOG.warning("pause-cleared report waits: %s", net.redact(str(err))[:200])
                 return None
+            why = ("the device is checked every poll: " + back[1]) if back else \
+                "no update entity matches this pause; " + why
+        if rid and (rid, why) != self.pause_shown:
+            # 0.9.37: the pause and its reason are readable on the status sensor (owner 2026-10-26: "see it yourself")
+            self.pause_shown = (rid, why)
+            self.status("PAUSED", {"request_id": rid, "reason": why[:250], "version": VERSION,
+                                   "dry_run": self.o.dry_run})
         return rid
 
     def poll_firmware_watch(self) -> bool:
