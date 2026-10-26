@@ -1,0 +1,24 @@
+name: House Brain Water AI
+version: "0.1.0"
+slug: house_brain_water_ai
+description: Read-only learner for the RO tank (in psi) and ledger for the yard hose timers;
+  B-hyve keeps control; no commands, no state writes.
+arch:
+- aarch64
+homeassistant: 2026.10.0
+startup: application
+boot: manual
+stage: experimental
+init: false
+homeassistant_api: true
+hassio_api: false
+docker_api: false
+host_network: false
+full_access: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:water-sync
+options:
+  mode: SHADOW
+schema:
+  mode: list(SHADOW)

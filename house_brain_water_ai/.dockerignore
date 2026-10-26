@@ -1,0 +1,12 @@
+**
+!Dockerfile
+!.dockerignore
+!DOCS.md
+!README.md
+!config.yaml
+!requirements.txt
+!SOURCE_MANIFEST.sha256
+!water_ai/
+!water_ai/**
+**/__pycache__/
+**/*.pyc

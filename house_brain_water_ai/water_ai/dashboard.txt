@@ -1,0 +1,30 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>House Brain Water AI</title><style>
+body{font:16px system-ui;background:#101b26;color:#e9f0f5;margin:0;padding:24px;max-width:1100px}h1{font-size:28px}h2{font-size:19px;color:#7bddd2}section{background:#1a2b3b;border-radius:12px;padding:18px;margin:15px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}.muted{color:#aabfce}#state{font-weight:bold}.line{white-space:pre-wrap;overflow-wrap:anywhere}
+</style><h1>House Brain Water AI</h1><p class="muted">Learns the RO tank (in psi) and keeps the yard-watering ledger · read-only · B-hyve keeps control · no alerts of its own</p>
+<section><span id="state">Connecting…</span><p id="why" class="muted"></p></section>
+<section><h2>In plain words</h2><p class="line" id="plain"></p></section>
+<section><h2>RO tank</h2><p class="line" id="ro"></p><p class="muted">Pressure only. Gallons are not available until the RO bench values and a second calibration point exist; they are never worked out from runtime.</p></section>
+<section><h2>Yard watering</h2><p class="line" id="yard"></p><p class="muted">Gallons are what Orbit reports, not a meter reading. A run Orbit did not report stays a gap.</p></section>
+<section><h2>Forecasts</h2><p class="line" id="forecasts"></p><p class="muted">Called a forecast only after it beat its simple baseline on at least 5 scored days.</p></section>
+<section><h2>Waiting for hardware</h2><p class="line" id="slots"></p></section>
+<section><h2>History</h2><p class="line" id="history"></p></section>
+<section><h2>Full evidence</h2><details><summary>Tap to open</summary><pre id="raw"></pre></details></section>
+<script>
+const $=x=>document.getElementById(x);let s={};
+const t=x=>x==null?'not available yet':x;const w=x=>String(x||'').toLowerCase().replaceAll('_',' ');
+const f1=x=>x==null?'—':Number(x).toFixed(1);const when=x=>x?new Date(x*1000).toLocaleString():'';
+const ZN={front_yard:'Front yard',back_yard_by_pool:'Back yard by the pool',pool_equipment:'Pool equipment'};
+function render(){$('state').textContent=s.state+' · '+(s.version||'')+(s.hold_reason?' · held: '+s.hold_reason:'');$('why').textContent='Physical actions: none. Control authority: none.';
+let n=s.now||{},ro=s.ro||{},rn=n.ro||{},L=ro.learned||{},yard=s.yard||{};let today=(ro.days||{})[new Date().toLocaleDateString('en-CA',{timeZone:'America/Phoenix'})];
+$('plain').textContent=['RO tank '+f1(rn.psi)+' psi now'+(rn.ok?'':' (reading not trusted right now: '+w(rn.signal||'missing')+')')+'.'+(today?' Today: '+today.refills+' refill(s), '+today.draws+' draw(s).':''),
+Object.entries(yard).map(([z,y])=>(ZN[z]||z)+': '+y.runs_30d+' run(s) in 30 days, '+f1(y.gallons_30d)+' gal reported'+(y.not_reported?', '+y.not_reported+' not reported':'')+(y.waiting_for_orbit?', '+y.waiting_for_orbit+' waiting for Orbit':'')).join('\n')].join('\n');
+$('ro').textContent=(L.refills_14d!=null?'Last 14 days: '+L.refills_14d+' refills, typical '+f1(L.refill_minutes_median)+' min, rising '+f1(L.rise_psi_h_median)+' psi/h, full at about '+f1(L.plateau_psi_median)+' psi.':'Learning.')+((ro.draw_classes||{}).status==='TWO_CLASSES'?'\nDraw sizes: '+ro.draw_classes.small.count+' small (about '+f1(ro.draw_classes.small.median_drop_psi)+' psi), '+ro.draw_classes.large.count+' large (about '+f1(ro.draw_classes.large.median_drop_psi)+' psi) in 14 days.':'')+'\nOvernight bleed: '+(Object.entries(ro.nights||{}).slice(-5).map(([d,v])=>d+' '+v+' psi/h').join(', ')||'no quiet night seen yet')+'\nCalibration: '+t(rn.calibration)+'.';
+$('yard').textContent=Object.entries(yard).map(([z,y])=>{let b=y.battery||{},f=y.flow||{},sc=y.schedule||{},nz=(n.zones||{})[z]||{};return (ZN[z]||z)+(nz.live?'':' — not reachable now')+(nz.spelling==='_2'?' (renamed entities)':'')+'\n  runs '+y.runs_30d+', typical '+f1(y.minutes_median)+' min · schedule kept '+(sc.ON_TIME||0)+', missed '+(sc.MISSED||0)+', skipped for rain delay '+(sc.SKIPPED_RAIN_DELAY||0)+', unscheduled '+(sc.UNSCHEDULED||0)+(sc.NO_DATA?', no data '+sc.NO_DATA:'')+'\n  battery '+t(b.last)+' %'+(b.status==='ESTIMATED'?' ('+b.per_week+' %/week'+(typeof b.reaches_threshold==='string'&&b.reaches_threshold.match(/^\d/)?', reaches '+b.threshold+' % about '+b.reaches_threshold:', '+w(b.reaches_threshold))+')':' (learning)')+'\n  reported flow '+(f.status==='LEARNING'?'learning':f.median_gpm+' gal/min'+(f.status==='REPORTED_FLOW_CHANGED'?' — the last runs reported a different flow':''));}).join('\n')||'Learning.';
+$('forecasts').textContent=Object.entries(s.forecasts||{}).map(([k,x])=>w(k)+': '+w(x.status)+(x.scored?' · '+x.scored+' scored, error '+x.model_mae+' vs baseline '+x.baseline_mae:'')+(x.pending?' · '+x.pending+' waiting':'')).join('\n');
+let sl=n.slots||{};$('slots').textContent=['Leak sensors: not connected (none installed yet).','Rain and evaporation (ET0): no source yet.','Indoor plant watering: reserved; nothing connected yet.','Fish-room probes on the RO monitor: not commissioned'+((sl.r7_probes||{}).note?'. '+sl.r7_probes.note:'.'),'Offline yard timers: '+((sl.offline_timers||{}).kept_offline||0)+' kept offline, '+((sl.offline_timers||{}).now_live||0)+' reachable now.'].join('\n');
+let h=s.history||{};$('history').textContent=(h.status==='BACKFILLING'?'Reading the last 40 days from Home Assistant: '+h.entity_days_waiting+' entity-days to go (one a minute).':'Up to date; one new day each night.')+' Kept: '+t(h.psi_minutes)+' RO minutes, '+t(h.points)+' changes.';
+$('raw').textContent=JSON.stringify(s,null,2);}
+async function refresh(){try{let r=await fetch('./status',{cache:'no-store'});if(!r.ok)throw Error();s=await r.json();render();}catch(e){$('state').textContent='Not reachable; retrying.';}}
+refresh();setInterval(refresh,30000);
+</script></html>
