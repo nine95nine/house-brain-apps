@@ -31,6 +31,7 @@ from .updates import (AUTO_LOW_RISK, DONE, DRY_RUN_OK, FAILED, FAILED_MANUAL, RE
                       TRACK_RECORD_NEEDED, Outcome)
 
 DOC = "entity_updates"
+WATCH_DOC = "firmware_watch"      # 0.9.36: one firmware install whose device has not reported back yet
 JOBS = {"hacs": "UPDATE_HACS", "hacs_integration": "UPDATE_HACS", "firmware": "UPDATE_FIRMWARE"}
 
 
@@ -45,6 +46,7 @@ class EntityPolicy:
     health_seconds: float = 180.0
     boot_seconds: float = 900.0             # Core back after a restart within this time
     firmware_seconds: float = 3600.0        # a firmware install may take this long
+    firmware_watch_seconds: float = 24 * 3600.0   # 0.9.36: a device that is not back is watched this long
     poll: float = 5.0
     hold: frozenset[str] = frozenset()      # update entities the owner holds (option update_hold)
     enabled: bool = True                    # option entity_updates
@@ -392,10 +394,8 @@ class EntityUpdater:
         now = self._read(txn)
         self.j.clear_txn()
         if txn["entity_kind"] == "firmware" and not self._device_ok(txn)[0]:
-            return Outcome(txn["request_id"], FAILED_MANUAL, [
-                f"the firmware update to {txn['to']} did not finish (the device reports "
-                f"{getattr(now, 'installed', None)}) and the device is not back", "check the device; automation is "
-                "paused"], {"backup": txn.get("backup")})
+            return self._start_watch(txn, f"the firmware update to {txn['to']} did not finish (the device reports "
+                                          f"{getattr(now, 'installed', None)}) and the device is not back")
         return Outcome(txn["request_id"], FAILED, [f"the update did not happen (still on "
                                                    f"{getattr(now, 'installed', None)}); nothing changed"],
                        {"backup": txn.get("backup")})
@@ -498,12 +498,82 @@ class EntityUpdater:
         mem["quarantine"][txn["entity_id"]] = txn["to"]
         self._save(mem)
         if kind == "firmware":
-            self.j.clear_txn()
-            return Outcome(rid, FAILED_MANUAL, [f"firmware {txn['to']} installed, but the device is not healthy "
-                                                f"({why})", "firmware cannot be rolled back automatically; check the "
-                                                "device; automation is paused", f"{txn['to']} will not be offered "
-                                                "again"], {"failure": why})
+            del mem["quarantine"][txn["entity_id"]]            # 0.9.36: judged after the watch, not now
+            self._save(mem)
+            return self._start_watch(txn, f"firmware {txn['to']} installed, but the device is not healthy ({why})")
         return self._rollback(txn, why)
+
+    # -- 0.9.36 (owner 2026-10-26, Tesla car software 2026.38.5.11 at 16:08Z: the car went offline for its install,
+    # the App waited an hour, called it "not back" and paused itself, so nothing else ran): a device that has not
+    # reported back after a firmware install is watched for ``firmware_watch_seconds`` instead of pausing the App.
+    def _start_watch(self, txn: dict, why: str) -> Outcome:
+        rid = txn["request_id"]
+        self.j.clear_txn()
+        hours = self.p.firmware_watch_seconds / 3600.0
+        doc = {k: txn.get(k) for k in ("request_id", "entity_id", "platform", "device_id", "unique_id", "from", "to",
+                                       "baseline", "backup", "automatic")}
+        doc.update(why=why[:300], started=time.time(), until=time.time() + self.p.firmware_watch_seconds)
+        self.j.save_doc(WATCH_DOC, doc)
+        self.j.audit(rid, "FIRMWARE_WATCH_STARTED", entity=txn["entity_id"], to=txn["to"], hours=hours)
+        return Outcome(rid, FAILED, [why, f"this App keeps checking the device for {hours:g} h and reports again when "
+                                          "it is back; nothing is paused meanwhile"],
+                       {"backup": txn.get("backup"), "watch_hours": hours})
+
+    def watch_step(self) -> Outcome | None:
+        """0.9.36: one look at the watched device. DONE when it is back on the new version, FAILED when it is back on
+        another one, FAILED_MANUAL (the pause, as before) when the watch runs out; None while it is still away."""
+        doc = self.j.load_doc(WATCH_DOC, {})
+        if not isinstance(doc, dict) or not doc.get("request_id"):
+            return None
+        rid, to = str(doc["request_id"]), str(doc.get("to"))
+        facts = {"backup": doc.get("backup"), "entity_id": doc.get("entity_id"), "to": to, "from": doc.get("from"),
+                 "kind": "firmware"}
+        now = self._read(doc)
+        ok, why = self._device_ok(doc)
+        minutes = int((time.time() - float(doc.get("started") or time.time())) // 60)
+        if ok and now is not None and not now.in_progress and now.installed == to:
+            self.j.save_doc(WATCH_DOC, {})
+            mem = self._mem()
+            mem["successes"] = int(mem["successes"]) + 1
+            self._save(mem)
+            self.j.audit(rid, "ENTITY_HEALTHY", entity=doc.get("entity_id"), to=to, after_minutes=minutes)
+            return Outcome(rid, DONE, [f"the device is back on {to} after {minutes} min; healthy"], facts)
+        if ok and now is not None and not now.in_progress:
+            self.j.save_doc(WATCH_DOC, {})
+            mem = self._mem()
+            mem["quarantine"][str(doc.get("entity_id"))] = to
+            self._save(mem)
+            return Outcome(rid, FAILED, [f"the device is back after {minutes} min but reports {now.installed}, not "
+                                         f"{to}; the update did not take", f"{to} will not be offered again"], facts)
+        if time.time() >= float(doc.get("until") or 0):
+            self.j.save_doc(WATCH_DOC, {})
+            mem = self._mem()
+            mem["quarantine"][str(doc.get("entity_id"))] = to
+            self._save(mem)
+            return Outcome(rid, FAILED_MANUAL, [f"the device has not come back {minutes // 60} h after the firmware "
+                                                f"install ({doc.get('why')}; now: {why})", "check the device; "
+                                                "automation is paused", f"{to} will not be offered again"], facts)
+        return None
+
+    def device_back(self, rid: str) -> tuple[bool, str] | None:
+        """0.9.36: for a pause left by a firmware install (``fw-…``): is that device healthy now? None when the
+        request id names no update entity this App can see."""
+        try:
+            ents = self.ha.update_entities()
+        except (HAError, net.NetError):
+            return None
+        for e in ents:
+            if any(request_id_for("firmware", e.entity_id, v or "") == rid for v in (e.installed, e.latest)):
+                if not e.device_id:
+                    return True, f"{e.entity_id} reports {e.installed} (no device to check)"
+                try:
+                    health = self.ha.entity_health(device_id=e.device_id)
+                except (HAError, net.NetError) as err:
+                    return False, f"health read failed ({net.redact(str(err))[:80]})"
+                if health["unavailable"]:
+                    return False, f"{health['unavailable']} of {health['total']} entities still unavailable"
+                return True, f"{e.entity_id} reports {e.installed}; all {health['total']} entities available"
+        return None
 
     def _rollback(self, txn: dict, why: str) -> Outcome:
         rid = txn["request_id"]

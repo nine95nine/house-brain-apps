@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.36
+
+A firmware device that is not back is watched, not a reason to pause the App (owner 2026-10-26: the Tesla car's
+software update 2026.38.5.11, approved 16:08Z, took the car offline for its install; after the hour-long wait the
+App called it "not back", ended `FAILED_MANUAL` and paused itself at 17:08Z, so no problem watch, no update
+checks and no request ran until the owner would type the request id into `clear_freeze_for`; pop-up "Build
+0.9.36"; Work Board #942 claim 6424338706). Contains 0.9.35 unchanged otherwise.
+
+- After a firmware install, a device that has not reported back (or is back but not healthy) is put on a
+  **24-hour watch** (`firmware_watch` doc): the result is `FAILED` with "this App keeps checking the device for
+  24 h", nothing is paused, and every poll looks again. Back on the new version → `DONE` (counts as a success);
+  back on another version → `FAILED`, that version not offered again; never back → `FAILED_MANUAL` and the pause,
+  as before.
+- A pause left by a firmware install (`fw-…`) clears by itself once that device is healthy again (its update
+  entity found, no entity of the device unavailable): audit `FREEZE_CLEARED_DEVICE_BACK` and one line
+  "### House Brain Maintenance: pause cleared" on the tracking issue. Any other pause still needs the owner's
+  `clear_freeze_for`.
+- Tests: `test_l4_firmware_watch.py` (watched not paused; back on the new version; back on the old version; never
+  back; a stale pause clears; a pause stays while the device is away or unknown); the mimic's `firmware_away`
+  (the install takes the device's entities offline and leaves the version); mutants `dw-watch-pauses-at-once`,
+  `dw-watch-never-ends`, `dw-old-version-counts-as-done`, `dw-thaw-ignores-health`, `dw-thaw-any-firmware-pause`,
+  `dw-watch-not-polled`.
+
 ## 0.9.35
 
 Missed requests you can still answer (owner 2026-10-26: "you've got to figure out a way how to see what I'm saying,

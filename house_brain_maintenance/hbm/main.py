@@ -18,7 +18,7 @@ from .ha import RE_SLUG, RE_UPDATE_ENTITY, HAError, HomeAssistant, RE_SWITCH, Fo
 from .jobs import DONE, FAILED, FAILED_MANUAL, REFUSED, REJECTED, Engine, Result, Settings
 from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Updater
 from .system import JOBS as SYSTEM_JOBS, ROLLED_BACK, SystemPolicy, SystemUpdater
-from .entities import JOBS as ENTITY_JOBS, EntityPolicy, EntityUpdater
+from .entities import JOBS as ENTITY_JOBS, WATCH_DOC, EntityPolicy, EntityUpdater
 from .migrate import JOB as MIGRATE_JOB, MigratePolicy, Migrator
 from .scoutmove import JOB as SCOUTMOVE_JOB, ScoutMove
 from .observermove import JOB as OBSMOVE_JOB, TXN as OBSMOVE_TXN, ObserverMove, ObserverMovePolicy
@@ -724,7 +724,30 @@ class Service:
             self.j.clear_freeze()
             self.j.audit(rid, "FREEZE_CLEARED_BY_OWNER")
             return None
+        if rid and rid.startswith("fw-") and not self.j.load_txn():
+            # 0.9.36: a pause left by a firmware install whose device has since come back clears by itself
+            self.ensure_engine()
+            back = self.entities.device_back(rid) if self.entities is not None else None
+            if back and back[0]:
+                self.j.clear_freeze()
+                self.j.audit(rid, "FREEZE_CLEARED_DEVICE_BACK", detail=back[1][:200])
+                try:
+                    self.report_text(f"### House Brain Maintenance: pause cleared\n\n- `{rid}`: {back[1]}. "
+                                     "Automation resumes.")
+                except Exception as err:  # noqa: BLE001 - the pause is cleared either way
+                    LOG.warning("pause-cleared report waits: %s", net.redact(str(err))[:200])
+                return None
         return rid
+
+    def poll_firmware_watch(self) -> bool:
+        """0.9.36: one look at a firmware device that has not reported back; True when it reported a result."""
+        if self.entities is None:
+            return False
+        out = self.entities.watch_step()
+        if out is None:
+            return False
+        self.finish_entity(out, "firmware")
+        return True
 
     def report_writer_identity(self) -> None:
         """0.9.4 (Deployer handoff #942 6133340527): post this App's view of the shared writer lock on the tracking
@@ -816,6 +839,8 @@ class Service:
         if self.poll_energy_pending():                  # 0.9.24: setup_only off again after a restart mid-delivery
             return
         if self.frozen():
+            return
+        if self.poll_firmware_watch():                  # 0.9.36: a watched firmware device reported back
             return
         if self.poll_page_reask():
             return
