@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.39
+
+The unattended week (owner 2026-10-31, after 2026-10-27..31 with every chat out of usage: "so that the next time I
+run out of usage, the systems can actually handle these errors and issues on their own"). Contains 0.9.38
+unchanged otherwise.
+
+- **Re-asks back off, and the phone is left alone after three unanswered asks** (`hbm/reasks.py`). Live on 0.9.37
+  the OS 18.4 update and an ESPHome beta were asked on the phone every 6 hours for four days (about 8 pushes a day,
+  nothing answered). An unanswered App, Core/OS or HACS/firmware ask now waits 6 h, then 12 h, then 24 h; after three
+  unanswered asks it waits on the Maintenance page ("Needs your decision") and in the morning summary, and the phone
+  asks again only once the owner has decided anything on the page. The waiting list says so (`waiting_page`).
+- **Update asks respect the daily ask limit.** They counted against `max_approval_requests_per_day` but never checked
+  it, so the storm used the whole budget of the chats' requests and the fixes. A phone ask for an update now waits for
+  the next day when the limit is reached ("today's phone-ask limit is used up ..."); a page decision never waits.
+- **Stale page items are dropped and a void tap is logged.** A missed fix ask whose problem has cleared, or a missed
+  update ask whose version was superseded, leaves the page; a page decision on such an item is logged on the
+  tracking issue as void ("the problem had cleared or the update was superseded; nothing ran") instead of sitting
+  unconsumed (live: the owner approved the same cleared backup fix three times and a Tailscale version that was gone).
+  Audit `PAGE_STALE_DROPPED`.
+- **A silent cloud reviewer no longer holds updates for 48 h.** When no cloud review has appeared for a day (the free
+  lane's lockout clock), the AI-review wait ends at once: the phone is asked (never an automatic install), and the ask
+  says why. Owner and cloud reviews still win when they come.
+- **Offline devices of one integration are one problem.** Three or more devices of one integration offline together
+  (live: 20 irrigation timers listed one by one for days) become `offline:group:<integration>` naming the hub as the
+  first thing to check; other integrations' devices stay listed one by one.
+- Tests: `test_l1_unattended.py` (back-off maths, daily budget, inbox reconcile, grouping), `test_l4_unattended.py`
+  (the storm and the page-only state, the daily limit, a void superseded tap, a silent cloud reviewer); mutants `ra-*`.
+
 ## 0.9.38
 
 Fewer repeats and fewer missed asks while the owner and the cloud reviewer are away (owner pop-ups 2026-10-31 "Fix

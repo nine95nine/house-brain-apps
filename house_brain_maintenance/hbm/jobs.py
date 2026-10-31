@@ -73,6 +73,7 @@ class Settings:
     scout_run_timeout: float = 600.0
     poll: float = 5.0
     should_stop: object = None
+    ask_allowed: object = None   # 0.9.39: () -> bool, the daily phone-ask limit (reasks.budget)
 
 
 def checked_inventory_url(url: str | None) -> str:

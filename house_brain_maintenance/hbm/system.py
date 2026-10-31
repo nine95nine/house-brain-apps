@@ -34,7 +34,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from . import approval, issues as I, net, upgradeinfo
+from . import approval, issues as I, net, reasks, upgradeinfo
 from .ha import ForbiddenCall, HAError, HomeAssistant, OsState, SystemInfo
 from .journal import Journal
 from .manifest import RE_UPDATE_VERSION
@@ -107,7 +107,7 @@ class SystemUpdater:
     # -- memory ------------------------------------------------------------------------
     def _mem(self) -> dict:
         mem = self.j.load_doc(DOC, {})
-        for key in ("reviewed", "asked", "declined", "practiced", "held", "quarantine", "hold_noted"):
+        for key in ("reviewed", "asked", "declined", "practiced", "held", "quarantine", "hold_noted", "timeouts"):
             mem.setdefault(key, {})
         return mem
 
@@ -145,8 +145,10 @@ class SystemUpdater:
             asked, reviewed = mem["asked"].get(key), mem["reviewed"].get(key)
             if asked:
                 out.append({"kind": kind, "version": version, "asked_at": utc_iso(float(asked)),
-                            "next_reask_at": utc_iso(float(asked) + self.p.reask_hours * 3600),
-                            "state": "waiting_reask"})
+                            "next_reask_at": utc_iso(float(asked) + reasks.wait_seconds(
+                                self.p.reask_hours, int(mem["timeouts"].get(key) or 0))),
+                            "state": "waiting_page" if not reasks.phone_allowed(int(mem["timeouts"].get(key) or 0))
+                            else "waiting_reask"})
             elif reviewed:
                 out.append({"kind": kind, "version": version, "asked_at": None,
                             "next_reask_at": utc_iso(float(reviewed) + self.p.lead_seconds),
@@ -287,10 +289,23 @@ class SystemUpdater:
                 note(key, f"waiting for the AI review (asked after it, or from {self.ai.ask_anyway_at(float(reviewed))})")
                 continue
             asked = mem["asked"].get(key)
-            if asked and now - float(asked) < self.p.reask_hours * 3600 and not decided:
-                note(key, "asked on your phone; asks again at "
-                     + time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(float(asked) + self.p.reask_hours * 3600)))
-                return None
+            if asked and not decided:
+                n = int(mem["timeouts"].get(key) or 0)
+                if n and approval.owner_decided_since(float(asked)):   # 0.9.39: the owner is back
+                    mem["timeouts"].pop(key, None)
+                    self._save(mem)
+                    n = 0
+                if not reasks.phone_allowed(n):                          # 0.9.39: three unanswered asks: page only
+                    note(key, reasks.PAGE_ONLY_NOTE)
+                    continue
+                if now - float(asked) < reasks.wait_seconds(self.p.reask_hours, n):
+                    note(key, reasks.next_ask_note(float(asked), self.p.reask_hours, n))
+                    return None
+            if not decided:
+                ok, why = reasks.budget(self.s)                          # 0.9.39: the daily ask limit
+                if not ok:
+                    note(key, why)
+                    continue
             note(key, "asking on your phone now")
             return self._ask_then_apply(rid, key, info, facts)
         return None
@@ -319,14 +334,19 @@ class SystemUpdater:
             decision = self._ask(rid, info, facts)
         finally:
             self.asking = ""
+        mem = self._mem()
+        if decision == approval.TIMEOUT:                                 # 0.9.39: counted, for the back-off
+            mem["timeouts"][key] = int(mem["timeouts"].get(key) or 0) + 1
+        else:
+            mem["timeouts"].pop(key, None)
+        if decision == approval.REJECT:
+            mem["declined"][key] = True
+        self._save(mem)
         if decision != approval.APPROVE:
-            if decision == approval.TIMEOUT:
+            if decision == approval.TIMEOUT and reasks.phone_allowed(int(mem["timeouts"][key])):
                 missed_note(self.ha, self.s.notify_service, f"{LABEL[info.kind]} {info.version_latest}",
-                            asked + self.p.reask_hours * 3600, url=getattr(self.s, "open_url", None))
-            if decision == approval.REJECT:
-                mem = self._mem()
-                mem["declined"][key] = True
-                self._save(mem)
+                            asked + reasks.wait_seconds(self.p.reask_hours, int(mem["timeouts"][key])),
+                            url=getattr(self.s, "open_url", None))
             return Outcome(rid, REJECTED, [f"owner decision: {decision}"], facts)
         result = self.apply(rid, info, facts)
         if result is not None:

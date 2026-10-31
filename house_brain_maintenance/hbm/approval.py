@@ -32,6 +32,17 @@ def decided(stage: str, rid: str) -> bool:
     return INBOX is not None and bool(rid) and INBOX.decided(f"{stage}:{rid}|")
 
 
+def owner_decided_since(ts: float) -> bool:
+    """0.9.39: did the owner decide anything on the Maintenance page after ``ts``? (a sign they are back)"""
+    return INBOX is not None and float(INBOX.last_decision_at() or 0) > float(ts)
+
+
+def reconcile(valid_heads: set[str], stages: tuple[str, ...]) -> int:
+    """0.9.39: drop the page's missed asks and decisions (of these stages) whose request is no longer offered:
+    a fix whose problem cleared, an update superseded by a newer version. A dropped decision is logged as void."""
+    return INBOX.reconcile(valid_heads, stages) if INBOX is not None else 0
+
+
 def _from_inbox(key: str) -> str | None:
     if INBOX is None:
         return None

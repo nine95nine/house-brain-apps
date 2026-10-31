@@ -120,6 +120,7 @@ class AiReviews:
         self.gh, self.j, self.issue, self.enabled, self.clock = gh, journal, int(issue), enabled, clock
         self.owner = gh.repo.split("/", 1)[0] if gh is not None else ""
         self.failed = False           # 0.9.12: the last read did not complete (then "no review" is not known)
+        self.lockout = None           # 0.9.39: () -> bool, the cloud reviewer has been silent for a day (free lane)
 
     def _doc(self) -> dict:
         doc = self.j.load_doc(self.DOC, {})
@@ -188,13 +189,24 @@ class AiReviews:
             summary = f": {r['summary']}" if r.get("summary") else ""
             return Gate("ok", r["verdict"], f"AI review: {words}{summary}"[:200], r["verdict"] == "APPROVE")
         waited = (self.clock() - float(first_seen)) / 3600 if first_seen else 0.0
-        if waited < AI_WAIT_HOURS:
+        if waited < AI_WAIT_HOURS and not self._locked():
             return Gate("wait", None, "AI review: requested on the tracking issue", False)
+        if waited < AI_WAIT_HOURS:                     # 0.9.39: the cloud reviewer is silent: no point waiting 48 h
+            return Gate("missing", None, "AI review: none, and the cloud reviewer has been silent for a day (asked "
+                                         "anyway; never installs by itself)", False)
         return Gate("missing", None, f"AI review: none after {AI_WAIT_HOURS:.0f} h (asked anyway; never installs "
                                      "by itself)", False)
 
+    def _locked(self) -> bool:
+        try:
+            return bool(self.lockout()) if self.lockout is not None else False
+        except Exception:  # noqa: BLE001 - an unreadable lane state means "not silent"
+            return False
+
     def ask_anyway_at(self, first_seen: float | None) -> str:
         """When the phone is asked even without a review (a fixed time, so the waiting list stays stable)."""
+        if self._locked():
+            return "now (the cloud reviewer has been silent for a day)"
         start = float(first_seen) if first_seen else self.clock()
         return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(start + AI_WAIT_HOURS * 3600))
 

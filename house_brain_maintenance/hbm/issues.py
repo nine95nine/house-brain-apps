@@ -130,6 +130,7 @@ LONG_OFFLINE_DAYS = 14
 LONG_OFFLINE_KEY = "offline:long"
 MAX_LONG_OFFLINE_NAMES = 40
 EXCLUDED_PLATFORMS = frozenset({"mobile_app"})   # phones and tablets charge and roam by design
+OFFLINE_GROUP_MIN = 3           # 0.9.39: this many offline devices of one integration are one problem (its hub)
 DISK_TREND_MIN_DAYS = 4         # samples must span this long before a forecast is made
 DISK_TREND_WINDOW_DAYS = 14
 DISK_TREND_WARN_DAYS = 30       # warn when the disk would be full within this many days
@@ -711,6 +712,7 @@ def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = froz
     devices = snapshot.get("devices") or {}
     lowest: dict[str, float | None] = {}
     per_device: dict[str, list[tuple[str, float | None]]] = {}
+    platform_of: dict[str, str] = {}
     for row in snapshot.get("states") or []:
         reg = registry.get(row.get("entity_id"))
         if not reg or reg.get("disabled") or reg.get("platform") in EXCLUDED_PLATFORMS:
@@ -718,6 +720,7 @@ def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = froz
         dev = reg.get("device_id")
         if not dev or dev not in devices or devices[dev].get("disabled"):
             continue
+        platform_of.setdefault(dev, str(reg.get("platform") or ""))
         state = row.get("state")
         changed = _parse(str(row.get("last_changed") or ""))
         per_device.setdefault(dev, []).append((state, changed.timestamp() if changed else None))
@@ -764,7 +767,30 @@ def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = froz
             long_offline.append((since, dev))
         elif now - since >= OFFLINE_DAYS * 86400:
             offline.append((since, dev))
+    # 0.9.39: several devices of one integration offline together point at their hub, bridge or cloud link, not at
+    # each device (live 2026-10-29: 20 irrigation timers listed one by one). One problem names the integration.
+    by_platform: dict[str, list[tuple[float, str]]] = {}
     for since, dev in sorted(offline):
+        by_platform.setdefault(platform_of.get(dev, ""), []).append((since, dev))
+    grouped: set[str] = set()
+    for platform, rows in sorted(by_platform.items()):
+        if not platform or len(rows) < OFFLINE_GROUP_MIN:
+            continue
+        names = [str(devices[d].get("name") or "a device")[:40] for _, d in rows]
+        days = int((now - max(s for s, _ in rows)) // 86400)
+        shown = ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+        out.append(Finding(f"offline:group:{platform}", "devices", WARNING,
+                           f"{len(rows)} {platform} devices offline for {days}+ days: {shown}"[:160],
+                           steps=("Several devices of one integration went quiet together: check their hub, bridge "
+                                  "or cloud account first (power, Wi-Fi, login).",
+                                  f"Settings -> Devices & services -> {platform}: Reload it, or restart the hub.",
+                                  "Removed for good? Settings -> Devices -> each device -> Delete."),
+                           link=DEVICES_LINK, facts={"platform": platform, "count": len(rows),
+                                                     "devices": names[:20], "offline_days": days}))
+        grouped.update(d for _, d in rows)
+    for since, dev in sorted(offline):
+        if dev in grouped:
+            continue
         name = devices[dev].get("name") or "a device"
         days = int((now - since) // 86400)
         out.append(Finding(f"offline:{dev}", "devices", WARNING, f"Offline for {days} days: {name}",

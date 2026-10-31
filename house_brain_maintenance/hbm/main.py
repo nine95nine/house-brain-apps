@@ -482,7 +482,9 @@ class Service:
                                 dry_run=self.o.dry_run, require_auth=self.o.require_phone_unlock,
                                 approval_timeout=self.approval_timeout, board=self.board, open_url=open_url,
                                 scout_run_timeout=self.scout_run_timeout, poll=self.poll,
-                                should_stop=lambda: self.stop)
+                                should_stop=lambda: self.stop,
+                                ask_allowed=lambda: self.j.approvals_requested_since(86400)
+                                < self.o.max_approval_requests_per_day)       # 0.9.39: update asks count too
             self.engine = Engine(self.ha, self.j, settings)
             health = self.o.health_check_minutes * 60.0 * self.health_scale
             policy = Policy(mode=self.o.update_mode,
@@ -566,6 +568,10 @@ class Service:
             # 0.8.9 Update review queue: the AI review gate (needs the tracking issue) and the waiting list.
             if self.o.report_issue and self.o.ai_review:
                 self.ai = AiReviews(self.gh, self.j, self.o.report_issue)
+                if self.watcher is not None and self.watcher.problem_ai is not None:   # 0.9.39: a silent cloud
+                    from .freelane import cloud_lockout                                 # reviewer ends the 48 h wait
+                    problem_ai = self.watcher.problem_ai
+                    self.ai.lockout = lambda: cloud_lockout(problem_ai.cloud_at(), time.time())
                 for engine in (self.updater, self.system, self.entities):
                     engine.ai = self.ai
                 self.update_queue = UpdateQueue(self.j, self.report_text, self._update_note)
@@ -878,7 +884,9 @@ class Service:
             self.poll_after_reports()                   # 0.9.26: this App's own after-update results (no AI)
             self.poll_reviews()                         # 0.9.16: new AI reviews reach the page within READ_EVERY
             if self.engine is not None:                 # 0.9.0: the page's "Needs your decision" list
-                self.inbox.set_offered(self.offered_rows())
+                rows = self.offered_rows()
+                self.inbox.set_offered(rows)
+                self.reconcile_page(rows)                   # 0.9.39: stale fix/update items leave the page
         except Exception as err:  # noqa: BLE001 - shown as a problem (issues.from_step_errors), retried next poll
             message = net.redact(f"{type(err).__name__}: {err}")[:300]
             LOG.warning("update step failed (problem checks continue): %s", message)
@@ -1329,6 +1337,22 @@ class Service:
             result = Result(FAILED, [f"{net.redact(str(err))[:200]}; check the App's Settings screen"])
         self.finish(m.request_id, m.job, m.digest, issue, result)
 
+    def reconcile_page(self, rows: list[dict]) -> None:
+        """0.9.39: a missed fix ask whose problem has cleared, or a missed update ask whose version was superseded,
+        is dropped from the page; a page decision on such an item is logged as void (live 2026-10-27..30: the
+        owner approved the same cleared backup fix three times and a Tailscale version that was gone)."""
+        if self.inbox is None or not self.last_update_check or self.watcher is None:
+            return
+        valid = {str(r.get("key", "")).split("|", 1)[0] for r in rows if r.get("key")}
+        valid |= {f"FIX:{h}" for h in self.watcher.open_fix_heads()}
+        try:
+            dropped = approval.reconcile(valid, ("UPDATE", "SYSTEM", "FIX"))
+        except Exception as err:  # noqa: BLE001 - a page clean-up problem never stops the poll
+            LOG.warning("page reconcile waits: %s", net.redact(str(err))[:200])
+            return
+        if dropped:
+            self.j.audit("page", "PAGE_STALE_DROPPED", items=dropped)
+
     def poll_page_decisions(self) -> None:
         """0.9.35: one line per decision the owner made on the Maintenance page since the last poll, so the chats
         see what was tapped (never the decision's text beyond its title). A post failure keeps the lines."""
@@ -1344,6 +1368,10 @@ class Service:
             rid = head.partition(":")[2]
             what = f"{r.get('stage')} `{rid}`" if rid else r.get("stage") or "?"
             title = str(r.get("title") or "")
+            if r.get("choice") == "void":                   # 0.9.39: the item was gone before its job looked
+                lines.append(f"- {when} Your page decision on {what} is void: the problem had cleared or the "
+                             "update was superseded; nothing ran.")
+                continue
             verb = "Approved" if r.get("choice") == "approve" else "Declined"
             lines.append(f"- {when} {verb} on the page: {what}" + (f" ({title})" if title else "")
                          + (": it runs on this poll." if r.get("choice") == "approve" else "."))

@@ -538,6 +538,12 @@ class Watcher:
                 "link": f.link, "detail": [I.scrub(d, 500) for d in f.detail][:3], "facts": f.facts,
                 "fix": f.action.label if f.action else None, "source": f.source}
 
+    def open_fix_heads(self) -> set[str]:
+        """0.9.39: the request ids (``fix-<key>``) of every open problem with a built-in fix, confirmed or not;
+        the page's missed fix asks and decisions outside this set belong to problems that cleared."""
+        st = self._state()
+        return {fix_rid(k) for k, rec in st["open"].items() if isinstance(rec, dict) and isinstance(rec.get("fix"), dict)}
+
     def fix_rows(self) -> list[dict]:
         """0.9.23 "Fix it" (owner pop-up 2026-10-19 "Build 0.9.23"): open problems with a built-in fix this App would
         offer, as rows for the page's "Needs your decision" list (key ``FIX:fix-<key>|*``). Approve there (or on the

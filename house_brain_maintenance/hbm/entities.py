@@ -23,7 +23,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from . import approval, net
+from . import approval, net, reasks
 from .ha import ForbiddenCall, HAError, HomeAssistant, UpdateEntity
 from .journal import Journal
 from .review import BLOCKED, LOW, EntityReview, entity_kind, review_entity
@@ -74,7 +74,7 @@ class EntityUpdater:
     # -- memory ------------------------------------------------------------------------
     def _mem(self) -> dict:
         mem = self.j.load_doc(DOC, {})
-        for key in ("quarantine", "declined", "asked", "blocked_noted", "practiced", "first_seen"):
+        for key in ("quarantine", "declined", "asked", "blocked_noted", "practiced", "first_seen", "timeouts"):
             mem.setdefault(key, {})
         mem.setdefault("successes", 0)
         return mem
@@ -112,7 +112,16 @@ class EntityUpdater:
             if practiced and time.time() - float(practiced) < self.p.practice_hours * 3600:
                 return False
         asked = mem["asked"].get(key)
-        return not (asked and time.time() - float(asked) < self.p.reask_hours * 3600)
+        if not asked:
+            return True
+        n = int(mem["timeouts"].get(key) or 0)
+        if n and approval.owner_decided_since(float(asked)):          # 0.9.39: the owner is back
+            mem["timeouts"].pop(key, None)
+            self._save(mem)
+            n = 0
+        if not reasks.phone_allowed(n):
+            return False
+        return time.time() - float(asked) >= reasks.wait_seconds(self.p.reask_hours, n)
 
     def review(self, ent: UpdateEntity, kind: str, repo, mem: dict) -> EntityReview:
         unhealthy, _ = self.ha.health_flags()
@@ -192,9 +201,10 @@ class EntityUpdater:
             decided = decided_of(ent, kind)
             if not decided and not self._due(key, mem):
                 asked = mem["asked"].get(key)
+                n = int(mem["timeouts"].get(key) or 0)
                 note(key, "you rejected this version (final)" if mem["declined"].get(key) else
-                     "asked on your phone; asks again at " + time.strftime(
-                         "%Y-%m-%d %H:%M UTC", time.gmtime(float(asked or 0) + self.p.reask_hours * 3600)))
+                     reasks.PAGE_ONLY_NOTE if not reasks.phone_allowed(n) else
+                     reasks.next_ask_note(float(asked or 0), self.p.reask_hours, n))
                 continue
             if mem["declined"].get(key):
                 continue
@@ -238,6 +248,11 @@ class EntityUpdater:
             if not auto and not decided and (gate is None or gate.auto_ok) and self.waits_for_auto(rev, mem):
                 note(key, "low risk: installs by itself in the night window, with a configuration backup first")
                 continue
+            if not auto and not decided:
+                ok, why = reasks.budget(self.s)                  # 0.9.39: the daily ask limit
+                if not ok:
+                    note(key, why)
+                    continue
             note(key, "installing by itself now" if auto else "asking on your phone now")
             self._ai_line = gate.line if gate is not None else ""
             return self._ask_then_apply(ent, rev, rid, key, facts, automatic=auto)
@@ -250,11 +265,15 @@ class EntityUpdater:
             mem["asked"][key] = time.time()
             self._save(mem)
             decision = self._ask(rid, rev)
+            mem = self._mem()
+            if decision == approval.TIMEOUT:                             # 0.9.39: counted, for the back-off
+                mem["timeouts"][key] = int(mem["timeouts"].get(key) or 0) + 1
+            else:
+                mem["timeouts"].pop(key, None)
+            if decision == approval.REJECT:
+                mem["declined"][key] = True
+            self._save(mem)
             if decision != approval.APPROVE:
-                if decision == approval.REJECT:
-                    mem = self._mem()
-                    mem["declined"][key] = True
-                    self._save(mem)
                 return Outcome(rid, REJECTED, [f"owner decision: {decision}"], facts)
         result = self.apply(rid, ent, rev, automatic=automatic)
         result.facts = {**facts, **result.facts}

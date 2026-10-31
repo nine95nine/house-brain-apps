@@ -25,7 +25,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from . import approval, net
+from . import approval, net, reasks
 from .ha import ForbiddenCall, HAError, HomeAssistant, InstalledApp
 from .journal import Journal
 from .manifest import RE_APP_SLUG, RE_UPDATE_VERSION
@@ -102,7 +102,7 @@ class Updater:
     # -- memory ------------------------------------------------------------------
     def _mem(self) -> dict:
         mem = self.j.load_doc("updates", {})
-        for key in ("quarantine", "declined", "asked", "blocked_noted", "practiced", "first_seen"):
+        for key in ("quarantine", "declined", "asked", "blocked_noted", "practiced", "first_seen", "timeouts"):
             mem.setdefault(key, {})
         mem.setdefault("successes", 0)
         return mem
@@ -147,9 +147,10 @@ class Updater:
                 continue
             if not RE_APP_SLUG.fullmatch(slug) or not RE_UPDATE_VERSION.fullmatch(version):
                 continue                                  # never anything but a plain slug and version
+            n = int(mem["timeouts"].get(key) or 0)
             out.append({"kind": "app", "slug": slug, "version": version, "asked_at": utc_iso(float(asked)),
-                        "next_reask_at": utc_iso(float(asked) + self.p.reask_hours * 3600),
-                        "state": "waiting_reask"})
+                        "next_reask_at": utc_iso(float(asked) + reasks.wait_seconds(self.p.reask_hours, n)),
+                        "state": "waiting_page" if not reasks.phone_allowed(n) else "waiting_reask"})
         return out
 
     def _note(self, key: str, state: str) -> None:
@@ -173,9 +174,18 @@ class Updater:
             if practiced and time.time() - float(practiced) < self.p.practice_hours * 3600:
                 return False
         asked = mem["asked"].get(key)
-        if asked and time.time() - float(asked) < self.p.reask_hours * 3600:
-            self._note(key, "asked on your phone; asks again at "
-                       + time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(float(asked) + self.p.reask_hours * 3600)))
+        if not asked:
+            return True
+        n = int(mem["timeouts"].get(key) or 0)
+        if n and approval.owner_decided_since(float(asked)):      # 0.9.39: the owner is back: phone asks resume
+            mem["timeouts"].pop(key, None)
+            self._save(mem)
+            n = 0
+        if not reasks.phone_allowed(n):                             # 0.9.39: three unanswered asks: page only
+            self._note(key, reasks.PAGE_ONLY_NOTE)
+            return False
+        if time.time() - float(asked) < reasks.wait_seconds(self.p.reask_hours, n):
+            self._note(key, reasks.next_ask_note(float(asked), self.p.reask_hours, n))
             return False
         return True
 
@@ -288,6 +298,11 @@ class Updater:
                            f"window once it is {self.p.wait_days:g} days old, with a backup, health watch and "
                            "automatic restore")
                 continue                          # installs by itself later (waiting period / night window)
+            if not auto and not decided:
+                ok, why = reasks.budget(self.s)             # 0.9.39: update asks respect the daily ask limit
+                if not ok:
+                    self._note(key, why)
+                    continue
             self._note(key, "installing by itself now" if auto else "asking on your phone now")
             return self._ask_then_apply(app, rev, rid, facts, automatic=auto, ai_line=gate.line if gate else "")
         return None
@@ -310,14 +325,19 @@ class Updater:
                 decision = self._ask(rid, rev, ai_line)
             finally:
                 self.asking = ""
+            mem = self._mem()
+            if decision == approval.TIMEOUT:                         # 0.9.39: counted, for the back-off
+                mem["timeouts"][key] = int(mem["timeouts"].get(key) or 0) + 1
+            else:
+                mem["timeouts"].pop(key, None)
+            if decision == approval.REJECT:
+                mem["declined"][key] = True
+            self._save(mem)
             if decision != approval.APPROVE:
-                if decision == approval.TIMEOUT:
+                if decision == approval.TIMEOUT and reasks.phone_allowed(int(mem["timeouts"][key])):
                     missed_note(self.ha, self.s.notify_service, f"{rev.name} {rev.to_version}",
-                                asked + self.p.reask_hours * 3600, url=getattr(self.s, "open_url", None))
-                if decision == approval.REJECT:
-                    mem = self._mem()
-                    mem["declined"][key] = True
-                    self._save(mem)
+                                asked + reasks.wait_seconds(self.p.reask_hours, int(mem["timeouts"][key])),
+                                url=getattr(self.s, "open_url", None))
                 return Outcome(rid, REJECTED, [f"owner decision: {decision}"], facts)
         result = self.apply(rid, rev, prior_state=app.state, automatic=automatic)
         result.facts = {**facts, **result.facts}

@@ -66,6 +66,7 @@ class Inbox:
         self._offered: dict[str, dict] = {}
         self._confirm: dict[str, dict] = {}
         self._log: list[dict] = []               # 0.9.35: decisions to report (drained by the poll)
+        self._last_decision_at: float = 0.0      # 0.9.39: the owner's latest page decision (reasks resume)
         self.nonce = secrets.token_hex(12)
         self._load()
 
@@ -82,6 +83,10 @@ class Inbox:
             self._missed = {k: v for k, v in (doc.get("missed") or {}).items() if isinstance(v, dict)}
             self._decisions = {k: v for k, v in (doc.get("decisions") or {}).items() if isinstance(v, dict)}
             self._log = [v for v in (doc.get("log") or []) if isinstance(v, dict)][-LOG_MAX:]
+            try:
+                self._last_decision_at = float(doc.get("last_decision_at") or 0)
+            except (TypeError, ValueError):
+                self._last_decision_at = 0.0
 
     def _save(self) -> None:
         if not self.path:
@@ -89,7 +94,8 @@ class Inbox:
         try:
             fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path), prefix=".inbox.")
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"missed": self._missed, "decisions": self._decisions, "log": self._log[-LOG_MAX:]}, fh)
+                json.dump({"missed": self._missed, "decisions": self._decisions, "log": self._log[-LOG_MAX:],
+                           "last_decision_at": self._last_decision_at}, fh)
             os.replace(tmp, self.path)
         except OSError:                                  # the inbox stays in memory; never break an ask
             pass
@@ -113,6 +119,35 @@ class Inbox:
             self._missed.pop(key, None)
             self._save()
             return d["choice"]
+
+    def last_decision_at(self) -> float:
+        """0.9.39: when the owner last decided anything on the page (0 = never since the inbox was kept)."""
+        with self._lock:
+            return float(self._last_decision_at or 0)
+
+    def reconcile(self, valid_heads: set[str], stages: tuple[str, ...]) -> int:
+        """0.9.39: missed asks and decisions of ``stages`` whose ``<stage>:<request id>`` is not in ``valid_heads``
+        are dropped (the problem cleared, the update was superseded); each dropped decision is logged as ``void``
+        so the tracking issue says the tap ran nothing. Returns how many items were dropped."""
+        dropped = 0
+        with self._lock:
+            self._expire()
+            for k in list(self._missed):
+                head = k.split("|", 1)[0]
+                if head.split(":", 1)[0] in stages and head not in valid_heads:
+                    del self._missed[k]
+                    dropped += 1
+            for k in list(self._decisions):
+                head = k.split("|", 1)[0]
+                if head.split(":", 1)[0] in stages and head not in valid_heads:
+                    d = self._decisions.pop(k)
+                    dropped += 1
+                    self._log = (self._log + [{"key": k, "choice": "void", "at": self.clock(),
+                                               "stage": head.split(":", 1)[0][:16], "was": d.get("choice"),
+                                               "title": ""}])[-LOG_MAX:]
+            if dropped:
+                self._save()
+        return dropped
 
     def drain_log(self) -> list[dict]:
         """0.9.35: the page decisions made since the last drain (oldest first), consumed."""
@@ -221,6 +256,7 @@ class Inbox:
             if c is None:
                 return 409, "", ""
             self._decisions[c["key"]] = {"choice": c["choice"], "at": self.clock(), "by": "page"}
+            self._last_decision_at = self.clock()                 # 0.9.39
             item = self._missed.get(c["key"]) or self._offered.get(c["key"]) or {}
             self._log = (self._log + [{"key": c["key"], "choice": c["choice"], "at": self.clock(),
                                        "stage": str(item.get("stage") or c["key"].split(":", 1)[0])[:16],
