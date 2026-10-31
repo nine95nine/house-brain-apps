@@ -1,5 +1,24 @@
 # Changelog
 
+
+## 0.3.40
+
+Missed approvals stay on the page (owner 2026-10-26: "I really don't like that I only get 15 minutes to approve…
+if I do miss something, I can just go back to the list and hit approve"; pop-ups "Also restart wait to 60 min" and,
+on 2026-10-31, "Mine becomes 0.3.40", because 0.3.39 is the ChatGPT pool-inspector draft #1371).
+- **Missed (last 24 hours):** every deploy or restart approval that expired unanswered (ledger `TIMED_OUT`, or
+  `ROLLED_BACK` with `restart_timed_out`) is listed on the page with an owner-only **Try again**. A tap runs the
+  unchanged re-ask path as a re-ask by the owner, under the id `<original>-again<N>`. The original manifest is
+  pinned to its ledger digest at the branch head, the approvals are fresh, and the limits are those of a filed re-ask
+  (at most 2, Reject final, lookups refused, the daily install limit). No GitHub file is written. No new ledger
+  field (the startup history check accepts a closed set): recovery rebuilds the re-ask from its id and its
+  original's `reasked_by`. A filed file of the same id still wins. A request a re-ask was refused for is not offered.
+  Practice mode offers nothing.
+- **Coming up:** the page lists, read-only, up to 10 requests waiting on GitHub behind the current one.
+- **Restart approval wait:** `restart_approval_timeout_minutes` 2–60, default 60 (was 2–30, default 10). An
+  existing install keeps its saved value. In 16 days, 5 restart approvals expired unanswered and no deploy approval
+  did.
+
 ## 0.3.38 — 2026-10-25 (read-only Recorder statistics lookup; owner "All of the above and any other method")
 
 - Built as 0.3.37 and renumbered by owner pop-up "Mine becomes 0.3.38": the Deployer lane released 0.3.37 first (#1301).

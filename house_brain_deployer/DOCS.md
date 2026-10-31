@@ -117,7 +117,7 @@ Deployer so a notification tap can open its approval page. Existing saved option
 | `poll_seconds` | How often it checks GitHub (default 300) |
 | `max_approval_requests_per_day` | Safety cap on **installs** asked per 24 h (default 4). Restart approvals do not count; read-only lookups have their own allowance of the same size. When a request is held by it, the Deployer page offers **Allow more today** (owner only, until midnight) |
 | `approval_timeout_minutes` | How long a deploy (or lookup) request waits for your tap: 2–720 min, default 360 (6 h). No answer = Reject (from 0.3.8 the AI may ask again up to twice; see **Asked again after no answer**). While it waits, other requests queue behind it. A Home Assistant restart while waiting does not end the wait: the approval page still works, and the push buttons come back within about 30 s |
-| `restart_approval_timeout_minutes` | How long the restart approval waits: 2–30 min, default 10. Kept short on purpose, because the new files are already in place while it waits |
+| `restart_approval_timeout_minutes` | How long the restart approval waits: 2–60 min. From 0.3.40 the default for a new install is 60 (was 10, at most 30); an existing install keeps its saved value, so set 60 here if you want the hour. The new files are already in place while it waits; if Home Assistant restarts by itself meanwhile, the Deployer finds that on its next check and reports it on the tracking issue |
 | `require_phone_unlock` | Keep `true` (Approve needs Face ID / passcode) |
 | `clear_freeze_for` | Leave empty. Only used if the App tells you it is frozen |
 | `return_to_previous_history` | Leave `false`. Emergency switch (from 0.3.23, draft #985): when `true`, the next start sets the moved-history selection aside and uses the previous history, which was never changed. Turn it back to `false` afterwards; **Select** refuses while it is on |
@@ -166,6 +166,17 @@ What Undo does and does not do:
 - It puts back exactly the files that install replaced or retired, from the `.bak` copies.
 - It keeps the undone version as `<file>.undone_….bak`.
 - If a file was changed since that install, or a newer install touched it, the button is not shown.
+
+## Missed approvals and Try again — from 0.3.40
+
+If an install or restart approval ran out of time, open the Deployer page (Settings → Apps → House Brain Deployer →
+Open Web UI, or the sidebar). Under **Missed (last 24 hours)** each such request has a **Try again** button.
+- Only your account can tap it. It asks you again on your phone (install first, then the restart), with the same
+  files and the same checks, exactly like an AI's re-ask. It approves nothing by itself.
+- No chat is needed. The tap is handled on the next check (within about 5 minutes).
+- The same limits apply: at most 2 tries per request, Reject stays final, read-only lookups are not asked again, and
+  each try counts toward the daily install limit.
+- **Coming up** lists the requests waiting on GitHub behind the current one (read-only).
 
 ## Asked again after no answer — from 0.3.8
 

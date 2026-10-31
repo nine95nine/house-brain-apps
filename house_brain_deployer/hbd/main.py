@@ -42,7 +42,7 @@ from .journal import INSTALL_STAGES, LOOKUP_STAGES, Journal
 from .lookup import is_lookup, parse_lookup, run_lookup
 from .manifest import RE_REQUEST_ID, Manifest, ManifestError, parse
 from .migration.deployer_startup_service import startup_hold
-from .reask import check_ledger, is_reask, parse_reask
+from .reask import check_ledger, is_reask, page_id, page_offers, page_original, page_raw, parse_reask
 from .web import INGRESS_PEER, ApprovalBoard, IngressServer
 from .migration.deployer_working_journal import WorkingError
 from .root_bindings import RootBindingError, root_binding_code
@@ -192,7 +192,7 @@ def load_options(path: str) -> Options:
         poll_seconds=i("poll_seconds", 60, 3600),
         max_approval_requests_per_day=i("max_approval_requests_per_day", 1, 12),
         approval_timeout_minutes=i("approval_timeout_minutes", 2, 720),
-        restart_approval_timeout_minutes=i("restart_approval_timeout_minutes", 2, 30),
+        restart_approval_timeout_minutes=i("restart_approval_timeout_minutes", 2, 60),   # 0.3.40: was 2-30
         require_phone_unlock=raw["require_phone_unlock"],
         clear_freeze_for=_clear(raw.get("clear_freeze_for", "")),
         return_to_previous_history=return_previous,
@@ -326,8 +326,19 @@ class Service:
         finally:
             self.writer_lease = None
 
+    def _request_raw(self, request_id: str, ref: str) -> bytes:
+        """The request's bytes on the branch; 0.3.40: a page re-ask has no file there and is rebuilt from its ids
+        (its original's ledger entry names it in ``reasked_by``, written before the run)."""
+        try:
+            return self.gh.read_file(f"{REQUESTS_DIR}/{request_id}/manifest.json", ref)
+        except net.NetError as err:
+            original = page_original(request_id, self.j.ledger()) if err.status == 404 else None
+            if original is None:
+                raise
+            return page_raw(request_id, original)
+
     def _manifest_at(self, request_id: str, ref: str):
-        raw = self.gh.read_file(f"{REQUESTS_DIR}/{request_id}/manifest.json", ref)
+        raw = self._request_raw(request_id, ref)
         if is_reask(raw):   # 0.3.8: recovery of a re-ask resolves to its original (digest checked by the engine)
             rq = parse_reask(raw)
             original = parse(self.gh.read_file(f"{REQUESTS_DIR}/{rq.reask_of}/manifest.json", ref))
@@ -422,7 +433,7 @@ class Service:
 
     def _raw_digest(self, request_id: str, ref: str) -> str:
         try:
-            return hashlib.sha256(self.gh.read_file(f"{REQUESTS_DIR}/{request_id}/manifest.json", ref)).hexdigest()
+            return hashlib.sha256(self._request_raw(request_id, ref)).hexdigest()
         except Exception:  # noqa: BLE001 - recorded as unknown; the id is final either way
             return "unknown"
 
@@ -890,6 +901,31 @@ class Service:
             self.j.freeze(undo_id)
         return True
 
+    def _offer_again(self) -> None:
+        """0.3.40: missed approvals of the last 24 h, each with an owner-only Try again. Never in practice mode."""
+        if self.board is None or self.o.dry_run:
+            return
+        try:
+            owner = self.ensure_engine().s.owner_user_id
+            self.board.set_again_offers(owner, page_offers(self.j.ledger(), time.time()))
+        except Exception:  # noqa: BLE001 - no owner/unreadable ledger -> no buttons this time
+            self.board.set_again_offers("", [])
+
+    def _run_requested_again(self, head: str) -> bool:
+        """0.3.40 (owner pop-ups 2026-10-26 / 2026-10-31): an owner-tapped Try again runs as a re-ask by the owner,
+        through the unchanged re-ask path (``_reask``: ledger guards, original pinned to its digest at ``head``,
+        fresh approvals, the daily limit). Returns True when the poll must end."""
+        original = self.board.take_again() if self.board is not None else None
+        if not original or self.o.dry_run:
+            return False
+        request_id = page_id(original, self.j.ledger())
+        if request_id is None:
+            LOG.warning("Try again of %s refused: no valid id is left for it", original)
+            return False
+        raw = page_raw(request_id, original)
+        LOG.info("owner tapped Try again for %s (as %s)", original, request_id)
+        return self._reask(request_id, raw, hashlib.sha256(raw).hexdigest(), head)
+
     def _offer_undo(self) -> None:
         if self.board is None or self.o.dry_run:
             return
@@ -966,6 +1002,7 @@ class Service:
             self.board.set_health(h["last_check"], self.diag.lines(), h["last_result"])
             if not self.j.load_txn():
                 self._offer_undo()
+                self._offer_again()
             self._offer_back()
             if not any(r.code == "DAILY_APPROVAL_LIMIT" for r in self.diag.reasons):
                 lifted = self.j.limit_lifted_until()
@@ -1054,12 +1091,16 @@ class Service:
         selected = getattr(self, "migrated_runtime", None) is None and legacy_migrate.selection_present(self.j.dir)
         if not selected and self._run_requested_undo():
             return  # at most one change per poll
+        if not selected and self._run_requested_again(head):
+            return  # 0.3.40: an owner-tapped Try again is this poll's one request
         ledger = self.j.ledger()
         ids = [r for r in self.gh.list_request_ids(head) if RE_REQUEST_ID.fullmatch(r)]
         # 0.3.12: unhandled ids first, then handled ones (still read for the id-reuse check), then the
         # cap. Before, the cap came first, so an old backlog hid every request after the 10th folder.
         handled = {r for r in ids if r in ledger or self.key(r) in ledger}
         ids = [r for r in ids if r not in handled] + [r for r in ids if r in handled]
+        if self.board is not None:     # 0.3.40: the page shows what is coming up (read-only)
+            self.board.set_queued([r for r in ids if r not in handled])
         for request_id in ids[:MAX_REQUESTS_PER_POLL]:
             try:
                 raw = self.gh.read_file(f"{REQUESTS_DIR}/{request_id}/manifest.json", head)

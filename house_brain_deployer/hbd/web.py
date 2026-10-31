@@ -28,6 +28,7 @@ from . import ghpage
 
 INGRESS_PEER = "172.30.32.2"
 MAX_BODY = 2048
+MAX_QUEUED_SHOWN = 10                # 0.3.40: requests listed under "Coming up"
 RE_INGRESS_PATH = re.compile(r"/api/hassio_ingress/[A-Za-z0-9_\-]{1,200}")
 
 
@@ -66,6 +67,12 @@ class ApprovalBoard:
         self._back_nonce = ""
         self._back_owner = ""
         self._back_by: str | None = None
+        # 0.3.40: missed approvals the owner may ask again (owner-only "Try again"), and the requests coming up
+        self._again_nonce = ""
+        self._again_owner = ""
+        self._again_offers: list[dict] = []
+        self._again_req: str | None = None
+        self._queued: list[str] = []
         # 0.3.5 (P4): True while an install transaction is open (set by the service)
         self.busy_probe: Callable[[], bool] | None = None
         self.release_probe: Callable[[], tuple[tuple[str, str], ...]] | None = None
@@ -166,6 +173,47 @@ class ApprovalBoard:
             rid, self._undo_req = self._undo_req, None
             return rid
 
+    # -- 0.3.40: missed approvals ("Try again") and the requests coming up ---------------------------------------
+    def set_again_offers(self, owner_user_id: str, offers: list[dict]) -> None:
+        with self._lock:
+            ids = [o["request_id"] for o in offers]
+            if ids != [o["request_id"] for o in self._again_offers] or owner_user_id != self._again_owner \
+                    or not self._again_nonce:
+                self._again_nonce = secrets.token_hex(12) if offers else ""
+            self._again_owner = owner_user_id
+            self._again_offers = list(offers)
+
+    def again_state(self) -> tuple[str, list[dict]]:
+        with self._lock:
+            return self._again_nonce, list(self._again_offers)
+
+    def accept_again(self, nonce: str, user_id: str, request_id: str) -> int:
+        """Owner tapped Try again: same rules as Undo (owner id, single-use code, offered id only)."""
+        with self._lock:
+            if not self._again_nonce or not nonce or nonce != self._again_nonce:
+                return 409
+            if not self._again_owner or user_id != self._again_owner:
+                return 403
+            if request_id not in [o["request_id"] for o in self._again_offers]:
+                return 409
+            self._again_nonce = ""
+            self._again_offers = []
+            self._again_req = request_id
+            return 200
+
+    def take_again(self) -> str | None:
+        with self._lock:
+            rid, self._again_req = self._again_req, None
+            return rid
+
+    def set_queued(self, request_ids: list[str]) -> None:
+        with self._lock:
+            self._queued = [str(r)[:64] for r in request_ids][:MAX_QUEUED_SHOWN]
+
+    def queued_state(self) -> list[str]:
+        with self._lock:
+            return list(self._queued)
+
     def set_history(self, line: str, owner_user_id: str, offer_back: bool) -> None:
         with self._lock:
             self._history_line = line[:300]
@@ -248,6 +296,11 @@ def expires_in(left: int) -> str:
     return f"{left // 60} min {left % 60} s"
 
 
+def _extras(board: "ApprovalBoard") -> dict:
+    """0.3.40: the page parts every render shows (missed approvals and the requests coming up)."""
+    return {"again_offer": board.again_state(), "queued": board.queued_state()}
+
+
 BUSY_BANNER = ('<p class="w"><b>Install in progress.</b> Updating, restarting or reconfiguring the House Brain '
                'Deployer now will roll this install back. Wait until it has finished.</p>')
 
@@ -255,8 +308,13 @@ BUSY_BANNER = ('<p class="w"><b>Install in progress.</b> Updating, restarting or
 def render(pending: Pending | None, last: str, action: str, note: str = "",
            health: tuple[str, list[str], str] = ("", [], ""), lift: tuple[str, str] = ("", ""),
            undo_offer: tuple[str, list[dict]] = ("", []), busy: bool = False,
-           release_status: tuple[tuple[str, str], ...] = (), history: tuple[str, str] = ("", "")) -> str:
+           release_status: tuple[tuple[str, str], ...] = (), history: tuple[str, str] = ("", ""),
+           again_offer: tuple[str, list[dict]] = ("", []), queued: list[str] | tuple = ()) -> str:
     banner = BUSY_BANNER if busy else ""
+    coming = ""
+    if queued:                                      # 0.3.40: read-only; the Deployer asks them one at a time
+        coming = ('<h2>Coming up</h2><p class="m">New requests on GitHub, asked one at a time after this one '
+                  '(about every 5 minutes):</p><ul>' + "".join(f"<li>{html.escape(r)}</li>" for r in queued) + "</ul>")
     history_line, back_nonce = history
     release = ""
     if release_status:
@@ -291,6 +349,21 @@ def render(pending: Pending | None, last: str, action: str, note: str = "",
         if lift[1]:
             body += f'<p class="m">{html.escape(lift[1])}</p>'
         undo_nonce, undo_items = undo_offer
+        again_nonce, again_items = again_offer
+        if again_nonce and again_items:
+            target = action.rsplit("/", 1)[0] + "/try-again"
+            body += ('<h2 class="w">Missed (last 24 hours)</h2><p class="m">These asks ran out of time. Try again asks '
+                     'you again on your phone, with the same files and the same checks; it approves nothing by itself. '
+                     'At most 2 tries per request; Reject stays final.</p>')
+            for item in again_items:
+                when = time.strftime("%b %d %I:%M %p", time.localtime(float(item.get("at") or 0)))
+                what = "restart not answered" if item.get("kind") == "restart" else "install not answered"
+                body += (f'<form method="post" action="{html.escape(target)}">'
+                         f'<input type="hidden" name="nonce" value="{html.escape(again_nonce)}">'
+                         f'<input type="hidden" name="request_id" value="{html.escape(item["request_id"])}">'
+                         f'<p>{html.escape(item["request_id"])}<br>'
+                         f'<span class="m">{html.escape(what)} · {html.escape(when)}</span></p>'
+                         '<button class="a" name="choice" value="again">Try again</button></form>')
         if undo_nonce and undo_items:
             target = action.rsplit("/", 1)[0] + "/undo"
             body += ('<h2>Recent installs</h2><p class="m">Undo puts back the files that install replaced '
@@ -316,7 +389,7 @@ def render(pending: Pending | None, last: str, action: str, note: str = "",
             body += f'<p class="m">Last result: {html.escape(result)}</p>'
         if last:
             body += f'<p class="m">Last: {html.escape(last)}</p>'
-        return PAGE.format(body=body + release)
+        return PAGE.format(body=body + coming + release)
     left = max(0, int(pending.deadline - time.monotonic()))
     body = (
         banner +
@@ -328,7 +401,7 @@ def render(pending: Pending | None, last: str, action: str, note: str = "",
         '<button class="a" name="choice" value="approve">Approve</button>'
         '<button class="r" name="choice" value="reject">Reject</button></form>'
     )
-    return PAGE.format(body=body + release)
+    return PAGE.format(body=body + coming + release)
 
 
 def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
@@ -415,7 +488,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
             pending, last = board.snapshot()
             page = render(pending, last, self._action(), health=board.health(), lift=board.lift_state(),
                           undo_offer=board.undo_state(), busy=board.busy(), release_status=board.release_status(),
-                          history=board.history_state())
+                          history=board.history_state(), **_extras(board))
             base = self._action().rsplit("/", 1)[0]
             self._send(200, page.replace("</body>", self._github_line(base) + "</body>", 1))
 
@@ -425,7 +498,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
             route = urllib.parse.urlsplit(self.path).path
             if self._github_post(route):
                 return None
-            if route not in ("/decide", "/allow-more", "/undo", "/go-back"):
+            if route not in ("/decide", "/allow-more", "/undo", "/go-back", "/try-again"):
                 return self._send(404, "not found")
             try:
                 length = int(self.headers.get("Content-Length") or "0")
@@ -451,7 +524,20 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                                                  health=board.health(), lift=board.lift_state(),
                                                  undo_offer=board.undo_state(), busy=board.busy(),
                                                  release_status=board.release_status(),
-                                                 history=board.history_state()))
+                                                 history=board.history_state(), **_extras(board)))
+            if route == "/try-again":                  # 0.3.40: owner-only; asks again, approves nothing
+                rid = (form.get("request_id") or [""])[0]
+                status = board.accept_again(nonce, user, rid) if choice == "again" else 400
+                pending, last = board.snapshot()
+                notes = {200: f"Try again of {rid} accepted. Your phone is asked within about 5 minutes; answer it "
+                              "there or on this page.",
+                         403: "Only the owner account can do this.", 409: "This button has expired; reload the page.",
+                         400: "Unknown choice."}
+                return self._send(status, render(pending, last, self._action(), notes.get(status, ""),
+                                                 health=board.health(), lift=board.lift_state(),
+                                                 undo_offer=board.undo_state(), busy=board.busy(),
+                                                 release_status=board.release_status(),
+                                                 history=board.history_state(), **_extras(board)))
             if route == "/go-back":
                 status = board.accept_back(nonce, user) if choice == "back" else 400
                 pending, last = board.snapshot()
@@ -463,7 +549,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                                                  health=board.health(), lift=board.lift_state(),
                                                  undo_offer=board.undo_state(), busy=board.busy(),
                                                  release_status=board.release_status(),
-                                                 history=board.history_state()))
+                                                 history=board.history_state(), **_extras(board)))
             if route == "/allow-more":
                 status = board.accept_lift(nonce, user) if choice == "allow" else 400
                 pending, last = board.snapshot()
@@ -475,7 +561,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                                                  health=board.health(), lift=board.lift_state(),
                                                  undo_offer=board.undo_state(), busy=board.busy(),
                                                  release_status=board.release_status(),
-                                                 history=board.history_state()))
+                                                 history=board.history_state(), **_extras(board)))
             status = board.decide(nonce, user, choice)
             pending, last = board.snapshot()
             notes = {200: f"Recorded: {choice}. You can close this page.",
@@ -485,7 +571,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                        render(None if status == 200 else pending, last, self._action(), notes.get(status, ""),
                               health=board.health(), lift=board.lift_state(), undo_offer=board.undo_state(),
                               busy=board.busy(), release_status=board.release_status(),
-                          history=board.history_state()))
+                          history=board.history_state(), **_extras(board)))
 
         def do_PUT(self):  # noqa: N802
             self._send(405, "method not allowed")
