@@ -153,6 +153,7 @@ class Watcher:
         st.setdefault("last_summary_day", "")
         st.setdefault("disk_samples", [])
         st.setdefault("device_sweep", {"at": 0, "rows": []})
+        st.setdefault("offline_since", {})            # 0.9.38: device -> earliest offline time, across restarts
         st.setdefault("stopped_since", {})
         st.setdefault(PR.FP_DOC_KEY, {})               # 0.9.19: problem fingerprints (what each one says)
         return st
@@ -261,7 +262,7 @@ class Watcher:
         if now - float(sweep.get("at") or 0) >= DEVICE_SWEEP_SECONDS:
             try:
                 open_keys = frozenset(k for k in st["open"] if k.startswith(("battery:", "offline:")))
-                found = I.device_findings(self.ha.device_health(), now, open_keys)
+                found = I.device_findings(self.ha.device_health(), now, open_keys, memory=st["offline_since"])
                 sweep.update(at=now, rows=[{"key": f.key, "title": f.title, "steps": list(f.steps), "link": f.link,
                                             "facts": f.facts} for f in found])
             except Exception:  # noqa: BLE001 - Core restarting or the read failed: keep open items as they are

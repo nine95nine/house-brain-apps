@@ -146,6 +146,12 @@ New in 0.5.0, all read-only:
 - **Low batteries and offline devices**: about every 6 hours it reads device states and lists devices
   at 15% battery or less (cleared above 25%) and devices whose every entity has been unavailable for
   3 days. Phones and tablets are skipped. Only the device name and the number go into the summary.
+  From 0.9.38 the App remembers when each device went offline, so a Home Assistant restart (which resets every
+  entity's "last changed" time) no longer makes a retired device vanish and come back as new three days later. A
+  device offline for **14 days or more** moves into one entry, **"Devices offline for 2+ weeks"**, that names
+  them; its words stay the same, so it is reviewed once instead of every few days. A device that reports again
+  leaves it by itself. To silence a retired device for good, disable it (Settings -> Devices -> the device ->
+  Disable); disabled devices are always skipped.
 - **Disk filling too fast**: it notes the free space twice a day and warns when, at the current rate,
   the disk would be full within 30 days (urgent within 7). Home Assistant does not report the size of
   its history database itself; that database is the usual cause, and the advice says how to shrink it.
@@ -524,6 +530,7 @@ Assistant notification:
 | `ai_review` | From 0.8.9: the updates-waiting list and an AI review on the tracking issue before any update is asked or installed by itself (default `true`). |
 | `housekeeping` | From 0.8.7: failing automations, missing entities, error floods, database size and the monthly housekeeping report (default `true`; `false` = none of these reads). |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
+| `approval_timeout_minutes` | How long an ask waits for your tap: 2-60 min. From 0.9.38 the default for a new install is 60 (was 15). An existing install keeps its saved value: to wait an hour, set it to 60 in this App's Configuration tab. A missed ask is listed on the Maintenance page and asked again after `update_reask_hours`. |
 | `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). From 0.7.2 the same wait applies to fix asks and the Deployer switch-over ask (were fixed at 24 hours). Reject is never asked again. |
 | `report_issue` | Optional GitHub issue number for result reports (0 = none). |
 | `scout_slug`, `observer_slug` | The Scout and Observer Apps. Leave the defaults. |

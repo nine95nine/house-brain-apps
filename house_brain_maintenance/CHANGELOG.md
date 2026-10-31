@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.38
+
+Fewer repeats and fewer missed asks while the owner and the cloud reviewer are away (owner pop-ups 2026-10-31 "Fix
+free AI reviewer", "Maintenance waits 60 min", "Quiet retired B-hyve noise"; findings from the 10-26 to 10-31 usage
+outage).
+
+- **Offline devices keep their offline time across restarts.** The issues doc keeps `offline_since`, the earliest
+  time each device was seen offline. Before, every Home Assistant restart reset `last_changed`, so the ~31 retired
+  B-hyve timers cleared and came back as new problems three days later. "Offline for 3 days: Garden 3.5" was listed
+  32 times in a week. A device that reports again, or that is deleted or disabled, is forgotten.
+- **14 days or more offline: one entry.** `offline:long`, "Devices offline for 2+ weeks", names the devices in its
+  facts (up to 40), with the longest number of days. Its title never changes, so the AI reviews it once. Devices
+  offline 3-13 days are still listed one by one.
+- **Asks wait 60 minutes by default** (`approval_timeout_minutes`, was 15; range unchanged 2-60). 12 update asks
+  expired unanswered between 10-29 and 10-31. An existing install keeps its saved value; DOCS says how to change it.
+- **The free reviewer waits 150 s for an answer** (was 60). Companion 0.1.7 asks once more, with more room, when
+  Gemma's answer is cut off by its length.
+
 ## 0.9.37
 
 The pause is visible, and the firmware self-clear works on a real device (owner 2026-10-26, after 0.9.36 went live

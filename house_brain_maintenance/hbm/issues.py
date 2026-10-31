@@ -124,6 +124,11 @@ BATTERY_LOW_PCT = 15            # reported at or below this ...
 BATTERY_CLEAR_PCT = 25          # ... and cleared only above this (no flapping around one value)
 OFFLINE_DAYS = 3
 MAX_DEVICE_FINDINGS = 20        # per kind; the rest are counted
+# 0.9.38 (owner pop-up 2026-10-31 "Quiet retired B-hyve noise"): a device offline this long is folded into one finding
+# with a fixed title, so it is listed and reviewed once instead of again after every Home Assistant restart.
+LONG_OFFLINE_DAYS = 14
+LONG_OFFLINE_KEY = "offline:long"
+MAX_LONG_OFFLINE_NAMES = 40
 EXCLUDED_PLATFORMS = frozenset({"mobile_app"})   # phones and tablets charge and roam by design
 DISK_TREND_MIN_DAYS = 4         # samples must span this long before a forecast is made
 DISK_TREND_WINDOW_DAYS = 14
@@ -688,12 +693,19 @@ def from_offsite(backups: list[dict], now: float, drive: dict | None = None) -> 
 
 
 # -- 0.5.0: low batteries and devices offline for days --------------------------------------------
-def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = frozenset()) -> list[Finding]:
+def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = frozenset(),
+                    memory: dict | None = None) -> list[Finding]:
     """``snapshot`` from ``HomeAssistant.device_health()``: projected states, entity and device registry.
 
     A device is offline when every one of its enabled entities has been ``unavailable`` for
     ``OFFLINE_DAYS``. Phones/tablets (mobile_app), disabled devices and entities without a device are
     skipped. ``open_keys`` keeps an already-reported low battery open until it is above BATTERY_CLEAR_PCT.
+
+    0.9.38: ``memory`` (``{device_id: offline since}``, kept by the caller across checks and App restarts) is updated in
+    place. A Home Assistant restart resets every entity's ``last_changed``, which made a retired device clear and come
+    back as new three days after each restart; the earliest offline time seen is kept instead. A device that reports
+    anything but ``unavailable`` leaves the memory. Devices offline LONG_OFFLINE_DAYS or more are folded into one
+    LONG_OFFLINE_KEY finding with a fixed title.
     """
     registry = snapshot.get("registry") or {}
     devices = snapshot.get("devices") or {}
@@ -731,13 +743,27 @@ def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = froz
                            steps=("Replace or recharge its battery.",
                                   "If it is no longer used: Settings -> Devices -> the device -> Delete."),
                            link=DEVICES_LINK, facts={"battery_pct": pct}))
-    offline = []
+    offline, long_offline = [], []
+    remembered = memory if memory is not None else {}
+    for dev in [d for d in remembered if d not in per_device]:     # deleted, disabled or no longer read
+        del remembered[dev]
     for dev, rows in per_device.items():
-        if rows and all(state == "unavailable" for state, _ in rows):
-            times = [t for _, t in rows if t is not None]
-            since = max(times) if times else None
-            if since is not None and now - since >= OFFLINE_DAYS * 86400:
-                offline.append((since, dev))
+        if not (rows and all(state == "unavailable" for state, _ in rows)):
+            remembered.pop(dev, None)                              # back online: forget it
+            continue
+        times = [t for _, t in rows if t is not None]
+        seen = max(times) if times else None
+        kept = remembered.get(dev)
+        since = min(float(kept), seen) if isinstance(kept, (int, float)) and seen is not None else seen
+        if since is None and isinstance(kept, (int, float)):
+            since = float(kept)
+        if since is None:
+            continue
+        remembered[dev] = since
+        if now - since >= LONG_OFFLINE_DAYS * 86400:
+            long_offline.append((since, dev))
+        elif now - since >= OFFLINE_DAYS * 86400:
+            offline.append((since, dev))
     for since, dev in sorted(offline):
         name = devices[dev].get("name") or "a device"
         days = int((now - since) // 86400)
@@ -748,6 +774,15 @@ def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = froz
                            link=DEVICES_LINK, facts={"offline_days": days}))
     batteries = [f for f in out if f.key.startswith("battery:")][:MAX_DEVICE_FINDINGS]
     offlines = [f for f in out if f.key.startswith("offline:")][:MAX_DEVICE_FINDINGS]
+    if long_offline:
+        names = sorted(str(devices[dev].get("name") or "a device") for _, dev in long_offline)
+        offlines.append(Finding(LONG_OFFLINE_KEY, "devices", WARNING, "Devices offline for 2+ weeks",
+                                steps=("If they are retired on purpose, nothing to do: they are listed here once.",
+                                       "To silence them for good: Settings -> Devices -> the device -> Disable.",
+                                       "If one should be working, check its power or batteries and its hub."),
+                                link=DEVICES_LINK,
+                                facts={"devices": len(names), "names": names[:MAX_LONG_OFFLINE_NAMES],
+                                       "longest_days": int((now - min(t for t, _ in long_offline)) // 86400)}))
     return batteries + offlines
 
 
