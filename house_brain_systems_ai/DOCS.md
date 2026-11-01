@@ -1,6 +1,9 @@
 # House Brain Systems AI
 
-Version 0.2.1 (shadow). Boot is manual. Only `SHADOW` mode exists. 0.2.1 adds the **World Change Radar**:
+Version 0.2.2 (shadow). Boot is manual (turn on Start on boot in the App's page; it is read-only, so that is safe).
+Only `SHADOW` mode exists. 0.2.2 reads the ESPHome Device Builder's version (its Supervisor info, options dropped),
+so ESPHome security advisories are matched to the version you run, and the System Monitor CPU and load sensors
+when you enable them. No new outside read. 0.2.1 added the **World Change Radar**:
 public security news that touches what runs here (see below). It is this App's first and only outside read,
 10 requests a day at most, with no key and $0. 0.2.0 added **cases**: each incident is
 followed from first sign to a verified fix and kept after the incident has rolled off (see below); no new
@@ -40,7 +43,7 @@ archive (31 entities). The new entities' 40 days are copied first after the upda
 - **World changes (0.2.1).**
   - **Sources:** the CISA list of vulnerabilities attackers are using now, and GitHub security advisories for Home Assistant Core, OS, the Supervisor and ESPHome.
   - **Reads:** at 03:20 and 15:20, one source a minute, at most 2 attempts per source a day (10 requests a day). A failed read is retried once, 30 minutes later. No read happens while the kill switch holds this App. Every attempt is saved before it is sent, so a restart never repeats one.
-  - **Matching:** an advisory touches you when the installed version is in its affected range. A recent CISA entry (30 days) for a product you run touches you until that component is updated. An unknown version is "version unknown", never "not affected"; ESPHome's version is not read yet, so its advisories show as version unknown.
+  - **Matching:** an advisory touches you when the installed version is in its affected range. A recent CISA entry (30 days) for a product you run touches you until that component is updated. An unknown version is "version unknown", never "not affected". ESPHome's version comes from its add-on (stable, beta or dev, from ESPHome's own repository); if none is found, its advisories show as version unknown.
   - **Output:** a match raises `WORLD_CHANGE_TOUCHES_YOU` (a problem, so it joins incidents and cases) and suggests the matching update in Maintenance. Systems AI changes nothing.
   - **Failures:** a source that fails keeps its last good result with its age. One that was never read says "not checked", never "no threats".
   - **GitHub data:** the advisories show "not yet proven on live data" until the first live read parses.
@@ -72,7 +75,7 @@ Every fast cycle reads `sensor.house_brain_ai_kill_switch_effective`. FULL_STOP 
 
 ## Bounds
 
-- About 8,000 local requests a day, all inside the house: states each minute, Supervisor and sibling reads each 5 minutes, database size hourly, statistic ids daily. While the archive catches up, one more read a minute (about 700 reads once); after that 18 a day.
+- About 8,000 local requests a day, all inside the house: states each minute, Supervisor and sibling reads each 5 minutes, database size hourly, statistic ids daily. While the archive catches up, one more read a minute (about 700 reads once); after that 18 a day. From 0.2.2, up to 3 more an hour to find the ESPHome Device Builder (stable, beta, dev; 1 once found).
 - Outside requests (0.2.1): at most 10 a day, only to `www.cisa.gov` (one exact URL) and `api.github.com` (four exact URLs). They send no key or token, refuse redirects, use the system TLS store and are capped at 6 MB. No paid API.
 - Python standard library only.
 - 256 MiB address cap. App-owned SQLite (mode 0600): 7 days raw, a year of hourly rollups.
@@ -83,7 +86,7 @@ Every fast cycle reads `sensor.house_brain_ai_kill_switch_effective`. FULL_STOP 
 - The busiest-entity ranking and the owner tap ledger wait for Maintenance to share what it already measures.
 - Feeding the offline evaluators is a later release.
 - The outside Pi-freeze check cannot be seen from the Pi.
-- Disk, CPU and load System Monitor sensors and the per-App Supervisor CPU/memory sensors are disabled in Home Assistant today. Turning them on is the owner's UI step; until then they read as missing, never OK.
+- Disk, CPU and load System Monitor sensors and the per-App Supervisor CPU/memory sensors are disabled in Home Assistant by default. Turning them on is the owner's UI step. From 0.2.2 this App reads `sensor.system_monitor_processor_use` and `sensor.system_monitor_load_15_min` when they exist; until then they read as missing, never OK. Disk space comes from the Supervisor.
 
 ## Recovery
 

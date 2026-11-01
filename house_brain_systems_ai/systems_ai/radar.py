@@ -42,8 +42,9 @@ REPOS = {'home-assistant/core': 'core', 'home-assistant/operating-system': 'os',
 SOURCES = (KEV,) + tuple('gh:' + r for r in REPOS)
 COMPONENTS = {'core': 'Home Assistant Core', 'os': 'Home Assistant OS', 'supervisor': 'Supervisor',
               'esphome': 'ESPHome'}
-# Supervisor /info keys for each component; ESPHome needs an /addons read Systems AI does not have (design §5).
-VERSION_KEYS = {'core': 'homeassistant', 'os': 'hassos', 'supervisor': 'supervisor'}
+# Supervisor /info keys for each component. 0.2.2: 'esphome' is the ESPHome add-on's own version, which runtime.py
+# reads from its Supervisor info and adds under that key.
+VERSION_KEYS = {'core': 'homeassistant', 'os': 'hassos', 'supervisor': 'supervisor', 'esphome': 'esphome'}
 # Package names that belong to one component. A range for another component's package is never compared with this
 # component's version (Core's '< 2023.9.0' says nothing about OS 16.2); a range with no package name is used as is.
 PACKAGES = {'core': frozenset({'homeassistant'}), 'esphome': frozenset({'esphome'})}
@@ -54,7 +55,7 @@ KEV_ALIASES = {('home assistant', '*'): 'core', ('nabu casa', '*'): 'core', ('es
 RE_CVE = re.compile(r'CVE-[0-9]{4}-[0-9]{4,}')
 RE_GHSA = re.compile(r'GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}')
 RE_DAY = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
-RE_VERSION = re.compile(r'v?([0-9]+(?:\.[0-9]+){0,3})(?:(a|b|rc|dev)([0-9]*))?')
+RE_VERSION = re.compile(r'v?([0-9]+(?:\.[0-9]+){0,3})(?:[-.]?(a|b|rc|dev)([0-9]*))?')
 RE_CLAUSE = re.compile(r'\s*(<=|>=|==|<|>|=)?\s*(\S+)\s*')
 PRE = {'dev': 0, 'a': 1, 'b': 2, 'rc': 3}
 
@@ -254,6 +255,11 @@ class Radar:
             elif known['version'] != value:
                 self.state['versions'][component] = {'version': value, 'since': now}
         self.store.put('radar:state', self.state)
+
+    def forget(self, component):
+        """The component is no longer found: its version is unknown again, never kept from before."""
+        if self.state['versions'].pop(component, None) is not None:
+            self.store.put('radar:state', self.state)
 
     def installed(self, component):
         row = self.state['versions'].get(component)

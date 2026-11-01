@@ -22,7 +22,7 @@ from .learn import trend, days_until, freeze, score, hourly
 from .logs import LogLearner
 from .radar import Radar
 from .store import Store
-from .transport import TransportError
+from .transport import TransportError, ESPHOME_SLUGS
 
 PHOENIX = timezone(timedelta(hours=-7))
 SELF = 'house_brain_systems_ai'
@@ -43,7 +43,9 @@ PROPOSAL_TTL_S = 3600
 MEMORY = {'free': 'sensor.system_monitor_memory_free', 'used_pct': 'sensor.system_monitor_memory_usage',
           'swap_pct': 'sensor.system_monitor_swap_usage',
           'pressure_full_pct': 'sensor.system_monitor_memory_pressure_full_300s_average',
-          'last_boot': 'sensor.system_monitor_last_boot'}
+          'last_boot': 'sensor.system_monitor_last_boot',
+          # 0.2.2: read when the owner enables them (disabled in Home Assistant by default); missing is None, never 0.
+          'cpu_pct': 'sensor.system_monitor_processor_use', 'load_15': 'sensor.system_monitor_load_15_min'}
 SIBLING_STATUS = {'maintenance': 'sensor.house_brain_maintenance_status',
                   'deployer': 'sensor.house_brain_deployer_status',
                   'ai_activity': 'sensor.house_brain_ai_activity',
@@ -145,6 +147,7 @@ class Runtime:
         self.public = public
         self.radar = Radar(self.store, public)
         self.radar_last = None
+        self.esphome = self.store.get('esphome')
         self.logs = LogLearner(self.store)
         self.archive = Archive(self.store, client)
         self.archive_last = None
@@ -215,6 +218,8 @@ class Runtime:
             self._change('host_boot', boot, now, 'HOST_BOOT')
         for name in ('free', 'swap_pct', 'pressure_full_pct'):
             self._metric('mem_' + name, values[name], now)
+        for name in ('cpu_pct', 'load_15'):
+            self._metric('host_' + name, values[name], now)
         problems.update(memory_problems(values))
         for name, entity in SIBLING_STATUS.items():
             row = states.get(entity)
@@ -259,6 +264,18 @@ class Runtime:
                         continue
             self.installed = found
             self.store.put('installed', found)
+            # 0.2.2: the ESPHome Device Builder, for the radar's version match only. First slug that answers.
+            self.esphome = None
+            for slug in ESPHOME_SLUGS:
+                try:
+                    info = self.client.info(f'/addons/{slug}/info')
+                except (OSError, ValueError, TransportError):
+                    continue
+                self.esphome = {'slug': slug, 'version': info.get('version'), 'state': info.get('state')}
+                break
+            if self.esphome is None or not isinstance(self.esphome.get('version'), str):
+                self.radar.forget('esphome')
+            self.store.put('esphome', self.esphome)
             self.last['installed'] = now
 
     def slow(self, now):
@@ -276,7 +293,8 @@ class Runtime:
                                                  'subject': 'supervisor', 'owner': 'systems_ai'}
             sup = host = resolution = None
         if sup is not None:
-            self.radar.observe_versions(sup, now)
+            esphome = (self.esphome or {}).get('version')
+            self.radar.observe_versions({**sup, 'esphome': esphome}, now)
             for key in ('homeassistant', 'supervisor', 'hassos'):
                 if isinstance(sup.get(key), str):
                     self._change('version:' + key, sup[key], now, 'UPDATE')

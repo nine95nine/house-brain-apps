@@ -25,6 +25,10 @@ MAX_BYTES = 4_000_000
 MAX_WS_BYTES = 4 * 1024 * 1024
 STATIC_INFO = frozenset({'/info', '/host/info', '/resolution/info', '/addons/self/info'})
 RE_ADDON_INFO = re.compile(r'/addons/(?:local|[0-9a-f]{8})_house_brain_[a-z0-9_]{1,48}/info')
+# 0.2.2 (owner pop-up 2026-11-01 "Build 0.2.2: ESPHome version"): the ESPHome Device Builder's info, for its version
+# only (projected like every App, options dropped). Exactly these slugs: stable, beta and dev from ESPHome's repository.
+ESPHOME_SLUGS = ('5c53de3b_esphome', '5c53de3b_esphome-beta', '5c53de3b_esphome-dev')
+ESPHOME_INFO = frozenset(f'/addons/{s}/info' for s in ESPHOME_SLUGS)
 RE_HOSTNAME = re.compile(r'[a-z0-9][a-z0-9-]{0,62}')
 # Read-only Core WebSocket commands, each with exactly these keys.
 WS_ALLOW = {'system_log/list': {'type'}, 'repairs/list_issues': {'type'},
@@ -126,7 +130,7 @@ class Client:
 
     def info(self, path):
         """GET a Supervisor `.../info` route; sibling App info is projected to ADDON_FIELDS."""
-        if path not in STATIC_INFO and not RE_ADDON_INFO.fullmatch(path):
+        if path not in STATIC_INFO and path not in ESPHOME_INFO and not RE_ADDON_INFO.fullmatch(path):
             raise TransportError('ENDPOINT_REFUSED')
         body = json.loads(self._get(SUPERVISOR + path))
         if not isinstance(body, dict) or body.get('result') != 'ok' or not isinstance(body.get('data'), dict):
