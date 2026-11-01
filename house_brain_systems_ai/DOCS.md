@@ -1,6 +1,7 @@
 # House Brain Systems AI
 
-Version 0.1.3 (shadow). Boot is manual. Only `SHADOW` mode exists. 0.1.3 opens a fresh Core WebSocket for each
+Version 0.1.4 (shadow). Boot is manual. Only `SHADOW` mode exists. 0.1.4 also watches Water AI's own health
+block (Water AI serves it from 0.1.0); nothing else changes. 0.1.3 opened a fresh Core WebSocket for each
 cycle and retries a command once on a fresh socket when a kept one has gone stale, so the WebSocket read no
 longer fails every other cycle; the four read-only commands are unchanged. 0.1.2 added one read-only, internal-network
 route, `GET /archive/<day>.json`, so the coming Cooling AI can read archived days (see Outputs), and
@@ -19,7 +20,7 @@ archive (31 entities). The new entities' 40 days are copied first after the upda
 
   There is no POST, state write or service call anywhere in the App. Sibling App info is cut down to slug, name, version, state, boot, hostname, ingress port, watchdog and update flag before anything is kept; their options are never stored.
 - **Finds its siblings without settings.** It reads its own slug, then checks the known House Brain App names under the same store prefix and under `local_`, once an hour.
-- **Self-health.** It reads each App that serves `house_brain_app_health.v1` (Energy AI 0.1.2 and later; Cooling AI from 0.1.0) at `http://<hostname>:<ingress port>/health`. It checks the block with the shared validator: unknown, stale, invalid or unreachable is never OK.
+- **Self-health.** It reads each App that serves `house_brain_app_health.v1` (Energy AI 0.1.2 and later; Cooling AI and Water AI from 0.1.0) at `http://<hostname>:<ingress port>/health`. It checks the block with the shared validator: unknown, stale, invalid or unreachable is never OK.
 - **Learns:**
   - database size (hourly, from `system_health/info`), disk free (`/host/info`), memory free and swap (System Monitor sensors);
   - errors per integration per day, against its own 14-day median and spread;
