@@ -578,6 +578,21 @@ The cloud AI reviewer (a Claude routine) stops when the owner's weekly plan limi
 - `free_reviewer: shadow` drafts and compares but never posts; `off` turns the lane off. `companion_url` is worked out
   from the Broker's Cloudflare account; set `off` to forbid the call.
 
+## Rules first, then the free model — from 0.9.42
+
+- **Closed rules answer the obvious problems at once, for free.** An internet blip and its parts, several devices of
+  one integration offline together, a low battery, a problem that came back three times in a week, a single error
+  that was gone by the next check, an ESPHome device that dropped once: each gets a verdict from a fixed table
+  (`hbm/rules.py`), shown as **Rule: …** on the Messages page. A rule may say "wait and watch", "harmless" or "needs a
+  step by you" (for a low battery, or a problem that keeps coming back, with the lasting fix named); never "approve
+  the offered fix". Rules never speak about a critical problem, a backup, an App, the Supervisor or anything with a
+  one-tap fix: those keep going to the AI reviewers and to you.
+- **The free lane posts rule verdicts** on the tracking issue together with its model drafts, marked by their source
+  (`rule` or `model`), at most once an hour in `primary` mode and every six hours in `lockout` mode. A cloud or owner
+  review of the same problem still replaces them.
+- **`free_reviewer: primary`** posts without waiting for the cloud reviewer to be silent for a day. The default is
+  still `lockout`; the owner switches when the model tiers arrive.
+
 ## Quieter, steadier problem keys — from 0.9.41
 
 - **Device problems have stable, readable keys.** An offline or low-battery device is now `offline:<integration>:<h>`

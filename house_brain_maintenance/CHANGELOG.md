@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.9.42
+
+The rules layer and the `primary` lane mode (reviewer chat's spec R1 part B1; owner 2026-10-31 D1 "primary replaces
+the 24 h lockout", D2 "the lane may post OWNER_ACTION", D3 "an ESPHome single drop is noise"). Contains 0.9.41
+unchanged otherwise. `CONTROL_AUTHORITY=NONE`: a rule verdict is text; nothing is started, skipped or approved.
+
+- **`hbm/rules.py`: a closed table, no AI.** The first matching row wins and R3 is checked before R1:
+  R1 a child of an internet blip, or a cloud integration's log error that says "network" → WATCH; R2 the blip
+  itself → WATCH naming the integrations; R3 three or more episodes of one problem in 7 days → OWNER_ACTION with the
+  family's lasting fix (REST timeout/scan interval and template availability are YAML through the Deployer; a cloud
+  account check; device power/range/re-pair) plus up to three steps an earlier cloud review gave; R6 several devices of
+  one integration offline together → WATCH (check the hub); R7 a low battery → OWNER_ACTION "replace or recharge".
+  When a problem clears without any review: R4 a single error gone by the next check → IGNORE recorded (a repeat with
+  the same facts is already answered); R8 an ESPHome device that dropped once and reconnected → WATCH (D3); R5 a
+  problem a queue line named that cleared unreviewed → `RULE_CLEARED` in the audit, nothing posted. Never FIX_NOW;
+  never a CRITICAL problem, a backup, an App, the Supervisor, the reviewer watchdog, or a problem with a built-in fix.
+- **Episodes** are counted in the `problem_recur` doc (start times over 7 days, at most 20 per key and 500 keys). It
+  starts empty, so R3 begins to fire after a week.
+- **Rule verdicts are reviews** (`source: rule`, the row id, optional steps): the page says "Rule: …", the queue and
+  the watchdog treat the problem as answered, the free lane never spends a model call on it, and a cloud or owner
+  review of the same problem still wins (a rule replaces only an older rule of another row, R3 after R1).
+- **The free lane posts rule verdicts** with its model drafts: at most one post an hour in `primary`, every six hours
+  in `lockout` (and only after 24 h of cloud silence there); the free marker's JSON gains `"sources": {key: "rule" |
+  "model"}` and the reader stores the source, so the App reading its own post keeps "Rule". Rule lines need no
+  agreement history; model lines still do. OWNER_ACTION lines (R3, R7) are posted (D2).
+- **`free_reviewer: primary`** (D1) posts rule and model verdicts without waiting for cloud silence ("internal
+  reviewer" post). The default stays `lockout` in this release; the owner flips it with the tiers release.
+- 0.9.41's blip-only rule hook is replaced by the table (same WATCH for blips and children).
+- Tests: `test_l1_rules.py` (one case per row, the order, the limits, the recur bounds, the families),
+  `test_l4_rules_post.py`; the lane tests use an error the table does not know. Mutants `rl-*`.
+- **Not in this release** (next): the model tiers (Gemma/Qwen), the budget split, trust per family, `needs_you`,
+  the D7 stall semantics, internal update reviews (D4/D5), Companion 0.2.0 (D6).
+
 ## 0.9.41
 
 Stable device keys, one problem per internet blip, a Supervisor-busy re-check, and the 2026-10-31 hand-offs (reviewer

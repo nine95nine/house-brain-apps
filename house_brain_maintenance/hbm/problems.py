@@ -60,6 +60,8 @@ RE_STEPS = re.compile(r"<!-- house_brain_ai_problem_steps\.v1 (\{[^\n]*?\}) -->"
 # 0.9.29: this App's own free-model reviews carry a marker line; they count as reviews (the queue and the page show
 # them) but never as the cloud reviewer's word (the watchdog and the lockout clock look at cloud reviews only).
 RE_FREE_MARK = re.compile(r"<!-- house_brain_free_review\.v1 \{")
+RE_FREE_JSON = re.compile(r"<!-- house_brain_free_review\.v1 (\{[^\n]*?\}) -->")   # 0.9.42: its "sources" map
+RULE_VERDICTS = ("WATCH", "IGNORE", "OWNER_ACTION")                              # 0.9.42: what a rule may say (D2)
 MAX_AI_STEPS = 6
 AI_STEP_CHARS = 120
 RE_KEY = re.compile(r"^[a-z_]{1,24}:[A-Za-z0-9_.:@/+-]{1,200}$")
@@ -121,6 +123,15 @@ def parse(comment: dict, owner: str, bot: str = "") -> list[dict]:
         r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+#issuecomment-\d+", comment["html_url"]) else ""
     steps = parse_steps(body)
     free = bool(RE_FREE_MARK.search(body))                          # 0.9.29
+    sources: dict = {}
+    if free:                                                        # 0.9.42: the lane says which key came from a rule
+        try:
+            mark = json.loads(RE_FREE_JSON.search(body).group(1)) if RE_FREE_JSON.search(body) else {}
+            raw_sources = mark.get("sources") if isinstance(mark, dict) else None
+            sources = {str(k): str(v) for k, v in (raw_sources or {}).items() if v in ("rule", "model")} \
+                if isinstance(raw_sources, dict) else {}
+        except (ValueError, AttributeError):
+            sources = {}
     out = []
     for raw in RE_MACHINE.findall(body)[:A.MAX_LINES_PER_COMMENT]:
         try:
@@ -134,7 +145,8 @@ def parse(comment: dict, owner: str, bot: str = "") -> list[dict]:
             continue
         out.append({"item": key, "verdict": verdict, "summary": A._plain(doc.get("summary") or "", 200),
                     "at": at, "url": url, **({"steps": steps[key]} if steps.get(key) else {}),
-                    **({"free": True} if free else {})})
+                    **({"free": True} if free else {}),
+                    **({"source": "rule"} if sources.get(key) == "rule" else {})})
     return out
 
 
@@ -212,22 +224,40 @@ class ProblemReviews(A.AiReviews):
         r = self.get(item)
         return None if r is None or r.get("free") else r
 
-    def rule(self, item: str, verdict: str, summary: str, now: float) -> bool:
-        """0.9.41 (spec R1 B1 rows R1/R2, brought forward for the blip hand-off): a verdict this App gives itself
-        from a closed rule, stored like a review (``free`` and ``source: rule``) so the page and the queue see it,
-        never posted. It never replaces a cloud or owner review, and WATCH/IGNORE are the only verdicts it may give.
-        Returns whether anything was written."""
-        if verdict not in ("WATCH", "IGNORE") or not RE_KEY.fullmatch(item or ""):
+    def rule(self, item: str, verdict: str, summary: str, now: float, steps=(), rule_id: str = "") -> bool:
+        """0.9.41/0.9.42 (spec R1 B1): a verdict this App gives itself from a closed rule (``hbm/rules.py``), stored
+        like a review (``free``, ``source: rule``, ``rule``) so the page, the queue and the free lane's post see it.
+        It never replaces a cloud or owner review, never a free-model review either; a rule replaces only an older
+        rule of another row (R3 after R1) or one older than the problem's facts. WATCH, IGNORE and OWNER_ACTION (owner
+        D2, 2026-10-31) are the only verdicts it may give. Returns whether anything was written."""
+        if verdict not in RULE_VERDICTS or not RE_KEY.fullmatch(item or ""):
             return False
         doc = self._doc()
         old = doc["reviews"].get(item)
-        if old is not None and (not old.get("free") or old.get("source") == "rule") \
-                and float(old.get("at") or 0) >= float((self.since or {}).get(item, 0) or 0):
-            return False
+        since = float((self.since or {}).get(item, 0) or 0)
+        if old is not None:
+            if not old.get("free"):                                          # cloud or owner: theirs stands
+                return False
+            fresh = float(old.get("at") or 0) >= since
+            if old.get("source") != "rule" and fresh:                        # a free-model review: stands
+                return False
+            if old.get("source") == "rule" and fresh and (old.get("rule", "") == rule_id or
+                                                           (not old.get("rule") and old.get("verdict") == verdict)):
+                return False                      # the same row already said so (read back from a post: no row id)
+        clean = [A._plain(str(s), AI_STEP_CHARS) for s in list(steps or [])[:MAX_AI_STEPS] if str(s).strip()]
         doc["reviews"][item] = {"verdict": verdict, "summary": A._plain(summary, 200), "at": float(now), "url": "",
-                                "free": True, "source": "rule"}
+                                "free": True, "source": "rule", "rule": str(rule_id)[:8],
+                                **({"steps": clean} if clean else {})}
         self.j.save_doc(self.DOC, doc)
         return True
+
+    def note_url(self, item: str, url: str) -> None:
+        """0.9.42: the free lane posted this key's rule verdict: the stored rule review links to that post."""
+        doc = self._doc()
+        r = doc["reviews"].get(item)
+        if isinstance(r, dict) and r.get("source") == "rule" and isinstance(url, str) and url.startswith("https://github.com/"):
+            r["url"] = url
+            self.j.save_doc(self.DOC, doc)
 
     def cloud_before(self, item: str) -> dict | None:
         """0.9.29: the newest cloud review of this key even when the problem's facts changed since (the free lane

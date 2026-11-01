@@ -134,7 +134,7 @@ class Options:
     ai_review: bool = True            # 0.8.9: an AI review on the tracking issue before any update ask/auto install
     cf_control_issue: int = 454       # 0.8.2: Cloudflare control approvals to the phone (0 = off; owner 2026-10-11)
     cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
-    free_reviewer: str = "lockout"    # 0.9.29: off | shadow | lockout (owner 2026-10-24 "Go straight to lockout mode")
+    free_reviewer: str = "lockout"    # 0.9.29: off | shadow | lockout (owner 2026-10-24); 0.9.42: primary (owner D1 2026-10-31)
     companion_url: str = ""           # 0.9.29: "" = the Companion on the Broker's Cloudflare account; "off" = never
 
 
@@ -236,7 +236,7 @@ def load_options(path: str) -> Options:
         else _bad("housekeeping"),
         ai_review=raw.get("ai_review", True) if isinstance(raw.get("ai_review", True), bool) else _bad("ai_review"),
         cf_control_url=_cf_url(raw.get("cf_control_url")),
-        free_reviewer=raw.get("free_reviewer", "lockout") if raw.get("free_reviewer", "lockout") in ("off", "shadow", "lockout")
+        free_reviewer=raw.get("free_reviewer", "lockout") if raw.get("free_reviewer", "lockout") in ("off", "shadow", "lockout", "primary")
         else _bad("free_reviewer"),
         companion_url=_companion_url(raw.get("companion_url")),
     )

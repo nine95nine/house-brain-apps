@@ -35,7 +35,9 @@ DOC = "free_reviews"
 SCHEMA = "house_brain_free_review.v1"                 # the marker line on a lockout post
 REQUEST_SCHEMA = "house_brain_free_review_request.v1"
 RESULT_SCHEMA = "house_brain_free_review_result.v1"
-MODES = ("off", "shadow", "lockout")
+MODES = ("off", "shadow", "lockout", "primary")     # 0.9.42: primary (owner D1 2026-10-31) posts without the 24 h wait
+POST_EVERY_HOURS_PRIMARY = 1.0                       # spec R1 B1: at most one comment an hour
+RULE_POSTABLE = ("WATCH", "IGNORE", "OWNER_ACTION")  # what a rule verdict may post (owner D2 2026-10-31)
 RE_COMPANION_URL = re.compile(r"^https://house-brain-companion\.([a-z0-9-]{1,63})\.workers\.dev$")
 RE_BROKER_BASE = re.compile(r"^https://house-brain-maintenance-broker\.([a-z0-9-]{1,63})\.workers\.dev$")
 PROTECTED = ("zha", "zwave", "zigbee", "thread", "matter", "otbr", "bluetooth", "esphome", "hassio", "supervisor",
@@ -116,7 +118,9 @@ def _doc(raw) -> dict:
            "last_reason": str(doc.get("last_reason") or ""), "last_shape": closed_shape(doc.get("last_shape")),
            "last_at": float(doc.get("last_at") or 0),
            "skip": {str(k): float(v) for k, v in (doc.get("skip") or {}).items() if isinstance(v, (int, float))}
-           if isinstance(doc.get("skip"), dict) else {}}
+           if isinstance(doc.get("skip"), dict) else {},
+           "posted_rules": {str(k): float(v) for k, v in (doc.get("posted_rules") or {}).items()     # 0.9.42
+                            if isinstance(v, (int, float))} if isinstance(doc.get("posted_rules"), dict) else {}}
     out["drafts"] = {k: v for k, v in out["drafts"].items() if isinstance(v, dict) and PR.RE_KEY.fullmatch(str(k))}
     return out
 
@@ -188,6 +192,8 @@ def compare(doc: dict, reviews, now: float) -> dict:
 
 
 def prune(doc: dict, open_recs: dict, now: float) -> dict:
+    doc["posted_rules"] = {k: t for k, t in doc.get("posted_rules", {}).items()        # 0.9.42
+                           if k in open_recs or now - float(t) <= KEEP_DAYS * 86400}
     keep = {}
     for key, d in doc["drafts"].items():
         if now - float(d.get("at") or 0) > KEEP_DAYS * 86400:
@@ -226,20 +232,28 @@ def parse_result(status: int, body) -> dict:
             "neurons": int(neurons) if isinstance(neurons, int) and 0 <= neurons <= 100000 else 0}
 
 
-def post_text(drafts: list[tuple[str, dict, dict]], version: str, lockout_since_h: float) -> str:
-    """The lockout post: one visible block per problem, then the review lines the reviewer would have written, then
-    this lane's marker line. ``drafts``: (key, draft, open record)."""
-    model = MODEL_WORDS.get(str(drafts[0][1].get("model") or ""), str(drafts[0][1].get("model") or "free model")) \
-        if drafts else "free model"
-    lines = ["### House Brain Maintenance: free reviewer (lockout mode)", "",
-             f"No cloud AI review has appeared for {lockout_since_h:.0f} hours, so these low-risk problems were reviewed by "
-             f"the free model ({model}, through the House Brain Companion on Workers AI's free plan; $0). "
-             "WATCH or IGNORE only; nothing is approved or changed. A later cloud review of the same problem replaces "
-             "each of these.", ""]
+def post_text(drafts: list[tuple[str, dict, dict]], version: str, lockout_since_h: float, mode: str = "lockout") -> str:
+    """The lane's post: one visible block per problem, then the review lines the reviewer would have written, then
+    this lane's marker line (0.9.42: with ``sources``, key -> "rule" or "model"). ``drafts``: (key, draft, open
+    record); a draft with ``source: rule`` came from ``hbm/rules.py`` (no model call)."""
+    models = [str(d.get("model") or "") for _, d, _ in drafts if d.get("source") != "rule"]
+    model = MODEL_WORDS.get(models[0], models[0] or "free model") if models else "free model"
+    if mode == "primary":
+        lines = ["### House Brain Maintenance: internal reviewer", "",
+                 "These problems were reviewed inside the house: by this App's closed rules, or by the free model "
+                 f"({model}, through the House Brain Companion on Workers AI's free plan; $0). Nothing is approved or "
+                 "changed; a cloud or owner review of the same problem replaces each of these.", ""]
+    else:
+        lines = ["### House Brain Maintenance: free reviewer (lockout mode)", "",
+                 f"No cloud AI review has appeared for {lockout_since_h:.0f} hours, so these low-risk problems were reviewed by "
+                 f"the free model ({model}, through the House Brain Companion on Workers AI's free plan; $0), or by this "
+                 "App's closed rules. Nothing is approved or changed. A later cloud review of the same problem replaces "
+                 "each of these.", ""]
     machine = []
     for key, d, rec in drafts:
         words = PR.WORDS.get(d["verdict"], d["verdict"])
-        how = f"free model, {int(d.get('neurons') or 0)} Neurons"
+        how = f"rule {d.get('rule', '')}".strip() if d.get("source") == "rule" else \
+            f"free model, {int(d.get('neurons') or 0)} Neurons"
         lines.append(f"- **{I.scrub(str(rec.get('title') or key), 160)}** (`{key}`): **{words}**: {d.get('summary', '')} "
                      f"_(Reviewer: {how})_")
         lines += [f"  - {s}" for s in d.get("steps") or []]
@@ -251,8 +265,10 @@ def post_text(drafts: list[tuple[str, dict, dict]], version: str, lockout_since_
     lines += ["", f"- **App:** `{version}`", "",
               "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._", "",
               *machine,
-              f"<!-- {SCHEMA} " + json.dumps({"keys": [k for k, _, _ in drafts], "model": str(drafts[0][1].get("model") or ""),
-                                              "neurons": sum(int(d.get("neurons") or 0) for _, d, _ in drafts)},
+              f"<!-- {SCHEMA} " + json.dumps({"keys": [k for k, _, _ in drafts], "model": models[0] if models else "",
+                                              "neurons": sum(int(d.get("neurons") or 0) for _, d, _ in drafts),
+                                              "sources": {k: ("rule" if d.get("source") == "rule" else "model")
+                                                          for k, d, _ in drafts}},
                                              separators=(",", ":")) + " -->"]
     return I.scrub("\n".join(lines), 60000)
 
@@ -324,7 +340,7 @@ class FreeLane:
         if now - doc["ran_at"] >= RUN_EVERY:
             doc["ran_at"] = now
             doc = self._draft(doc, open_recs, now)
-        if self.mode == "lockout" and not dry_run:
+        if self.mode in ("lockout", "primary") and not dry_run:
             doc = self._post(doc, open_recs, version, now)
         self.j.save_doc(DOC, doc)
         return doc
@@ -366,25 +382,53 @@ class FreeLane:
             made += 1
         return doc
 
+    def rule_drafts(self, open_recs: dict, doc: dict) -> list[tuple[str, dict, dict]]:
+        """0.9.42: rule verdicts (``hbm/rules.py``, stored by the Watcher as reviews with ``source: rule``) of open
+        problems that this lane has not posted yet, as draft-shaped items (no model, 0 Neurons). A cloud or owner
+        review of the key means nothing to post."""
+        out = []
+        for key, rec in sorted(open_recs.items(), key=lambda kv: float((kv[1] or {}).get("first") or 0)):
+            if not isinstance(rec, dict) or not rec.get("alerted"):
+                continue
+            r = self.reviews.get(key)
+            if not isinstance(r, dict) or r.get("source") != "rule" or r.get("verdict") not in RULE_POSTABLE:
+                continue
+            if float(doc["posted_rules"].get(key, 0)) >= float(r.get("at") or 0):
+                continue
+            out.append((key, {"verdict": r["verdict"], "summary": str(r.get("summary") or ""), "steps": list(r.get("steps") or []),
+                              "model": "rule", "neurons": 0, "source": "rule", "rule": str(r.get("rule") or "")}, rec))
+        return out
+
     def _post(self, doc: dict, open_recs: dict, version: str, now: float) -> dict:
         cloud_at = self.reviews.cloud_at()
-        if not cloud_lockout(cloud_at, now) or now - doc["posted_at"] < POST_EVERY_HOURS * 3600 or not trusted(doc):
+        every = POST_EVERY_HOURS_PRIMARY if self.mode == "primary" else POST_EVERY_HOURS
+        if self.mode == "lockout" and not cloud_lockout(cloud_at, now):   # 0.9.42: primary needs no cloud silence
+            return doc
+        if now - doc["posted_at"] < every * 3600:
             return doc
         due = []
-        for key, d in sorted(doc["drafts"].items(), key=lambda kv: float(kv[1].get("at") or 0)):
-            rec = open_recs.get(key)
-            if d.get("posted_at") or d.get("verdict") not in POSTABLE or not isinstance(rec, dict):
-                continue
-            if not low_risk(key, rec) or self.reviews.cloud(key) is not None:
-                continue
-            if PR.fingerprint(str(rec.get("title") or key)) != d.get("fp"):
-                continue                                                # the facts changed since the draft
+        if trusted(doc):                                                # model drafts: only while the lane agrees
+            for key, d in sorted(doc["drafts"].items(), key=lambda kv: float(kv[1].get("at") or 0)):
+                rec = open_recs.get(key)
+                if d.get("posted_at") or d.get("verdict") not in POSTABLE or not isinstance(rec, dict):
+                    continue
+                if not low_risk(key, rec) or self.reviews.cloud(key) is not None:
+                    continue
+                if PR.fingerprint(str(rec.get("title") or key)) != d.get("fp"):
+                    continue                                            # the facts changed since the draft
+                due.append((key, d, rec))
+        for key, d, rec in self.rule_drafts(open_recs, doc):            # 0.9.42: rule verdicts, trust not needed
             due.append((key, d, rec))
         if not due:
             return doc
         due = due[:MAX_POST]
-        url = self.report(post_text(due, version, (now - float(cloud_at)) / 3600))
+        url = self.report(post_text(due, version, (now - float(cloud_at or now)) / 3600, self.mode))
         for key, d, _ in due:
+            if d.get("source") == "rule":
+                doc["posted_rules"][key] = now
+                if isinstance(url, str) and url:
+                    self.reviews.note_url(key, url)                    # the page links the rule verdict to its post
+                continue
             d["posted_at"] = now
             d["url"] = url if isinstance(url, str) else ""
         doc["posted_at"] = now

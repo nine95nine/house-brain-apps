@@ -29,6 +29,7 @@ from typing import Callable
 from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issues as I, net, drivesettings as DS
 from . import devicekeys as DK
 from . import problems as PR
+from . import rules as RU
 from . import systemsai as SA
 from .ha import AI_ACTIVITY_ENTITY, AI_CONNECTORS_ENTITY, DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
@@ -57,7 +58,6 @@ NOT_FIXED = "NOT_FIXED"
 # terminal "no result" line on the tracking issue and the problem's message (the App restarted while it ran).
 FIX_RESULT_SECONDS = 30 * 60
 REVIEWER_SILENT_SECONDS = 24 * 3600      # 0.9.41: the morning summary says so every day of a long reviewer outage
-BLIP_RULE_TEXT = "internet blip; recovers by itself"
 # 0.9.23: a report comment this App posted (its address is the message link)
 PAGE_FIX_KINDS = ("restart_app", "start_app", "reload_entry", "apply_suggestion", "relabel_stats",
                   "drive_backup_settings")   # 0.9.23; 0.9.34 the Google Drive Backup App's two settings
@@ -342,10 +342,13 @@ class Watcher:
         skipped_sources = {src for src in failed}
         push_now: list[I.Finding] = []
         installs = None
+        recur = None                                                       # 0.9.42: loaded on the first new problem
         for f in findings:
             rec = st["open"].setdefault(f.key, {"first": now, "polls": 0, "alerted": False})
             PR.note_fingerprint(st[PR.FP_DOC_KEY], f.key, f.title, now, existed=bool(rec["polls"]))   # 0.9.19
             if not rec["polls"]:                # 0.9.12: first seen now; within 24 h after an install about it?
+                recur = RU.note_episode(recur if recur is not None else self.j.load_doc(RU.RECUR_DOC, {}),
+                                        f.key, float(rec["first"]), now)             # 0.9.42: R3 counts episodes
                 if installs is None:
                     installs = (self.j.load_doc(PR.INSTALLS_DOC, {}) or {}).get("installs") or []
                 tag = PR.after_update(installs, f.key, f.facts, float(rec["first"]))
@@ -406,6 +409,7 @@ class Watcher:
                 continue
             if rec.get("alerted") and rec.get("clear", True):
                 st["cleared"].append({"key": key, "title": rec.get("title", key)[:120]})   # 0.8.3: keyed
+            self._rules_on_clear(key, rec, now)                            # 0.9.42: R4, R5, R8
             del st["open"][key]
             st["declined"].pop(key, None)
             st["asked"].pop(key, None)
@@ -416,7 +420,9 @@ class Watcher:
             st["open"][f.key]["alerted"] = True
         st["log_reported"] = {k: t for k, t in st["log_reported"].items() if now - t < LOG_REPORT_SECONDS}
         self.j.save_doc(DOC, st)
-        self._blip_rules(blips, current, now)                      # 0.9.41: WATCH, locally, never posted
+        if recur is not None:
+            self.j.save_doc(RU.RECUR_DOC, recur)
+        self._apply_rules(st, now)                                 # 0.9.42: the rules table (0.9.41: blips only)
         self._since(st)                                         # 0.9.19: this check's fingerprints
         outcome = self._offer_fix(st, current, now)
         self._maybe_escalate(now)                              # 0.9.6: open 7 days -> one push
@@ -1130,20 +1136,42 @@ class Watcher:
                                         "steps": [], "link": None, "detail": [note], "facts": {},
                                         "fix": None, "source": str(info.get("source") or "")}]))
 
-    def _blip_rules(self, blips: dict[str, str], current: dict, now: float) -> None:
-        """0.9.41 (fish-room chat hand-off, spec R1 rows R1/R2): a blip and its children are WATCH by rule, stored
-        locally like a review so the page and the queue see a verdict; nothing is posted and nothing is acted on."""
+    def _apply_rules(self, st: dict, now: float) -> None:
+        """0.9.42 (spec R1 B1; 0.9.41 did the blip rows only): every open problem a row of ``hbm/rules.py`` matches
+        gets that row's verdict stored as a review (``source: rule``) so the page, the queue, the watchdog and the free
+        lane's post see it. Text only: nothing is started, skipped or approved; a cloud or owner review wins."""
         ai = self.problem_ai
-        if not blips or ai is None or not ai.enabled:
+        if ai is None or not ai.enabled:
             return
         try:
-            for child, parent in blips.items():
-                ai.rule(child, "WATCH", BLIP_RULE_TEXT, now)
-            for parent in sorted(set(blips.values())):
-                f = current.get(parent)
-                names = (f.detail[0] if f is not None and f.detail else "")[len("Affected: "):]
-                ai.rule(parent, "WATCH", f"internet blip; recovers by itself ({names})"[:200], now)
+            recur = self.j.load_doc(RU.RECUR_DOC, {})
+            for key, rec in st["open"].items():
+                if not isinstance(rec, dict) or not (rec.get("alerted") or rec.get("parent")):
+                    continue
+                earlier = ai.cloud_before(key)
+                steps = list(earlier.get("steps") or []) if isinstance(earlier, dict) else []
+                rule = RU.verdict(key, rec, recur, steps, now)
+                if rule is not None and ai.rule(key, rule.verdict, rule.summary, now, rule.steps, rule.id):
+                    self.j.audit(key[:80], "RULE_APPLIED", rule=rule.id, verdict=rule.verdict)
         except Exception as err:  # noqa: BLE001 - a rule verdict is a convenience, never a stop
+            self.j.audit("issues", "RULE_FAILED", error=type(err).__name__)
+
+    def _rules_on_clear(self, key: str, rec: dict, now: float) -> None:
+        """0.9.42: a problem that clears without any review: R4 (a single error gone by the next check -> IGNORE) and
+        R8 (an ESPHome single drop that reconnected -> WATCH, owner D3) are recorded so a repeat with the same facts is
+        already answered; one that a queue line named is audited RULE_CLEARED (R5), never posted."""
+        ai = self.problem_ai
+        if ai is None or not ai.enabled or not isinstance(rec, dict):
+            return
+        try:
+            reviewed = ai.get(key) is not None
+            queued = key in ((self.j.load_doc(PR.WATCH_DOC, {}) or {}).get("queued") or {})
+            rule = RU.verdict_on_clear(key, rec, now, reviewed, queued)
+            if rule is not None and ai.rule(key, rule.verdict, rule.summary, now, rule.steps, rule.id):
+                self.j.audit(key[:80], "RULE_APPLIED", rule=rule.id, verdict=rule.verdict, cleared=True)
+            elif queued and not reviewed:
+                self.j.audit(key[:80], "RULE_CLEARED", rule="R5")
+        except Exception as err:  # noqa: BLE001
             self.j.audit("issues", "RULE_FAILED", error=type(err).__name__)
 
     def run_fix(self, f: I.Finding) -> tuple[str, str]:
