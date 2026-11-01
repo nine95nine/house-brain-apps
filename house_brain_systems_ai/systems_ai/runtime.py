@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from . import __version__
 from . import app_health
 from .archive import Archive
+from .cases import Cases
 from .incidents import Incidents
 from .learn import trend, days_until, freeze, score, hourly
 from .logs import LogLearner
@@ -137,6 +138,7 @@ class Runtime:
         self.store = Store(f'{data_dir}/systems.sqlite')
         self.client = client
         self.incidents = Incidents(self.store)
+        self.cases = Cases(self.store)
         self.logs = LogLearner(self.store)
         self.archive = Archive(self.store, client)
         self.archive_last = None
@@ -418,6 +420,7 @@ class Runtime:
                                         for k, v in problems.items()}, now)
         self.proposals = [] if held else self._proposals(problems, result, now)
         self._score_proposals(now)
+        cases = self.cases.update(self.incidents.state['incidents'], self.proposals, now, held)
         forecasts = {}
         for name, threshold, rising in (('db_mib', None, True), ('disk_free_gb', DISK_FLOOR_GB, False),
                                         ('mem_free', LOW_FREE_MIB, False), ('mem_swap_pct', HIGH_SWAP_PCT, True)):
@@ -431,7 +434,7 @@ class Runtime:
             'state': 'HELD' if held else 'SHADOW', 'version': __version__, 'mode': 'SHADOW', 'at': now,
             'physical_actions': False, 'control_authority': 'NONE', 'hold_reason': self.hold,
             'open_problems': result['open'], 'hidden_by_parent': result['hidden_by_parent'],
-            'flapping': result['flapping'], 'incidents': self.incidents.recent(),
+            'flapping': result['flapping'], 'incidents': self.incidents.recent(), 'cases': cases,
             'error_budgets': self.incidents.slo_report(now), 'forecasts': forecasts,
             'changes': self.incidents.state['changes'][-30:], 'proposals': self.proposals,
             'proposal_scorecard': self.store.get('proposal_scorecard', {}),

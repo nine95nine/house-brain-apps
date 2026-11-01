@@ -1,6 +1,8 @@
 # House Brain Systems AI
 
-Version 0.1.4 (shadow). Boot is manual. Only `SHADOW` mode exists. 0.1.4 also watches Water AI's own health
+Version 0.2.0 (shadow). Boot is manual. Only `SHADOW` mode exists. 0.2.0 adds **cases**: each incident is
+followed from first sign to a verified fix and kept after the incident has rolled off (see below); no new
+read, route or authority. 0.1.4 also watches Water AI's own health
 block (Water AI serves it from 0.1.0); nothing else changes. 0.1.3 opened a fresh Core WebSocket for each
 cycle and retries a command once on a fresh socket when a kept one has gone stale, so the WebSocket read no
 longer fails every other cycle; the four read-only commands are unchanged. 0.1.2 added one read-only, internal-network
@@ -33,6 +35,14 @@ archive (31 entities). The new entities' 40 days are copied first after the upda
   - A parent problem (Core or the Supervisor unreachable) hides the problems it explains.
   - Flapping is held back (Nagios-style weighted state change, 21 cycles, 50 %/25 % hysteresis).
   - Problems that open within 15 minutes of each other form one incident with a timeline, the changes seen in the 24 hours before it, and a draft postmortem whose causes are marked as hypotheses.
+- **Cases (0.2.0).** Each incident becomes a case, kept in this App's own database:
+  - `OPEN` while a problem of it is open; `ACTION_SUGGESTED` when Systems AI also suggests a fix for one of them (still only your tap in Maintenance or the Deployer);
+  - `WATCHING` for 24 hours after every problem cleared, then `FIXED_VERIFIED` if none came back;
+  - `REOPENED`, linked to the newer case, if one came back during the watch.
+  - Four repair checks: *service restored* (measured when the problems clear), *prevention proven* (none back for 7 days; `FAILED` if one came back), and *cause corrected* and *side effects reconciled*, which this App cannot measure and always shows as `NOT_MEASURED`, never as passed.
+  - An open case whose incident rolled off the 60 kept is marked "no longer measured", never fixed.
+  - While the kill switch holds Systems AI, cases do not move. A problem that cleared during a hold is checked again from the end of the hold. It counts as restored only after a full 24-hour watch with it absent.
+  - Kept 90 days after it closes, 200 at most (oldest closed first); the page shows the newest 20 and counts by status.
 - **Error budgets.** Core API, Supervisor API, WebSocket, the kill switch and each running House Brain App each get a 99.5 % 30-day budget, with 1 h / 6 h burn rates. Unknown counts as bad.
 - **Keeps the cooling season's detail before Home Assistant forgets it.** Home Assistant keeps full detail for 40 days. Once started, this App copies the recorder history of 18 cooling plant entities (outdoor and indoor temperature, humidity and dew point, the evap relays and relay mode, the Arbiter phase, the eligibility code, AC power, the attic thermometers), one entity-day a minute, oldest day first; the 40 days are copied in about 12 hours, then each new day after midnight. It keeps 5-minute time-weighted values for numbers and exact change times for relays, phases and codes, for 120 days (about 10 MB a season). A steady reading counts as idle, not missing; only `unknown`/`unavailable` are gaps. Nothing about people, presence or location is read. Any day downloads as CSV from the page. Your Home Assistant backups include it.
 - **Advice.** "Good time to ask" is the Cooling Arbiter `IDLE` and outside 22:00–07:00. There is also a shared list of readings no AI should trust.
@@ -56,7 +66,7 @@ Every fast cycle reads `sensor.house_brain_ai_kill_switch_effective`. FULL_STOP 
 - About 8,000 local requests a day, all inside the house: states each minute, Supervisor and sibling reads each 5 minutes, database size hourly, statistic ids daily. While the archive catches up, one more read a minute (about 700 reads once); after that 18 a day. No external calls and no paid API.
 - Python standard library only.
 - 256 MiB address cap. App-owned SQLite (mode 0600): 7 days raw, a year of hourly rollups.
-- 2,000 log templates at most, 60 incidents, 200 changes, 400 frozen forecasts per metric.
+- 2,000 log templates at most, 60 incidents, 200 cases, 200 changes, 400 frozen forecasts per metric.
 
 ## Not in 0.1
 
