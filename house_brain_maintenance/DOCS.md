@@ -585,7 +585,8 @@ when their store versions took over on 2026-10-13. A `RETIRE_LOCAL_APP` request 
 asks your phone once: **retire the local Engineering Observer?** On Approve this App makes one backup of that App
 alone (its settings and data), checks the backup lists it, uninstalls it, and checks the store version is still
 running. If the local copy is running, the store one is stopped, or the backup does not hold the App, nothing is
-removed and you are told why. Nothing else is ever uninstalled.
+removed and you are told why (a copy the Supervisor shows as `error` after its stop counts as stopped, from 0.9.44).
+Nothing else is ever uninstalled.
 
 ## Rules first, then the free model — from 0.9.42
 

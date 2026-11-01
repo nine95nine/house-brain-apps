@@ -20,6 +20,11 @@ import time
 from . import approval, net
 from .ha import ForbiddenCall, HAError, RETIRE_SLUGS
 
+# 0.9.44 (live 2026-11-01 17:29Z, `retire-local-observer-1` REFUSED "is error"): the Supervisor shows a kept copy that
+# was stopped after a non-zero exit as ``error``, not ``stopped`` (the 0.9.10 note in ``watch.kept_rollbacks``). Both
+# mean "not running"; ``started`` and anything else still refuse. The job still never stops anything.
+NOT_RUNNING = ("stopped", "error")
+
 JOB = "RETIRE_LOCAL_APP"
 DOC = "retired_apps"
 NAMES = {"local_house_brain_engineering_observer": "Engineering Observer",
@@ -46,7 +51,7 @@ class Retirer:
         local, store = installed.get(slug), installed.get(twin)
         if local is None:
             return Result(REFUSED, [f"the local {name} is not installed (already retired?); nothing asked or changed"])
-        if local.state != "stopped":
+        if local.state not in NOT_RUNNING:
             return Result(REFUSED, [f"the local {name} is {local.state}; it must be stopped first (this job never "
                                     "stops anything); nothing asked or changed"])
         if store is None or store.state != "started":

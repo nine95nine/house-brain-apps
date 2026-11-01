@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.44
+
+Hotfix for 0.9.43 (live 2026-11-01 17:29Z: `retire-local-observer-1` was REFUSED with "the local Engineering Observer
+is error; it must be stopped first"). Contains 0.9.43 unchanged otherwise.
+
+- **A kept copy that reads `error` counts as stopped.** The Supervisor shows an App that was stopped after a non-zero
+  exit as `error`, not `stopped` (the 0.9.10 note in `watch.kept_rollbacks` says so for exactly these two copies).
+  `RETIRE_LOCAL_APP` now accepts `stopped` or `error` (`retire.NOT_RUNNING`); `started` and every other state still
+  refuse, and the job still never stops anything. The phone was never asked for the refused request.
+- Tests: `test_l4_retire_local_apps.py` (an `error` copy is retired; `started` still refuses). Mutant `rt-error-refused`.
+
 ## 0.9.43
 
 `RETIRE_LOCAL_APP` (Inspector/perimeter chat hand-off 2026-11-01; owner pop-up "Yes, build it next"; owner words
