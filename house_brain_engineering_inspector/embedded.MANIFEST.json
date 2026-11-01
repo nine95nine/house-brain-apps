@@ -11,7 +11,7 @@
     {
       "flat": "embedded.contracts.house_brain_entity_read_policy.v1.json",
       "path": "contracts/house_brain_entity_read_policy.v1.json",
-      "sha256": "5cda575d6e22d13f33ce2360e1fea44e67591fee39369dee61a3922a5a880550"
+      "sha256": "8ef562b810be0165c335f5ac5306c4bf03522f1d3e45aaae4aa8ecb13d57e2cd"
     },
     {
       "flat": "embedded.contracts.house_brain_privacy_data_classes.v1.json",
@@ -21,7 +21,7 @@
     {
       "flat": "embedded.tools.build_house_brain_entity_snapshot.py",
       "path": "tools/build_house_brain_entity_snapshot.py",
-      "sha256": "9caf98f008f4cda2876b993a96a4858abde965394b2da38cb074a19ade20a2d3"
+      "sha256": "c87577a76ffa3d607666bc9238546f2d19ba21026d0426a973d5a4b6a7bf0e30"
     },
     {
       "flat": "embedded.tools.evaluate_network_dependency_posture.py",

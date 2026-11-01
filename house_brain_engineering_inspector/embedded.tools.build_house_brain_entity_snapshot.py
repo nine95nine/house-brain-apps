@@ -304,9 +304,12 @@ def build(states: Any, registry: Any, *, now: str, mode: str = "dry_run",
         if scan_content({"state": value, "attributes": kept}):
             _exclude(counts, "CONTENT_DETECTOR"); continue
         used_ids.add(shared_id)
-        item: dict[str, Any] = {"entity_id": shared_id, "state": value, "attributes": kept,
-                                "state_truncated": len(state) > bounds["max_state_chars"],
-                                "untrusted_text": True}
+        # Inspector 0.2.22 (snapshot room 2; perimeter 0.4.11 fills both back in): the two flags go on the wire only
+        # when they differ from the default. untrusted_text is always true, so it never does; state_truncated only
+        # when the state was cut. About 45 bytes per entity.
+        item: dict[str, Any] = {"entity_id": shared_id, "state": value, "attributes": kept}
+        if len(state) > bounds["max_state_chars"]:
+            item["state_truncated"] = True
         for stamp in ("last_changed", "last_updated"):
             if type(row.get(stamp)) is str and TS_RE.fullmatch(row[stamp]):
                 item[stamp] = _second(row[stamp])
