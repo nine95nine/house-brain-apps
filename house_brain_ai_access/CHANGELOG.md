@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.10-dev
+
+Start on boot (2026-11-01; owner pop-ups "Yes, Inspector + AI Access (Recommended)" and "Yes, take it over"; Work Board
+#942 claim 6560154080, taken over from the stale row 74). On 2026-11-01 this App, the Inspector and the Observer were found
+stopped after an overnight restart; the read-only connector answered `503` until the owner started them by hand. A
+`manual_only` App has no Start on boot switch in Home Assistant at all.
+- `config.yaml`: `boot: manual_only` becomes `boot: manual`. The shipped default still never starts at boot by itself;
+  the owner turns Start on boot on in Home Assistant. Once it is on, Maintenance's existing rule ("never start an App
+  that is not set to start at boot") no longer excludes this App.
+- **Version:** the User-Agent is `house-brain-ai-access/0.1.10-dev`.
+- **Unchanged:** `enabled` stays `false` by default, the kill switch option and its default `FULL_STOP`, every permission
+  flag, the runtime (byte-identical, same `RUNTIME_SOURCE_MANIFEST.json` and `MANIFEST_SHA`), the bridge allowlist,
+  the heartbeat and the vendor lock.
+
 ## 0.1.9-dev
 
 Broker version allowlist (2026-10-25; owner pop-up "Ship AI Access 0.1.9-dev"; Work Board #942 claim 6391607736). Broker

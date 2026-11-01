@@ -1,5 +1,5 @@
 name: "House Brain Engineering Inspector"
-version: "0.2.20"
+version: "0.2.21"
 slug: "house_brain_engineering_inspector"
 description: >-
   Owner-private, read-only Home Assistant engineering inspection App.
@@ -12,7 +12,7 @@ arch:
   - aarch64
 homeassistant: "2026.8.3"
 startup: application
-boot: manual_only
+boot: manual
 stage: experimental
 backup: hot
 init: false

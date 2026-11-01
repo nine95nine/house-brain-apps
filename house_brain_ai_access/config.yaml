@@ -1,11 +1,11 @@
 name: "House Brain AI Access"
-version: "0.1.9-dev"
+version: "0.1.10-dev"
 slug: "house_brain_ai_access"
 description: "Private outbound MCP tunnel for three bounded House Brain engineering reads. Internal candidate; not live-qualified."
 arch:
   - aarch64
 startup: application
-boot: manual_only
+boot: manual
 stage: experimental
 init: false
 timeout: 30
