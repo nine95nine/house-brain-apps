@@ -2416,10 +2416,17 @@ class HomeAssistant:
             states = sock.command({"type": "get_states"}, timeout=60)
             entities = sock.command({"type": "config/entity_registry/list"}, timeout=60)
             devices = sock.command({"type": "config/device_registry/list"}, timeout=60)
+            try:                                              # 0.9.41: each device's integration (stable keys)
+                entries = sock.command({"type": "config_entries/get"}, timeout=60)
+            except Exception:  # noqa: BLE001 - older Core: the entities' platform stands in
+                entries = []
         finally:
             sock.close()
         def text(v: Any, n: int) -> str | None:
             return str(v)[:n] if isinstance(v, (str, int, float)) and not isinstance(v, bool) else None
+        domain_of_entry = {row["entry_id"]: row["domain"] for row in (entries if isinstance(entries, list) else [])[:5000]
+                           if isinstance(row, dict) and isinstance(row.get("entry_id"), str)
+                           and isinstance(row.get("domain"), str) and RE_DOMAIN.fullmatch(row["domain"])}
         out_states = []
         for row in (states if isinstance(states, list) else [])[:20000]:
             if not isinstance(row, dict) or not isinstance(row.get("entity_id"), str) \
@@ -2441,8 +2448,13 @@ class HomeAssistant:
         out_devices = {}
         for row in (devices if isinstance(devices, list) else [])[:10000]:
             if isinstance(row, dict) and isinstance(row.get("id"), str) and RE_DEVICE_ID.fullmatch(row["id"]):
+                domains = [domain_of_entry[e] for e in (row.get("config_entries") or []) if e in domain_of_entry] \
+                    if isinstance(row.get("config_entries"), list) else []
+                via = row.get("via_device_id")
                 out_devices[row["id"]] = {"name": text(row.get("name_by_user") or row.get("name"), 80),
-                                          "disabled": bool(row.get("disabled_by"))}
+                                          "disabled": bool(row.get("disabled_by")),
+                                          "domain": domains[0] if domains else None,               # 0.9.41
+                                          "via": via if isinstance(via, str) and RE_DEVICE_ID.fullmatch(via) else None}
         return {"states": out_states, "registry": registry, "devices": out_devices}
 
     def mesh_counts(self) -> dict[str, dict[str, int]]:

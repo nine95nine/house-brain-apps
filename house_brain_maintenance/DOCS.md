@@ -578,6 +578,26 @@ The cloud AI reviewer (a Claude routine) stops when the owner's weekly plan limi
 - `free_reviewer: shadow` drafts and compares but never posts; `off` turns the lane off. `companion_url` is worked out
   from the Broker's Cloudflare account; set `off` to forbid the call.
 
+## Quieter, steadier problem keys — from 0.9.41
+
+- **Device problems have stable, readable keys.** An offline or low-battery device is now `offline:<integration>:<h>`
+  / `battery:<integration>:<h>` (for example `offline:zha:4f1c…`), where `<h>` is ten characters derived from the
+  device under a secret this App makes once and keeps for itself. Posts on the tracking issue show the key readable
+  (before, the raw device id was blanked to `[long-id]`, and a review written with it never counted). Problems already
+  open are re-keyed in place: nothing is announced again.
+- **One problem per internet blip.** When two or more integrations log "timed out", "cannot connect", "server
+  disconnected" or an HTTP 502/503/504 within half an hour, you see one problem ("Internet blip at 13:57Z: 3
+  integrations errored together") instead of one per integration. The blip and its parts carry a **Rule:** verdict
+  ("wait and watch: internet blip; recovers by itself") on the Messages page; it is this App's own closed rule, never
+  posted, never acted on, and a cloud or owner review still wins.
+- **Supervisor busy is re-checked first.** A backup or check that failed only because "another job is running" is
+  looked at again ten minutes later and mentioned only if it is still failing.
+- **Every approved fix ends in a result.** If a fix stops with an error you see "not fixed" with the error's kind; if
+  this App was restarted while a fix ran, the problem's message and the tracking issue get "fix result missing" within
+  30 minutes, and the fix is offered again if the problem is still there.
+- **When the AI reviewer is silent for days**, each morning summary says so ("AI reviewer silent for 3 days …"); with
+  nothing else to report the line goes to the tracking issue only, not to your phone. Nothing installs by itself.
+
 ## Problems are followed until they are fixed — from 0.9.6
 
 Live 2026-10-13: six "The unit of sensor.… has changed" repairs sat for two days, because the morning summary named

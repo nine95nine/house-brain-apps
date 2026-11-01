@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issues as I, net, drivesettings as DS
+from . import devicekeys as DK
 from . import problems as PR
 from . import systemsai as SA
 from .ha import AI_ACTIVITY_ENTITY, AI_CONNECTORS_ENTITY, DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
@@ -52,6 +53,11 @@ RELAY_DOC = "relay_credential"
 RELAY_READ_EVERY = 20 * 3600       # the relay self-tests weekly; one read a day is plenty
 FIXED = "FIXED"
 NOT_FIXED = "NOT_FIXED"
+# 0.9.41 (fail-safe chat hand-off 2026-10-31): a fix the owner approved that left no result within this long gets a
+# terminal "no result" line on the tracking issue and the problem's message (the App restarted while it ran).
+FIX_RESULT_SECONDS = 30 * 60
+REVIEWER_SILENT_SECONDS = 24 * 3600      # 0.9.41: the morning summary says so every day of a long reviewer outage
+BLIP_RULE_TEXT = "internet blip; recovers by itself"
 # 0.9.23: a report comment this App posted (its address is the message link)
 PAGE_FIX_KINDS = ("restart_app", "start_app", "reload_entry", "apply_suggestion", "relabel_stats",
                   "drive_backup_settings")   # 0.9.23; 0.9.34 the Google Drive Backup App's two settings
@@ -154,6 +160,7 @@ class Watcher:
         st.setdefault("disk_samples", [])
         st.setdefault("device_sweep", {"at": 0, "rows": []})
         st.setdefault("offline_since", {})            # 0.9.38: device -> earliest offline time, across restarts
+        st.setdefault("fix_running", {})              # 0.9.41: fix request id -> {at, key, label, title}
         st.setdefault("stopped_since", {})
         st.setdefault(PR.FP_DOC_KEY, {})               # 0.9.19: problem fingerprints (what each one says)
         return st
@@ -261,8 +268,17 @@ class Watcher:
         sweep = st["device_sweep"]
         if now - float(sweep.get("at") or 0) >= DEVICE_SWEEP_SECONDS:
             try:
+                snapshot = self.ha.device_health()
+                keys = DK.Keys(self.j.load_doc(DK.DOC, {}))          # 0.9.41: stable keys offline:<domain>:<h>
+                platform_of = {r["device_id"]: str(r.get("platform") or "") for r in (snapshot.get("registry") or {}).values()
+                               if isinstance(r, dict) and r.get("device_id")}
+                renamed = DK.apply_rename(st, DK.rename(st["open"], snapshot, keys, platform_of))
+                if renamed:                                         # old records keep first/alerted/fingerprint
+                    self.j.audit("devices", "DEVICE_KEYS_MIGRATED", items=renamed)
                 open_keys = frozenset(k for k in st["open"] if k.startswith(("battery:", "offline:")))
-                found = I.device_findings(self.ha.device_health(), now, open_keys, memory=st["offline_since"])
+                found = I.device_findings(snapshot, now, open_keys, key_of=keys.key_of, memory=st["offline_since"])
+                if keys.changed:
+                    self.j.save_doc(DK.DOC, keys.doc)
                 sweep.update(at=now, rows=[{"key": f.key, "title": f.title, "steps": list(f.steps), "link": f.link,
                                             "facts": f.facts} for f in found])
             except Exception:  # noqa: BLE001 - Core restarting or the read failed: keep open items as they are
@@ -318,6 +334,10 @@ class Watcher:
         if "disk" not in failed:
             findings += self._disk_findings(st, now)
         findings += self._systems_ai_findings(findings, now, failed)      # 0.9.30: after every other source
+        self._fix_watchdog(st, now)                                        # 0.9.41: a fix that left no result
+        blips = I.blip_groups(findings, first_seen, now)                   # 0.9.41 F3: one problem per internet blip
+        for parent in sorted(set(blips.values())):
+            findings.append(I.blip_finding(parent, [f for f in findings if blips.get(f.key) == parent], first_seen, now))
         current = {f.key: f for f in findings}
         skipped_sources = {src for src in failed}
         push_now: list[I.Finding] = []
@@ -339,6 +359,13 @@ class Watcher:
             rec.update(polls=rec["polls"] + 1, title=f.title, severity=f.severity, clear=f.announce_clear,
                        source=f.source, steps=PR.detail_steps(f),           # 0.9.21: what can be done, for #454
                        detail=[I.scrub(str(d), 400) for d in tuple(f.detail or ())[:4]])   # 0.9.29: the free lane's facts
+            if f.key in blips:                  # 0.9.41: a blip's child is never alerted, queued or counted itself
+                rec["parent"] = blips[f.key]
+                if not rec["alerted"]:
+                    rec["alerted"] = True
+                    self.j.audit(f.key[:80], "PROBLEM_BLIP_CHILD", parent=blips[f.key])
+                continue
+            rec.pop("parent", None)
             if f.action:                        # 0.9.23: the page's "Fix it" button (the owner's tap approves)
                 rec["fix"] = {"kind": f.action.kind, "label": f.action.label[:80]}
             else:
@@ -351,6 +378,9 @@ class Watcher:
                 rec.update(diagnosis=diagnosis, diagnosed_at=now, alerted=False)
             if rec["alerted"] or rec["polls"] < CONFIRM_POLLS:
                 continue
+            if I.supervisor_busy(f):            # 0.9.41 F7: "Supervisor busy" is re-read after 10 min, then alerted
+                if now - float(rec.setdefault("busy_hold", now)) < I.BUSY_HOLD_SECONDS:
+                    continue
             if f.action and not self.s.dry_run:
                 rec["alerted"] = True           # announced through the fix offer below
                 self._keep(f)                   # 0.9.18: kept in the Messages list too
@@ -386,6 +416,7 @@ class Watcher:
             st["open"][f.key]["alerted"] = True
         st["log_reported"] = {k: t for k, t in st["log_reported"].items() if now - t < LOG_REPORT_SECONDS}
         self.j.save_doc(DOC, st)
+        self._blip_rules(blips, current, now)                      # 0.9.41: WATCH, locally, never posted
         self._since(st)                                         # 0.9.19: this check's fingerprints
         outcome = self._offer_fix(st, current, now)
         self._maybe_escalate(now)                              # 0.9.6: open 7 days -> one push
@@ -951,21 +982,48 @@ class Watcher:
         st["last_summary_day"] = day
         st["summary"], st["cleared"] = [], []
         self.j.save_doc(DOC, st)
+        silent = self.reviewer_silent_line(now)                   # 0.9.41: said every day of a long outage
         if not items and not cleared:
+            if silent:
+                self._post(self._markdown("morning summary", [], []).replace("\n\n_Posted by", f"\n- {silent}\n\n_Posted by", 1))
+                self.j.audit("issues", "PROBLEM_SUMMARY", items=0, cleared=0, reviewer_silent=True)
             return
         lines = [f"- {it['title']}" for it in items[:6]]
         if total > 6:
             lines.append(f"- and {total - 6} more (details on GitHub)")
         if cleared:
             lines.append(f"Fixed/cleared: {len(cleared)} ({'; '.join(c[:40] for c in cleared[:3])})")
+        if silent:
+            lines.append(silent)
         title = f"Maintenance: {total} to look at" if items else "Maintenance: problems cleared"
-        url = self._post(self._markdown("morning summary", items, cleared))   # 0.9.23: first, for the link
+        text = self._markdown("morning summary", items, cleared)
+        if silent:
+            text = text.replace("\n\n_Posted by", f"\n- {silent}\n\n_Posted by", 1)
+        url = self._post(text)                                               # 0.9.23: first, for the link
         self._say("summary", title, happened="\n".join(lines)[:600],
                   done="Nothing new: each item is in your Messages list with its own steps.",
                   todo=("Follow each item's steps: each one is linked below.",) if items else (),
                   old_text="\n".join(lines)[:900], link=url or self.issue_url,
                   refs=[str(it.get("key", "")) for it in items])
         self.j.audit("issues", "PROBLEM_SUMMARY", items=len(items), cleared=len(cleared))
+
+    def reviewer_silent_line(self, now: float) -> str:
+        """0.9.41 (fail-safe chat hand-off): "" while the cloud reviewer posted within REVIEWER_SILENT_SECONDS or its
+        silence is not known; else one plain line with the days and what still runs ($0, read-only)."""
+        ai = self.problem_ai
+        try:
+            if ai is None or not ai.enabled or not ai.readable():
+                return ""
+            at = ai.cloud_at()
+        except Exception:  # noqa: BLE001 - not known this time
+            return ""
+        if at is None or now - float(at) < REVIEWER_SILENT_SECONDS:
+            return ""
+        days = int((now - float(at)) // 86400)
+        lane = "; the free lane reviews low-risk log problems" if self.free_lane is not None else ""
+        return (f"AI reviewer silent for {days} day{'s' if days != 1 else ''} (last review "
+                f"{time.strftime('%Y-%m-%d', time.gmtime(float(at)))}); updates are asked on your phone after a day "
+                f"instead of waiting for it{lane}. Nothing installs by itself.")
 
     # -- fixes ---------------------------------------------------------------------------
     def _offer_fix(self, st: dict, current: dict[str, I.Finding], now: float) -> str | None:
@@ -1026,7 +1084,14 @@ class Watcher:
             st = self._state()
             st["power_cycles"].append(self.clock())
             self.j.save_doc(DOC, st)
-        outcome, note = self.run_fix(f)
+        st = self._state()                      # 0.9.41: every approved fix ends in a result line, whatever happens
+        st["fix_running"][rid] = {"at": self.clock(), "key": f.key, "label": f.action.label[:80], "title": f.title[:120],
+                                  "source": f.source}
+        self.j.save_doc(DOC, st)
+        try:
+            outcome, note = self.run_fix(f)
+        except Exception as err:  # noqa: BLE001 - a fix that stops with an error is still reported
+            outcome, note = NOT_FIXED, net.redact(f"the fix stopped with an error ({type(err).__name__})")[:200]
         self.j.audit(rid, "FIX_" + outcome, fix=f.action.kind, note=note[:200])
         if self.messenger is not None:          # 0.9.23: the result on the problem's own message too
             self.messenger.store.note_fix(f.key, (f"Fixed: {note}" if outcome == FIXED
@@ -1040,7 +1105,46 @@ class Watcher:
         item = self._summary_item(f)
         self._post(self._markdown(f"fix {outcome.lower().replace('_', ' ')} ({f.action.label})",
                                   [item | {"detail": item["detail"] + [note]}]))
+        st = self._state()
+        st["fix_running"].pop(rid, None)
+        self.j.save_doc(DOC, st)
         return outcome
+
+    def _fix_watchdog(self, st: dict, now: float) -> None:
+        """0.9.41: an approved fix whose result never landed (the App or Core restarted while it ran) gets its
+        terminal line after FIX_RESULT_SECONDS, on the tracking issue and on the problem's message, once."""
+        running = st["fix_running"]
+        for rid, info in [(r, i) for r, i in running.items() if isinstance(i, dict)]:
+            if now - float(info.get("at") or 0) < FIX_RESULT_SECONDS:
+                continue
+            del running[rid]
+            self.j.save_doc(DOC, st)
+            key, label = str(info.get("key") or ""), str(info.get("label") or "the fix")
+            note = (f"{label}: no result within {FIX_RESULT_SECONDS // 60} minutes (the App was restarted while it "
+                    "ran?). The problem is checked again as usual; approve the fix again if it is still offered.")
+            self.j.audit(rid, "FIX_NO_RESULT", fix=label)
+            if self.messenger is not None:
+                self.messenger.store.note_fix(key, "No result from the fix: " + note)
+            self._post(self._markdown(f"fix result missing ({label})",
+                                      [{"key": key, "title": str(info.get("title") or key), "severity": I.WARNING,
+                                        "steps": [], "link": None, "detail": [note], "facts": {},
+                                        "fix": None, "source": str(info.get("source") or "")}]))
+
+    def _blip_rules(self, blips: dict[str, str], current: dict, now: float) -> None:
+        """0.9.41 (fish-room chat hand-off, spec R1 rows R1/R2): a blip and its children are WATCH by rule, stored
+        locally like a review so the page and the queue see a verdict; nothing is posted and nothing is acted on."""
+        ai = self.problem_ai
+        if not blips or ai is None or not ai.enabled:
+            return
+        try:
+            for child, parent in blips.items():
+                ai.rule(child, "WATCH", BLIP_RULE_TEXT, now)
+            for parent in sorted(set(blips.values())):
+                f = current.get(parent)
+                names = (f.detail[0] if f is not None and f.detail else "")[len("Affected: "):]
+                ai.rule(parent, "WATCH", f"internet blip; recovers by itself ({names})"[:200], now)
+        except Exception as err:  # noqa: BLE001 - a rule verdict is a convenience, never a stop
+            self.j.audit("issues", "RULE_FAILED", error=type(err).__name__)
 
     def run_fix(self, f: I.Finding) -> tuple[str, str]:
         a = f.action

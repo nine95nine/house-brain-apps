@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.9.41
+
+Stable device keys, one problem per internet blip, a Supervisor-busy re-check, and the 2026-10-31 hand-offs (reviewer
+chat's spec R1 items F1, F3, F7; owner 2026-10-31 "Ship (1)-(4) now ...; F1/F3/F7" next; fail-safe and fish-room
+chats' hand-offs). Contains 0.9.40 unchanged otherwise.
+
+- **Stable device keys** (`hbm/devicekeys.py`, F1). An offline or low-battery device was keyed by its 32-character
+  Home Assistant device id, which every post scrubbed to `offline:[long-id]`, so a review written with it was dropped
+  by the reader's key pattern: no offline or battery review ever counted (live 2026-10-31, the Garden 3.5 review).
+  The key is now `offline:<domain>:<h>` / `battery:<domain>:<h>`: the device's integration (its config entry's domain,
+  read with `config_entries/get`, else its entities' platform) and ten hex characters of an HMAC-SHA256 of the device
+  id under a salt made once and kept locally (`device_keys` doc, with `h` -> device id for at most 500 devices). The
+  key passes the reader's pattern and the scrub unchanged. Open records are re-keyed in place on the first sweep,
+  keeping `first`, `alerted`, the fingerprint and the declined/asked marks, so no device is alerted a second time
+  (`DEVICE_KEYS_MIGRATED` in the audit). `offline:group:<integration>` (0.9.39) and `offline:long` (0.9.38) are
+  unchanged. The reader's pattern and the scrub are unchanged.
+- **One problem per internet blip** (F3). Log errors from two or more integrations that say "network"
+  (`NETWORK_ERROR_MARKERS`, now also `TimeoutError`, `timed out`, `Server disconnected`, `ClientConnectorError` and
+  HTTP 502/503/504) and were first seen within 30 minutes of each other are one problem `net:blip:<YYYY-MM-DDTHH>`
+  naming the integrations; its children are never alerted, never named in a queue line and never counted by the
+  reviewer watchdog (`parent` on the record). "Error fetching" / "Error requesting" alone count only next to another
+  integration's error. A single integration's errors, however many loggers, are not a blip. The blip and its children
+  get a **local WATCH verdict by rule** ("internet blip; recovers by itself"), stored like a review (`source: rule`,
+  shown as "Rule:" on the page and in posts), never posted and never acted on; a cloud or owner review still wins
+  (spec R1 rows R1/R2, brought forward for the fish-room chat's hand-off). The free lane never spends a model call on a
+  rule-settled problem or a blip child.
+- **Supervisor-busy re-check** (F7). A backup, App, Supervisor or poll-step finding whose text says "another job is
+  running", "system is not running", `SupervisorJobError` or "is busy" is held for 10 minutes and alerted only if it is
+  still there after the re-read; one that cleared meanwhile is never mentioned. Read-only.
+- **Every approved fix ends in a result** (fail-safe chat's hand-off). The fix is recorded while it runs
+  (`fix_running`); a fix that stops with an error reports "not fixed: the fix stopped with an error (<type>)" instead of
+  nothing; a fix whose result never landed (the App restarted while it ran) gets a terminal "fix result missing" line on
+  the tracking issue and on the problem's message after 30 minutes, once (`FIX_NO_RESULT`).
+- **The morning summary says when the AI reviewer is silent** (fail-safe chat's hand-off): every day of a long outage
+  one line "AI reviewer silent for N days (last review <date>); updates are asked on your phone after a day ...;
+  nothing installs by itself". With nothing else to report the line still goes to the tracking issue; the phone is not
+  pushed for it alone.
+- `ha.device_health` also projects each device's config-entry domain and `via_device_id` (ids and domain names only).
+- Tests: `test_l1_stable_keys.py`, `test_l4_stable_keys.py`; six 0.5.0/0.9.38 L4 device tests follow the new key shape
+  and the blip title. Mutants `dk-*`, `bq-*`, `sb-*`, `hf-*`, `hs-*`. `test_l1_unattended.py` (0.9.39) now imports the
+  App from `HBM_APP_DIR` like every other test, so the mutation harness really tests its copy.
+- **Not in this release** (spec R1, next): F2's hub children and seasonal snooze; the rules table beyond R1/R2; the
+  internal reviewer tiers, needs_you, internal update reviews and the budget split (0.9.42+, owner decisions D4-D8
+  pending).
+
 ## 0.9.40
 
 Cloudflare approvals reach the phone again (owner 2026-11-01 through the Deployer chat: "Send it to Maintenance

@@ -21,7 +21,9 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from . import net
+import time
+
+from . import devicekeys as DK, net
 
 CRITICAL = "critical"
 WARNING = "warning"
@@ -223,7 +225,96 @@ def push_text(f: Finding, limit: int = 300) -> str:
 # the relay all failed in the same blip). The summary merges them into one line (owner decision 2026-10-02).
 NETWORK_ERROR_MARKERS = ("timeout while contacting dns", "cannot connect to host", "possible connectivity outage",
                          "temporary failure in name resolution", "name or service not known",
-                         "network is unreachable", "max retries exceeded")
+                         "network is unreachable", "max retries exceeded",
+                         # 0.9.41 (spec R1 F3): the shapes aiohttp and the cloud coordinators log in a blip
+                         "timeouterror", "timed out", "server disconnected", "clientconnectorerror")
+RE_NET_STATUS = re.compile(r"\bstatus\b[^0-9]{0,12}\b50[234]\b|\b50[234]\b[^0-9]{0,3}(?:bad gateway|service unavailable|"
+                           r"gateway time-?out)\b")
+# 0.9.41: these alone say little ("Error fetching x data"); they count only when 2 or more integrations match within
+# the blip window (then it was the internet, not the integration).
+WEAK_NETWORK_MARKERS = ("error fetching", "error requesting")
+BLIP_WINDOW_SECONDS = 30 * 60
+BLIP_PREFIX = "net:blip:"
+
+
+def network_marker(text: str, strict: bool = True) -> bool:
+    """0.9.41: does this text say "the network failed"? ``strict`` ignores the weak markers."""
+    low = str(text or "").lower()
+    if any(m in low for m in NETWORK_ERROR_MARKERS) or RE_NET_STATUS.search(low):
+        return True
+    return not strict and any(m in low for m in WEAK_NETWORK_MARKERS)
+
+
+def integration_of(logger: str) -> str:
+    """0.9.41: the integration a logger name belongs to (``homeassistant.components.<x>`` / ``custom_components.<x>``)."""
+    parts = str(logger or "").split(".")
+    if len(parts) > 2 and parts[:2] == ["homeassistant", "components"]:
+        return parts[2]
+    if len(parts) > 1 and parts[0] == "custom_components":
+        return parts[1]
+    return str(logger or "")
+
+
+def blip_groups(findings: list, first_seen: dict[str, float], now: float) -> dict[str, str]:
+    """0.9.41 (spec R1 F3): log problems from different loggers that say "network" and were first seen within
+    BLIP_WINDOW_SECONDS of each other are one internet blip. Returns child key -> parent key
+    (``net:blip:<YYYY-MM-DDTHH>`` of the cluster's first error, UTC). A single integration (whatever its loggers) never makes a blip, and a
+    weak marker ("error fetching") joins one only next to another integration's error."""
+    rows = []
+    for f in findings:
+        if not f.key.startswith("log:"):
+            continue
+        text = " ".join([f.title, *[str(d) for d in f.detail or ()]])
+        if network_marker(text, strict=False):
+            rows.append((float(first_seen.get(f.key, now)), integration_of((f.facts or {}).get("logger") or f.key), f.key))
+    rows.sort()
+    out: dict[str, str] = {}
+    cluster: list[tuple[float, str, str]] = []
+
+    def close() -> None:
+        if len({integration for _, integration, _ in cluster}) >= 2:       # two integrations, not two loggers
+            parent = BLIP_PREFIX + time.strftime("%Y-%m-%dT%H", time.gmtime(cluster[0][0]))
+            for _, _, key in cluster:
+                out[key] = parent
+    for row in rows:
+        if cluster and row[0] - cluster[-1][0] > BLIP_WINDOW_SECONDS:
+            close()
+            cluster = []
+        cluster.append(row)
+    if cluster:
+        close()
+    return out
+
+
+def blip_finding(parent: str, children: list, first_seen: dict[str, float], now: float):
+    """The one problem that stands for a blip's children (which are never alerted, queued or counted themselves)."""
+    names = unique([f.title[len("Error from "):].split(" (seen", 1)[0] if f.title.startswith("Error from ") else f.title
+                    for f in children])
+    at = min(float(first_seen.get(f.key, now)) for f in children) if children else now
+    return Finding(parent, "log", WARNING,
+                   f"Internet blip at {time.strftime('%H:%M', time.gmtime(at))}Z: {len(children)} integrations errored "
+                   "together"[:160],
+                   detail=("Affected: " + ", ".join(names)[:300],),
+                   steps=("Nothing to do if it was short; these recover by themselves.",
+                          "If it keeps happening, restart the router and check the internet connection."),
+                   link=LOGS_LINK, announce_clear=False,
+                   facts={"merged": len(children), "loggers": [str((f.facts or {}).get("logger") or "")[:60]
+                                                               for f in children][:20]})
+
+
+# 0.9.41 (spec R1 F7): a backup, App or Supervisor finding that only says "Supervisor was busy" is held for
+# BUSY_HOLD_SECONDS and alerted only if it is still there after one re-read (live: a backup that failed because
+# another job was running, gone ten minutes later).
+BUSY_MARKERS = ("another job is running", "system is not running", "supervisorjoberror", "is busy")
+BUSY_HOLD_SECONDS = 10 * 60
+BUSY_KEY_PREFIXES = ("backup:", "app:", "sup:", "maint:step_failed:")   # the last: a poll step the Supervisor refused
+
+
+def supervisor_busy(f) -> bool:
+    if not f.key.startswith(BUSY_KEY_PREFIXES):
+        return False
+    text = " ".join([f.title, *[str(d) for d in f.detail or ()]]).lower()
+    return any(m in text for m in BUSY_MARKERS)
 
 
 def group_network(items: list[dict]) -> list[dict]:
@@ -232,7 +323,7 @@ def group_network(items: list[dict]) -> list[dict]:
     for it in items:
         text = " ".join(str(d) for d in it.get("detail") or ()).lower()
         is_log = str(it.get("key", "")).startswith("log:")
-        (net_items if is_log and any(m in text for m in NETWORK_ERROR_MARKERS) else rest).append(it)
+        (net_items if is_log and network_marker(text, strict=False) else rest).append(it)
     if len(net_items) < 2:
         return items
     names = []
@@ -695,6 +786,7 @@ def from_offsite(backups: list[dict], now: float, drive: dict | None = None) -> 
 
 # -- 0.5.0: low batteries and devices offline for days --------------------------------------------
 def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = frozenset(),
+                    key_of=None,
                     memory: dict | None = None) -> list[Finding]:
     """``snapshot`` from ``HomeAssistant.device_health()``: projected states, entity and device registry.
 
@@ -707,7 +799,13 @@ def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = froz
     back as new three days after each restart; the earliest offline time seen is kept instead. A device that reports
     anything but ``unavailable`` leaves the memory. Devices offline LONG_OFFLINE_DAYS or more are folded into one
     LONG_OFFLINE_KEY finding with a fixed title.
+
+    0.9.41: ``key_of(kind, device_id, domain)`` names each device problem (``devicekeys.Keys.key_of`` in the App:
+    ``offline:<domain>:<h>``); without it the raw device id is used as before.
     """
+    if key_of is None:
+        def key_of(kind: str, dev: str, domain: str) -> str:     # noqa: E306 - the pre-0.9.41 shape
+            return f"{kind}:{dev}"
     registry = snapshot.get("registry") or {}
     devices = snapshot.get("devices") or {}
     lowest: dict[str, float | None] = {}
@@ -727,7 +825,7 @@ def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = froz
         if row.get("device_class") != "battery":
             continue
         eid = str(row.get("entity_id"))
-        key = f"battery:{dev}"
+        key = key_of("battery", dev, DK.domain_of(devices.get(dev), platform_of.get(dev)))
         limit = BATTERY_CLEAR_PCT if key in open_keys else BATTERY_LOW_PCT
         if eid.startswith("sensor.") and row.get("unit") == "%":
             try:
@@ -741,7 +839,7 @@ def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = froz
     out: list[Finding] = []
     for dev, pct in sorted(lowest.items(), key=lambda kv: (kv[1] if kv[1] is not None else -1, kv[0])):
         name = devices[dev].get("name") or "a device"
-        out.append(Finding(f"battery:{dev}", "devices", WARNING,
+        out.append(Finding(key_of("battery", dev, DK.domain_of(devices.get(dev), platform_of.get(dev))), "devices", WARNING,
                            f"Low battery: {name}" + (f" ({pct:.0f}%)" if pct is not None else ""),
                            steps=("Replace or recharge its battery.",
                                   "If it is no longer used: Settings -> Devices -> the device -> Delete."),
@@ -793,7 +891,8 @@ def device_findings(snapshot: dict, now: float, open_keys: frozenset[str] = froz
             continue
         name = devices[dev].get("name") or "a device"
         days = int((now - since) // 86400)
-        out.append(Finding(f"offline:{dev}", "devices", WARNING, f"Offline for {days} days: {name}",
+        out.append(Finding(key_of("offline", dev, DK.domain_of(devices.get(dev), platform_of.get(dev))), "devices",
+                           WARNING, f"Offline for {days} days: {name}",
                            steps=("Check it has power (battery or plug) and is within range of its hub or Wi-Fi.",
                                   "Restart it, or re-pair it from its integration.",
                                   "Removed for good? Settings -> Devices -> the device -> Delete."),

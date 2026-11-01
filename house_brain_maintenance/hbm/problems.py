@@ -212,6 +212,23 @@ class ProblemReviews(A.AiReviews):
         r = self.get(item)
         return None if r is None or r.get("free") else r
 
+    def rule(self, item: str, verdict: str, summary: str, now: float) -> bool:
+        """0.9.41 (spec R1 B1 rows R1/R2, brought forward for the blip hand-off): a verdict this App gives itself
+        from a closed rule, stored like a review (``free`` and ``source: rule``) so the page and the queue see it,
+        never posted. It never replaces a cloud or owner review, and WATCH/IGNORE are the only verdicts it may give.
+        Returns whether anything was written."""
+        if verdict not in ("WATCH", "IGNORE") or not RE_KEY.fullmatch(item or ""):
+            return False
+        doc = self._doc()
+        old = doc["reviews"].get(item)
+        if old is not None and (not old.get("free") or old.get("source") == "rule") \
+                and float(old.get("at") or 0) >= float((self.since or {}).get(item, 0) or 0):
+            return False
+        doc["reviews"][item] = {"verdict": verdict, "summary": A._plain(summary, 200), "at": float(now), "url": "",
+                                "free": True, "source": "rule"}
+        self.j.save_doc(self.DOC, doc)
+        return True
+
     def cloud_before(self, item: str) -> dict | None:
         """0.9.29: the newest cloud review of this key even when the problem's facts changed since (the free lane
         repeats it only when the title's fingerprint still matches)."""
@@ -238,7 +255,8 @@ class ProblemReviews(A.AiReviews):
         url = r.get("url") if isinstance(r.get("url"), str) and r["url"].startswith("https://github.com/") else ""
         steps = [s for s in (r.get("steps") or []) if isinstance(s, str) and s][:MAX_AI_STEPS]
         return {"verdict": r["verdict"], "words": WORDS[r["verdict"]], "summary": str(r.get("summary") or ""),
-                "steps": steps, "url": url, **({"free": True} if r.get("free") else {})}
+                "steps": steps, "url": url, **({"free": True} if r.get("free") else {}),
+                **({"source": "rule"} if r.get("source") == "rule" else {})}
 
     def line(self, key: str) -> str:
         """One plain line for a problem ("" without a review). Never an instruction to act."""
@@ -246,7 +264,8 @@ class ProblemReviews(A.AiReviews):
         if not r:
             return ""
         summary = f": {r['summary']}" if r.get("summary") else ""
-        who = "Free-model review (lockout mode)" if r.get("free") else "AI review"       # 0.9.29
+        who = ("Rule" if r.get("source") == "rule" else                                       # 0.9.41
+               "Free-model review (lockout mode)" if r.get("free") else "AI review")          # 0.9.29
         return f"{who}: {WORDS[r['verdict']]}{summary}"[:240]
 
 
@@ -323,6 +342,11 @@ def problem_waits(open_recs: dict, queued: dict, reviews) -> list[tuple[str, flo
     for key, rec in open_recs.items():
         if key == STALL_KEY or not isinstance(rec, dict) or not rec.get("alerted") or key not in queued:
             continue
+        if rec.get("parent"):                   # 0.9.41: a blip's child is counted through its parent
+            continue
+        got = reviews.get(key)
+        if isinstance(got, dict) and got.get("source") == "rule":          # 0.9.41: settled by a closed rule
+            continue
         if (reviews.cloud(key) if hasattr(reviews, "cloud") else reviews.get(key)) is None:   # 0.9.29: cloud only
             out.append((str(rec.get("title", key)), max(float(queued[key]), float(rec.get("first") or 0))))
     return out
@@ -369,6 +393,8 @@ def need_queue(open_recs: dict, queued: dict, reviews, since: dict | None = None
     out = []
     for key, rec in sorted(open_recs.items(), key=lambda kv: float((kv[1] or {}).get("first") or 0)):
         if key == STALL_KEY or not isinstance(rec, dict) or not rec.get("alerted") or not RE_KEY.fullmatch(key):
+            continue
+        if rec.get("parent"):                   # 0.9.41: a blip's child is reviewed through its parent
             continue
         if reviews.get(key) is not None:
             continue

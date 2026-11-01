@@ -139,6 +139,9 @@ def candidates(open_recs: dict, reviews, now: float) -> list[tuple[str, dict]]:
             continue
         if reviews.cloud(key) is not None:
             continue
+        got = reviews.get(key)
+        if isinstance(got, dict) and got.get("source") == "rule" or rec.get("parent"):   # 0.9.41: rules first
+            continue
         out.append((key, rec))
     return sorted(out, key=lambda kv: float(kv[1].get("first") or 0))
 

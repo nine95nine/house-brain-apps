@@ -342,7 +342,8 @@ def _ai_block(review: dict | None) -> str:
         return ""
     e = html.escape
     color = VERDICT_STYLE.get(review.get("verdict"), "#aaa")
-    who = "Free-model review (lockout mode)" if review.get("free") else "AI review"       # 0.9.29
+    who = ("Rule" if review.get("source") == "rule" else                                   # 0.9.41
+           "Free-model review (lockout mode)" if review.get("free") else "AI review")      # 0.9.29
     out = [f'<p><b>{who}:</b> <span style="color:{color}">{e(str(review.get("words", "")))}</span>'
            + (f": {e(str(review['summary']))}" if review.get("summary") else "") + "</p>"]
     steps = [s for s in review.get("steps") or [] if isinstance(s, str) and s]
