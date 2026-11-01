@@ -39,6 +39,12 @@ APP_HEALTH_REASONS = {'DEGRADED': 'APP_HEALTH_DEGRADED', 'FAILED': 'APP_HEALTH_F
                       'INVALID': 'APP_HEALTH_INVALID', 'UNREACHABLE': 'APP_HEALTH_UNREACHABLE'}
 FAST_S, SLOW_S, HOURLY_S, DAY_S, INSTALLED_REFRESH_S = 60, 300, 3600, 86400, 3600
 PROPOSE_AFTER_S = 900
+# 0.2.3 (owner pop-up 2026-11-01 "Systems AI 0.2.3 alarm"): AI Access publishes the kill switch. When it stops, the
+# switch goes stale and every House Brain AI holds, including this App's own reads, so nobody saw it (live 2026-11-01).
+# Only while held by a missing/invalid/stale switch (never FULL_STOP or a published state), one read-only Supervisor
+# info read of AI Access every 5 minutes says whether it is stopped, and suggests starting it (the owner's tap).
+RESCUE_HOLDS = frozenset({'KILL_SWITCH_SENSOR_MISSING', 'KILL_SWITCH_SENSOR_INVALID', 'KILL_SWITCH_SENSOR_STALE_OR_FUTURE'})
+AI_ACCESS = 'house_brain_ai_access'
 PROPOSAL_TTL_S = 3600
 MEMORY = {'free': 'sensor.system_monitor_memory_free', 'used_pct': 'sensor.system_monitor_memory_usage',
           'swap_pct': 'sensor.system_monitor_swap_usage',
@@ -410,6 +416,13 @@ class Runtime:
             if now - self.last['fast'] >= FAST_S:
                 self.fast(now)
                 self.last['fast'] = now
+                if self.hold in RESCUE_HOLDS:
+                    if now - self.last.get('rescue', 0.) >= SLOW_S:
+                        self.problems_rescue = self.rescue(now)
+                        self.last['rescue'] = now
+                else:
+                    self.problems_rescue = {}
+                    self.view.pop('ai_access', None)
                 if self.hold is None:
                     self.archive_last = self.archive.step(now)
                     # 0.2.1: at most one outside read per cycle, only at the two daily slots; none while held.
@@ -438,14 +451,48 @@ class Runtime:
         self.cycle_seconds = time.monotonic() - start
         return self.status
 
+    def rescue(self, now):
+        """0.2.3: is AI Access (the kill-switch publisher) stopped? One read-only Supervisor info read, held only."""
+        slugs = [slug for slug, name in sorted(self.installed.items()) if name == AI_ACCESS]
+        try:
+            if not slugs:
+                if self.prefix is None:
+                    m = RE_SELF.fullmatch(str(self.client.info('/addons/self/info').get('slug')))
+                    self.prefix = m.group(1) if m else 'local'
+                slugs = [f'{self.prefix}_{AI_ACCESS}', f'local_{AI_ACCESS}']
+            info, slug = None, slugs[0]
+            for slug in slugs:
+                try:
+                    info = self.client.info(f'/addons/{slug}/info')
+                    break
+                except (OSError, ValueError, TransportError):
+                    continue
+        except (OSError, ValueError, TransportError):
+            info = None
+        state = info.get('state') if isinstance(info, dict) else None
+        self.view['ai_access'] = {'slug': slug, 'state': state or 'UNREADABLE', 'checked_at': now}
+        row = (self.view.get('apps') or {}).get(slug)
+        if isinstance(row, dict):                 # never leave the pre-hold "running" line standing
+            row.update(state=state or 'UNREADABLE', health=None, activity=None)
+        if state == 'started':
+            return {}
+        if state is None:
+            return {'KILL:AI_ACCESS_UNREADABLE': {'severity': 'WARNING', 'reason': 'AI_ACCESS_UNREADABLE_ALL_AI_HELD',
+                                                  'subject': slug, 'owner': 'systems_ai'}}
+        return {'KILL:AI_ACCESS_STOPPED': {'severity': 'CRITICAL', 'reason': 'AI_ACCESS_STOPPED_ALL_AI_HELD',
+                                           'subject': slug, 'owner': 'systems_ai', 'proposal': ('start_app', slug)}}
+
     def finish(self, now):
         held = self.hold is not None
         problems = {} if held else {**getattr(self, 'problems_slow', {}), **getattr(self, 'problems_hourly', {}),
                                     **getattr(self, 'problems_daily', {}), **self.radar.problems(now)}
         problems.update(self.problems_fast)
+        rescue = getattr(self, 'problems_rescue', {}) if self.hold in RESCUE_HOLDS else {}
+        problems.update(rescue)
         result = self.incidents.update({k: {kk: vv for kk, vv in v.items() if kk != 'proposal'}
                                         for k, v in problems.items()}, now)
-        self.proposals = [] if held else self._proposals(problems, result, now)
+        # While held, the only suggestion is starting AI Access (0.2.3), and only after it stayed stopped 15 minutes.
+        self.proposals = self._proposals(rescue, result, now) if held else self._proposals(problems, result, now)
         self._score_proposals(now)
         cases = self.cases.update(self.incidents.state['incidents'], self.proposals, now, held)
         forecasts = {}

@@ -1,5 +1,10 @@
 # House Brain Systems AI
 
+Version 0.2.3 (shadow). 0.2.3: when the AI kill switch is missing or stale (never on FULL_STOP), this App still makes
+one read-only Supervisor read of AI Access every 5 minutes. AI Access publishes the switch, and if it stops, every
+House Brain AI holds (seen live on 2026-11-01). If AI Access is stopped, the page and the family line say so, and
+after 15 minutes Maintenance shows a "Start AI Access" suggestion, carried out only on your tap. Nothing else runs while
+held.
 Version 0.2.2 (shadow). Boot is manual (turn on Start on boot in the App's page; it is read-only, so that is safe).
 Only `SHADOW` mode exists. 0.2.2 reads the ESPHome Device Builder's version (its Supervisor info, options dropped),
 so ESPHome security advisories are matched to the version you run, and the System Monitor CPU and load sensors

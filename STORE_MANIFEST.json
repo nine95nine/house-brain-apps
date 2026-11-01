@@ -42,8 +42,8 @@
     },
     "house_brain_systems_ai": {
       "files": 23,
-      "source_manifest_sha256": "6337efc6555a827957ee9266ba5647e56c46597364a45bb8a3964f9477a4c7ca",
-      "version": "0.2.2"
+      "source_manifest_sha256": "7f208979ed53b8a8dc6576070ccaf60b446e5be89876c6242f7d111b67f33080",
+      "version": "0.2.3"
     },
     "house_brain_water_ai": {
       "files": 22,

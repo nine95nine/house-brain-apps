@@ -9,6 +9,7 @@ import re
 
 from . import __version__
 from .app_health import SCHEMA_VERSION, OVERDUE_CYCLES, MIN_STALE_S, validate
+from .runtime import RESCUE_HOLDS, AI_ACCESS
 
 APP = 'house_brain_systems_ai'
 INTERVAL_S = 60
@@ -94,6 +95,10 @@ def digest(runtime, now):
             'WATCH' if open_ else 'OK'
     parts = []
     open_ = status.get('open_problems') or []
+    access = view.get('ai_access') or {}
+    if state == 'HELD' and access.get('state') not in (None, 'started'):
+        word = 'stopped' if access['state'] != 'UNREADABLE' else 'not readable or not installed'
+        parts.append(f"AI Access is {word}, so every House Brain AI is held; start it in Settings, Add-ons")
     if state in ('OK', 'WATCH', 'PROBLEMS'):
         parts.append(f"{len(open_)} open" + (f" (top: {open_[0]['reason'].lower().replace('_', ' ')})" if open_ else ''))
         db = view.get('db_mib')
@@ -127,5 +132,11 @@ def proposals(runtime, now):
         {k: p[k] for k in ('id', 'kind', 'target', 'reason', 'problem', 'opened_at', 'expires_at')}
         for p in runtime.proposals if p['expires_at'] > now and p['kind'] in PROPOSAL_KINDS
         and isinstance(p['target'], str) and RE_TARGET.fullmatch(p['target'])]
+    # 0.2.3: held by a missing/stale switch, the one suggestion is starting AI Access (it publishes the switch).
+    if me['activity'] == 'HELD' and runtime.hold in RESCUE_HOLDS:
+        rows = [{k: p[k] for k in ('id', 'kind', 'target', 'reason', 'problem', 'opened_at', 'expires_at')}
+                for p in runtime.proposals if p['expires_at'] > now and p['kind'] == 'start_app'
+                and p['problem'] == 'KILL:AI_ACCESS_STOPPED' and isinstance(p['target'], str)
+                and RE_TARGET.fullmatch(p['target']) and p['target'].endswith('_' + AI_ACCESS)]
     return {'schema_version': PROPOSALS_SCHEMA, 'at': me['at'], 'source_health': me['health'],
             'proposals': rows, 'executed_by_systems_ai': False}
