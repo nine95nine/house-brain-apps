@@ -312,6 +312,11 @@ If the Deployer finds a migration start file (`MIGRATED_STARTUP.json` in its dat
 What to do: tell the Deployer chat. The file belongs to the history migration and is only created by that process; do
 not delete files by hand. Nothing in Home Assistant was changed.
 
+**An install interrupted on the moved history (from 0.3.42).** If the Deployer restarts in the middle of an install, its
+next start asks you once on your phone to recover it. That ask has **no page** (the page shows 502 while it waits): press
+and hold the notification, or drag it down, and tap **Approve**. The Deployer reads the original request, puts the old
+files back and stops. Press **Start** once more and it runs normally. Ask the chat that filed the install to file it again.
+
 ## Install history size — from 0.3.16
 
 The Undo history keeps up to 500 installs. When full, eligible installs that were already undone

@@ -1237,7 +1237,8 @@ def build_service(options_path: str, data_dir: str, *, startup_provider=None) ->
             return approval.ask(ha, opts.notify_service, approval.resolve_owner(ha, opts.owner_username),
                                 stage=stage, title=title, message=message, timeout=timing.approval_timeout,
                                 require_auth=opts.require_phone_unlock)
-        owner_context = installed_owner_provider(data_dir, ask)
+        owner_context = installed_owner_provider(data_dir, ask,
+                                                 manifest_for=startup_manifest_reader(opts, api, data_dir))
         owner_provider = owner_context.__enter__()
         try:
             runtime = startup_hold(data_dir, provider=owner_provider, ha=ha, settings_for=settings_for)
@@ -1271,6 +1272,39 @@ def build_service(options_path: str, data_dir: str, *, startup_provider=None) ->
         runtime.release_initial()
         if owner_context is not None:
             owner_context.__exit__(None, None, None)   # releases the startup lock; Maintenance may write again
+
+
+def startup_manifest_reader(opts, api, data_dir):
+    """0.3.42 (live 2026-11-01: an install interrupted on the moved history could not be recovered): the original
+    request a startup recovery needs, read-only, from the requests branch head through this App's own GitHub
+    connection (the key store lives in ``data_dir``, outside the moved history). A re-ask resolves to its original
+    under the re-ask's id, as the running Service does. Read only when the owner-tap recovery asks for it; never
+    retires a token. Any failure returns None, and recovery keeps holding (MANIFEST_CUSTODY): the manifest must
+    still hash to the interrupted transaction's digest."""
+    def read(request_id):
+        try:
+            if not isinstance(request_id, str) or not RE_REQUEST_ID.fullmatch(request_id):
+                return None
+            store = ghauth.KeyStore(data_dir)
+            provider = ghauth.TokenProvider(store, opts.github_repo, GITHUB_PERMISSIONS, api,
+                                            f"house-brain-deployer/{VERSION}")
+            auth = ghauth.Auth(opts.github_auth, opts.github_token, provider, retire=False, api=api,
+                               user_agent=f"house-brain-deployer/{VERSION}")
+            gh = GitHub(opts.github_repo, opts.github_token, api, auth=auth)
+            head = gh.branch_head(opts.requests_branch)
+            raw = gh.read_file(f"{REQUESTS_DIR}/{request_id}/manifest.json", head)
+            if is_reask(raw):
+                rq = parse_reask(raw)
+                original = parse(gh.read_file(f"{REQUESTS_DIR}/{rq.reask_of}/manifest.json", head))
+                return Service._reask_run(original, rq.request_id, rq.tracking_issue, rq.reask_of)
+            if is_lookup(raw):
+                return None                       # lookups never change files; nothing to recover
+            return parse(raw)
+        except Exception as err:  # noqa: BLE001 - unavailable keeps the hold; the reason is logged, never the bytes
+            LOG.warning("startup recovery: the original request %s could not be read (%s)", request_id,
+                        type(err).__name__)
+            return None
+    return read
 
 
 def _construct_service(opts, ha, api, packages, data_dir, timing, *, runtime=None):

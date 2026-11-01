@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.42 — 2026-11-01 (startup recovery on the moved history can read the original request; owner "fix it")
+
+Live 2026-11-01: the Deployer restarted at 03:41Z in the middle of the owner-approved install
+`2026-11-01-aquarite-spa-aware-1-3-r1`. On the moved history its start held. After the owner's recovery tap it stopped
+with `MANIFEST_CUSTODY`, and the page showed 502. The owner-tap recovery (#985) requires the exact original request,
+but production passed a reader that always said "unavailable", so that recovery could never finish.
+- **Startup recovery reads the original request**, read-only: `deploy/requests/<id>/manifest.json` at the requests
+  branch head, through this App's own GitHub connection (its key store is in `/data`, outside the moved history).
+  A re-ask resolves to its original under the re-ask's id; a lookup has nothing to recover. Every recovery check
+  stays: the request must still hash to the interrupted install's digest. Any failure returns nothing, and the start
+  holds as before. The reader never retires a token.
+- After the owner's tap the old files are put back and the App stops once more (by design); the next Start runs
+  normally.
+
 ## 0.3.41 — 2026-10-31 (5-minute statistics and a fixed window; owner "Yes, build 0.3.40")
 
 - Built as 0.3.40 and renumbered: the Deployer lane merged its own 0.3.40 first (#1401, missed approvals + Try again).
