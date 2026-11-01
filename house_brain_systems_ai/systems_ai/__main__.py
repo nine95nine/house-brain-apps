@@ -11,8 +11,10 @@ import time
 from .archive import day_csv, day_json
 from .health import build, digest, proposals
 from .interlock import safety_interlock
+from . import radar  # noqa: F401 - 0.2.1: the World Change Radar runs only inside Runtime.step, behind gate()
 from .runtime import Runtime
-from .transport import Client
+from . import __version__
+from .transport import Client, PublicClient
 from .web import Server
 
 
@@ -37,7 +39,7 @@ def main():
         client = Client(os.environ.get('SUPERVISOR_TOKEN'))
     except ValueError:
         raise SystemExit('HA_API_TOKEN_REQUIRED: Supervisor did not provide the API token')
-    runtime = Runtime(args.data, client, gate)
+    runtime = Runtime(args.data, client, gate, PublicClient(__version__))
     stop = Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())

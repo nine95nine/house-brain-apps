@@ -1,4 +1,5 @@
-"""Read-only transport. Fixed Supervisor routes, sibling /health reads, one Core WebSocket.
+"""Read-only transport. Fixed Supervisor routes, sibling /health reads, one Core WebSocket, and (0.2.1)
+five exact public URLs for the World Change Radar through a separate client that holds no token.
 
 Every call is a GET (states, `.../info`, the archive entities' recorder history) or a read-only
 WebSocket command from a fixed allowlist. There is no POST, no service call and no state write anywhere in this App: Systems AI has no hands. Supervisor
@@ -40,6 +41,53 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class TransportError(Exception):
     pass
+
+
+# 0.2.1 World Change Radar: the only outside reads, exact URLs, GET only, no key and no token of any kind.
+KEV_URL = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'
+ADVISORY_REPOS = ('home-assistant/core', 'home-assistant/operating-system', 'home-assistant/supervisor',
+                  'esphome/esphome')
+PUBLIC_URLS = frozenset({KEV_URL} | {f'https://api.github.com/repos/{r}/security-advisories?state=published&per_page=100'
+                                     for r in ADVISORY_REPOS})
+PUBLIC_MAX_BYTES = 6_000_000
+
+
+class PublicClient:
+    """Outside reads for the radar. Separate from Client, so the Supervisor token can never leave the house.
+    The operating system's resolver (IPv4 or IPv6) and its TLS store; no redirect; bounded body."""
+
+    def __init__(self, version, opener=None):
+        self.agent = f'house-brain-systems-ai/{version}'
+        self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        self.calls = 0
+
+    def _get(self, url, accept):
+        if url not in PUBLIC_URLS:
+            raise TransportError('PUBLIC_URL_REFUSED')
+        headers = {'User-Agent': self.agent, 'Accept': accept}
+        if url.startswith('https://api.github.com/'):
+            headers['X-GitHub-Api-Version'] = '2022-11-28'
+        request = urllib.request.Request(url, headers=headers, method='GET')
+        self.calls += 1
+        try:
+            with self.opener.open(request, timeout=30) as response:
+                raw = response.read(PUBLIC_MAX_BYTES + 1)
+                link = response.headers.get('Link') or ''
+        except urllib.error.HTTPError as error:
+            raise TransportError(f'PUBLIC_HTTP_{error.code}') from None
+        if len(raw) > PUBLIC_MAX_BYTES:
+            raise TransportError('PUBLIC_RESPONSE_TOO_LARGE')
+        return raw, 'rel="next"' in link
+
+    def kev(self):
+        return self._get(KEV_URL, 'application/json')[0]
+
+    def advisories(self, repo):
+        """(body, more pages exist) for one watched repository."""
+        if repo not in ADVISORY_REPOS:
+            raise TransportError('PUBLIC_URL_REFUSED')
+        return self._get(f'https://api.github.com/repos/{repo}/security-advisories?state=published&per_page=100',
+                         'application/vnd.github+json')
 
 
 def project_addon(data):

@@ -4,7 +4,8 @@ Fast cycle (60 s): Home Assistant states (kill switch, memory sensors, sibling s
 Slow cycle (300 s): Supervisor info for the House Brain Apps, their /health blocks, the system log
 and Repairs. Hourly: database size. Daily: statistic ids, forecast freeze and scoring, pruning. Every fast cycle
 the archive keeper reads one entity-day of cooling history (archive.py), so at most one read a minute.
-Proposals are counted in a shadow scorecard and offered read-only to Maintenance; only
+0.2.1: at the two daily slots the World Change Radar makes at most one outside read per cycle
+(radar.py), 10 a day at most, none while held. Proposals are counted in a shadow scorecard and offered read-only to Maintenance; only
 Maintenance, after the owner's Approve, can carry one out.
 """
 import re
@@ -19,6 +20,7 @@ from .cases import Cases
 from .incidents import Incidents
 from .learn import trend, days_until, freeze, score, hourly
 from .logs import LogLearner
+from .radar import Radar
 from .store import Store
 from .transport import TransportError
 
@@ -132,13 +134,17 @@ def good_time_to_ask(states, now):
 
 
 class Runtime:
-    def __init__(self, data_dir, client, gate):
+    def __init__(self, data_dir, client, gate, public=None):
         # gate(states, now) -> None (run) or a hold reason; the kill-switch interlock lives in __main__.py.
         self.gate = gate
         self.store = Store(f'{data_dir}/systems.sqlite')
         self.client = client
         self.incidents = Incidents(self.store)
         self.cases = Cases(self.store)
+        # 0.2.1: the World Change Radar; without a public client it reads nothing ("not checked yet").
+        self.public = public
+        self.radar = Radar(self.store, public)
+        self.radar_last = None
         self.logs = LogLearner(self.store)
         self.archive = Archive(self.store, client)
         self.archive_last = None
@@ -270,6 +276,7 @@ class Runtime:
                                                  'subject': 'supervisor', 'owner': 'systems_ai'}
             sup = host = resolution = None
         if sup is not None:
+            self.radar.observe_versions(sup, now)
             for key in ('homeassistant', 'supervisor', 'hassos'):
                 if isinstance(sup.get(key), str):
                     self._change('version:' + key, sup[key], now, 'UPDATE')
@@ -387,6 +394,8 @@ class Runtime:
                 self.last['fast'] = now
                 if self.hold is None:
                     self.archive_last = self.archive.step(now)
+                    # 0.2.1: at most one outside read per cycle, only at the two daily slots; none while held.
+                    self.radar_last = self.radar.step(now) or self.radar_last
                 if self.hold is None and now - self.last['slow'] >= SLOW_S:
                     self.problems_slow = self.slow(now)
                     self.last['slow'] = now
@@ -414,7 +423,7 @@ class Runtime:
     def finish(self, now):
         held = self.hold is not None
         problems = {} if held else {**getattr(self, 'problems_slow', {}), **getattr(self, 'problems_hourly', {}),
-                                    **getattr(self, 'problems_daily', {})}
+                                    **getattr(self, 'problems_daily', {}), **self.radar.problems(now)}
         problems.update(self.problems_fast)
         result = self.incidents.update({k: {kk: vv for kk, vv in v.items() if kk != 'proposal'}
                                         for k, v in problems.items()}, now)
@@ -435,13 +444,15 @@ class Runtime:
             'physical_actions': False, 'control_authority': 'NONE', 'hold_reason': self.hold,
             'open_problems': result['open'], 'hidden_by_parent': result['hidden_by_parent'],
             'flapping': result['flapping'], 'incidents': self.incidents.recent(), 'cases': cases,
+            'world_changes': {**self.radar.report(now), 'last_read': self.radar_last},
             'error_budgets': self.incidents.slo_report(now), 'forecasts': forecasts,
             'changes': self.incidents.state['changes'][-30:], 'proposals': self.proposals,
             'proposal_scorecard': self.store.get('proposal_scorecard', {}),
             'archive': {**self.archive.report(now), 'last_read': self.archive_last},
             'view': self.view, 'untrusted_readings': UNTRUSTED, 'not_yet': WAITING, 'inputs': dict(self.inputs),
             'resources': {'peak_rss_mb': round(peak, 1), 'db_bytes': self.store.path.stat().st_size,
-                          'paid_api_calls': 0, 'external_calls': 0, 'requests_total': self.client.calls}}
+                          'paid_api_calls': 0, 'external_calls': self.public.calls if self.public is not None else 0,
+                          'requests_total': self.client.calls}}
 
     def _proposals(self, problems, result, now):
         out = []

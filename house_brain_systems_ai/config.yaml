@@ -1,8 +1,8 @@
 name: House Brain Systems AI
-version: "0.2.0"
+version: "0.2.1"
 slug: house_brain_systems_ai
 description: Read-only overseer of the House Brain Apps and Home Assistant health. Learns,
-  forecasts and explains; no commands, no state writes.
+  forecasts and explains, and watches public security news (10 reads a day); no commands, no state writes.
 arch:
 - aarch64
 homeassistant: 2026.10.0
