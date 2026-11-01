@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.43 — 2026-11-01 (dashboards: read-only scan and owner-approved rename; owner "Build it")
+
+The replacement Ondilo probe reports on `sensor.tonto_ln_pool_*_2`; the old names stay for the spa, so the dashboards
+had to be re-pointed and nothing in House Brain could write a dashboard (#158).
+- **Dashboard scan** (`house_brain_dashboard_scan_request.v1`, read-only, asks first like a lookup): for up to 16
+  entity ids, every dashboard's url path, mode, config SHA-256 and whole-name counts, plus the automations, scripts,
+  scenes and groups that use each id (`search/related`). No dashboard content leaves the house.
+- **Dashboard rename** (`house_brain_dashboard_rename_request.v1`, asks first, DEPLOY allowance): in one
+  storage-mode dashboard, whole-name renames of up to 16 entity ids, only if the dashboard still hashes to the
+  scanned SHA-256 and the replacement count matches. After Approve: a partial Home Assistant backup, the old config
+  kept in `/data/dashboard_undo`, `lovelace/config/save`, then a read-back that must match (else the old config is
+  saved back). No package file changes, no restart.
+- **Dashboard undo** (`house_brain_dashboard_undo_request.v1`, asks first): puts the kept config back, only while
+  the dashboard is exactly what the rename wrote.
+- The WebSocket allowlist gains exactly `lovelace/dashboards/list`, `lovelace/config` (no force),
+  `lovelace/config/save` (a dict of at most 3 MB) and `search/related` (one entity id). Mutants DB01–DB11.
+
 ## 0.3.42 — 2026-11-01 (startup recovery on the moved history can read the original request; owner "fix it")
 
 Live 2026-11-01: the Deployer restarted at 03:41Z in the middle of the owner-approved install

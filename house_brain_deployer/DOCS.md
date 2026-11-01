@@ -62,6 +62,18 @@ From 0.3.36 each Sense device is one short line: its type, any flag that is not 
 dates (`c=`, `f=`), merges, combined devices by name, and Sense's top 3 name hints. All 70-odd devices fit in
 one lookup.
 
+## Dashboards: scan and rename (0.3.43)
+
+- **Scan** (`house_brain_dashboard_scan_request.v1`): read-only. After your Approve, it lists your dashboards and
+  counts where the named entities appear, and which automations and scripts use them. Only counts, SHA-256
+  fingerprints and entity ids are posted; no dashboard content.
+- **Rename** (`house_brain_dashboard_rename_request.v1`): one dashboard, named entity ids replaced by new ones. It runs
+  only if the dashboard is unchanged since the scan and the number of replacements matches. Your phone shows the
+  dashboard, the renames and the count. After Approve: a Home Assistant backup, the old dashboard kept for Undo, the
+  save, and a check that the saved dashboard is exactly the renamed one. No restart.
+- **Undo** (`house_brain_dashboard_undo_request.v1` with `undo_of`): puts the old dashboard back, but only if nobody
+  has edited it since the rename. YAML-mode dashboards cannot be changed (Home Assistant refuses the save).
+
 ## Stop recording busy entities (0.3.31)
 
 A package may contain **only** `recorder:` → `exclude:` → `entities:` and/or `entity_globs:` lists. Home Assistant
@@ -89,7 +101,7 @@ Two fixed requests set up the House Brain Companion (the free explain-only AI) w
 - Generic deployments write only `/config/packages/<name>.yaml` files and keep the old copy as `<name>.yaml[.tag].bak`.
 - 0.3.9 adds one fixed repair: remove an obsolete HTTP block from `configuration.yaml` after confirming the migrated Network settings already match. The AI receives hashes, never the configuration contents. You approve inspection, then separately deployment and restart. Unsupported files or mismatched settings are refused.
 - 0.3.24 adds one fixed tidy: rename `house_energy_brain_v1_1.yaml copy.bak` (the space in the name) to `house_energy_brain_v1_1.yaml.copy.bak`. Same bytes, one Approve tap, backup and checks first, no restart. A request cannot name any other file.
-- Cannot touch `secrets.yaml`, `.storage`, dashboards or other Apps. No arbitrary root configuration editor or HTTP settings mutation is provided.
+- Cannot touch `secrets.yaml`, `.storage` files or other Apps. Dashboards change only through the 0.3.43 rename above (Home Assistant's own dashboard save, one dashboard, named entity ids only, after your Approve and a backup). No arbitrary root configuration editor or HTTP settings mutation is provided.
 - 0.3.30 adds the Companion set-up above: one integration (llama.cpp), one URL, one model, no control API, one voice assistant. It cannot add or change any other integration, agent or assistant.
 - Never turns anything on or off. It only sends you notifications, makes a partial backup, runs the
   configuration check and (after your second tap) restarts Home Assistant.

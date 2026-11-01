@@ -72,7 +72,13 @@ _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "system_log/lis
                        "recorder/statistics_during_period",  # 0.3.38: read-only, one window per owner-approved lookup
                        # 0.3.30: Companion setup (reads, plus one pinned pipeline create)
                        "config_entries/subentries/list", "config/entity_registry/list",
-                       "assist_pipeline/pipeline/list", "assist_pipeline/pipeline/create"})
+                       "assist_pipeline/pipeline/list", "assist_pipeline/pipeline/create",
+                       # 0.3.43: dashboards (hbd/dashboards.py). Reads for the owner-approved scan; one save per
+                       # owner-approved rename or undo, after a backup and with a read-back.
+                       "lovelace/dashboards/list", "lovelace/config", "lovelace/config/save", "search/related"})
+RE_DASHBOARD_URL = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+RE_RELATED_ENTITY = re.compile(r"^[a-z_]{2,32}\.[a-z0-9_]{1,96}$")
+MAX_DASHBOARD_SAVE_BYTES = 3 * 1024 * 1024
 RE_DEVICE_ID = re.compile(r"^[0-9a-f]{32}$")
 RE_ENTRY_ID = re.compile(r"^[0-9A-Z]{26}$")
 RE_CONVERSATION_ENTITY = re.compile(r"^conversation\.[a-z0-9_]{1,96}$")
@@ -167,6 +173,23 @@ def _ws_guard(msg: dict) -> None:
     if kind == "config_entries/subentries/list" and (
             set(msg) != {"type", "entry_id"} or not RE_ENTRY_ID.fullmatch(str(msg.get("entry_id")))):
         raise ForbiddenCall("ws subentry list takes exactly one entry id")
+    if kind == "lovelace/dashboards/list" and set(msg) != {"type"}:
+        raise ForbiddenCall("ws read takes no parameters")
+    if kind in ("lovelace/config", "lovelace/config/save"):
+        url = msg.get("url_path")
+        if url is not None and not (isinstance(url, str) and RE_DASHBOARD_URL.fullmatch(url)):
+            raise ForbiddenCall("ws dashboard url path")
+        if kind == "lovelace/config" and (set(msg) != {"type", "url_path", "force"} or msg.get("force") is not False):
+            raise ForbiddenCall("ws dashboard read shape")
+        if kind == "lovelace/config/save":
+            cfg = msg.get("config")
+            if set(msg) != {"type", "url_path", "config"} or not isinstance(cfg, dict) or len(
+                    json.dumps(cfg, ensure_ascii=False).encode("utf-8")) > MAX_DASHBOARD_SAVE_BYTES:
+                raise ForbiddenCall("ws dashboard save shape")
+    if kind == "search/related" and (
+            set(msg) != {"type", "item_type", "item_id"} or msg.get("item_type") != "entity"
+            or not RE_RELATED_ENTITY.fullmatch(str(msg.get("item_id")))):
+        raise ForbiddenCall("ws related search takes exactly one entity id")
     if kind == "assist_pipeline/pipeline/create":
         fields = {k: v for k, v in msg.items() if k != "type"}
         if (set(fields) != PIPELINE_KEYS or fields["name"] != COMPANION_PIPELINE

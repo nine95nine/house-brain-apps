@@ -23,7 +23,7 @@ MAX_SECONDS = 5
 # never qualification. The candidate entry follows hbd.VERSION so a renumber cannot
 # leave the candidate unable to observe itself. 0.3.13 and 0.3.17 were draft labels, never published.
 DESTINATION_VERSIONS = ('0.3.9', '0.3.10', '0.3.11', '0.3.12', '0.3.14', '0.3.15', '0.3.16', '0.3.18', '0.3.19',
-                        '0.3.20', '0.3.21', '0.3.22', '0.3.23', '0.3.25', '0.3.26', '0.3.27', '0.3.28', '0.3.29', '0.3.30', '0.3.31', '0.3.32', '0.3.33', '0.3.34', '0.3.35', '0.3.36', '0.3.37', '0.3.38', '0.3.40', '0.3.41', VERSION)  # 0.3.38 installed 2026-10-25 (statistics lookup, #215); 0.3.39 is the unpublished pool draft #1371; 0.3.40 missed approvals (#1401); 0.3.41 5-minute statistics (A/C Insight)
+                        '0.3.20', '0.3.21', '0.3.22', '0.3.23', '0.3.25', '0.3.26', '0.3.27', '0.3.28', '0.3.29', '0.3.30', '0.3.31', '0.3.32', '0.3.33', '0.3.34', '0.3.35', '0.3.36', '0.3.37', '0.3.38', '0.3.40', '0.3.41', '0.3.42', VERSION)  # 0.3.38 installed 2026-10-25 (statistics lookup, #215); 0.3.39 is the unpublished pool draft #1371; 0.3.40 missed approvals (#1401); 0.3.41 5-minute statistics (A/C Insight)
 
 
 class CustodyError(ValueError): pass

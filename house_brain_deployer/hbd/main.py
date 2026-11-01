@@ -21,6 +21,7 @@ from . import (
     VERSION,
     approval,
     companion_setup,
+    dashboards,
     diagnose,
     ghauth,
     ghpage,
@@ -556,6 +557,33 @@ class Service:
             result = companion_setup.run_key(engine, req, self._data_dir())
         else:
             result = companion_setup.run_setup(engine, req, self._data_dir(), self.o.dry_run)
+        self.finish(request_id, req.digest, req.tracking_issue, result, key=key)
+
+    def _dashboard(self, request_id: str, raw: bytes, digest: str, key: str) -> None:
+        """0.3.43: the read-only dashboard scan, or the owner-approved dashboard rename / undo."""
+        try:
+            req = dashboards.parse(raw)
+        except ManifestError as err:
+            self.finish(request_id, digest, None, Result(REFUSED, [f"dashboard: {err.code}"]), key=key)
+            return
+        if req.request_id != request_id:
+            self.finish(request_id, digest, req.tracking_issue,
+                        Result(REFUSED, ["request_id does not match its directory"]), key=key)
+            return
+        limited = self._limit_reason(request_id, lookup=req.kind == "scan")
+        if limited:
+            self.j.audit(request_id, "RATE_LIMITED")
+            self.diag.add(limited)
+            self._announce_hold(limited, req.tracking_issue)
+            self._offer_lift()
+            return
+        engine = self.ensure_engine()
+        if req.kind == "scan":
+            result = dashboards.run_scan(engine, req)
+        elif req.kind == "rename":
+            result = dashboards.run_rename(engine, req, self._data_dir(), self.o.dry_run)
+        else:
+            result = dashboards.run_undo(engine, req, self._data_dir(), self.o.dry_run)
         self.finish(request_id, req.digest, req.tracking_issue, result, key=key)
 
     def _http_inspect(self, request_id: str, raw: bytes, digest: str) -> None:
@@ -1113,6 +1141,7 @@ class Service:
             probe = writer_probe.is_probe(raw)      # 0.3.21: likewise
             legacy = legacy_migrate.kind(raw)       # 0.3.23 (#985 M4/M5): likewise
             companion = companion_setup.kind(raw)   # 0.3.30: "key" (lookup-like) or "setup" (owner-approved change)
+            dash = dashboards.kind(raw)              # 0.3.43: "scan" (lookup-like) or "rename"/"undo" (changes)
             if selected and legacy != legacy_migrate.UNSELECT:
                 # A selection waits for the next start; new results would not be in the moved history.
                 self.diag.add(diagnose.Reason("LEGACY_SELECTED_WAITING", diagnose.HOLD,
@@ -1121,8 +1150,11 @@ class Service:
                                               "Restart the Deployer, or send an Unselect request first."))
                 continue   # skipped, not recorded: an Unselect later in the list must still run
             lookup = is_lookup(raw) or http_inspection or enroll or probe or legacy is not None or companion is not None
+            lookup = lookup or dash is not None
             # lookups are read-only in both modes; the Companion set-up changes Home Assistant, so it is keyed per mode
             key = request_id if lookup and companion != "setup" else self.key(request_id)
+            if dash in ("rename", "undo"):
+                key = self.key(request_id)   # 0.3.43: a dashboard change is keyed per mode, like the Companion set-up
             seen = ledger.get(key)
             if seen:
                 # Idempotent: a processed id is never run again. A changed manifest under a
@@ -1146,6 +1178,8 @@ class Service:
                     self._legacy(request_id, raw, digest)
                 elif companion is not None:
                     self._companion(request_id, raw, digest, key)
+                elif dash is not None:
+                    self._dashboard(request_id, raw, digest, key)
                 elif http_inspection:
                     self._http_inspect(request_id, raw, digest)
                 else:
@@ -1297,8 +1331,8 @@ def startup_manifest_reader(opts, api, data_dir):
                 rq = parse_reask(raw)
                 original = parse(gh.read_file(f"{REQUESTS_DIR}/{rq.reask_of}/manifest.json", head))
                 return Service._reask_run(original, rq.request_id, rq.tracking_issue, rq.reask_of)
-            if is_lookup(raw):
-                return None                       # lookups never change files; nothing to recover
+            if is_lookup(raw) or dashboards.kind(raw) is not None:
+                return None                       # lookups and dashboard requests never change files; nothing to recover
             return parse(raw)
         except Exception as err:  # noqa: BLE001 - unavailable keeps the hold; the reason is logged, never the bytes
             LOG.warning("startup recovery: the original request %s could not be read (%s)", request_id,
