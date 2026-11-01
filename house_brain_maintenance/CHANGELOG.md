@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.40
+
+Cloudflare approvals reach the phone again (owner 2026-11-01 through the Deployer chat: "Send it to Maintenance
+chat", "Yes, build it"). Contains 0.9.39 unchanged otherwise.
+
+- **The control's posts count again.** Since control 0.1.10 (2026-10-19) the Cloudflare control posts on the
+  tracking issue as the Workers GitHub App (`house-brain-workers-bot[bot]`), not as the owner's account; the 0.8.2
+  relay accepted the owner's login only, so for 13 days no PENDING request and no result reached the phone
+  (`cf-2026-10-31b` expired unanswered). The pinned bot login, as a Bot, now counts (`cfrelay.from_control`); any
+  other login, or the bot's name on a user account, still does not. The Approve link is still built by this App from
+  the pinned control address and the request id, never from comment text.
+- **One reminder an hour before a waiting request expires** ("Cloudflare: still waiting for your Approve", same
+  tag, same button), only while no final state has been posted; at most two pushes per request ($0).
+- Tests: `test_l1_cfrelay_bot.py`; mutants `cb-*`.
+
 ## 0.9.39
 
 The unattended week (owner 2026-10-31, after 2026-10-27..31 with every chat out of usage: "so that the next time I

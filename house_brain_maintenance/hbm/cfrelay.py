@@ -37,6 +37,11 @@ RE_BROKER_BASE = re.compile(r"^https://house-brain-maintenance-broker\.([a-z0-9-
 PENDING = "PENDING"
 FINAL = ("DONE", "FAILED", "STALE", "REJECTED", "EXPIRED", "REFUSED", "INTERRUPTED")
 PENDING_TTL = 6 * 3600.0          # the control Worker's own deadline (PENDING_TTL_MS)
+# 0.9.40 (owner 2026-11-01 through the Deployer chat, "Yes, build it"): since control 0.1.10 (2026-10-19) the control
+# posts as the Workers GitHub App, not as the owner; 0.8.2 accepted the owner's login only, so no approval reached
+# the phone for 13 days (cf-2026-10-31b expired unanswered). The bot's exact login is pinned here, with its type.
+CONTROL_BOT = "house-brain-workers-bot[bot]"
+REMIND_BEFORE = 3600.0            # 0.9.40: one reminder this long before a waiting request expires
 LOOKBACK = PENDING_TTL + 3600.0   # first run: a request still waiting is announced, older news is not
 KEEP = 7 * 86400.0                # remembered ids are forgotten after a week
 STATE_FILE = "cfrelay.json"
@@ -85,12 +90,21 @@ def _iso(t: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
 
 
+def from_control(comment: dict, owner: str) -> bool:
+    """0.9.40: the comment is the control Worker's own: posted by the repository owner's account (the token days) or
+    by the pinned Workers GitHub App login as a Bot. Any other login, or the bot's name on a user account, is not."""
+    user = comment.get("user") if isinstance(comment, dict) else None
+    if not isinstance(user, dict):
+        return False
+    login = str(user.get("login", ""))
+    if login.lower() == owner.lower():
+        return True
+    return login == CONTROL_BOT and user.get("type") == "Bot"
+
+
 def parse(comment: dict, owner: str) -> Event | None:
     """One #454 comment -> a control event, or None. Closed shape; anything else is ignored."""
-    if not isinstance(comment, dict):
-        return None
-    user = comment.get("user") or {}
-    if not isinstance(user, dict) or str(user.get("login", "")).lower() != owner.lower():
+    if not isinstance(comment, dict) or not from_control(comment, owner):
         return None
     body = comment.get("body")
     if not isinstance(body, str) or not body.startswith("### Cloudflare control `"):
@@ -126,8 +140,7 @@ def parse_expiry(comment: dict, owner: str) -> tuple[str, int, str, int] | None:
     """One #454 comment -> (token, days_left, expires_on, step) of a control 0.1.5 token warning, or None."""
     if not isinstance(comment, dict):
         return None
-    user = comment.get("user") or {}
-    if not isinstance(user, dict) or str(user.get("login", "")).lower() != owner.lower():
+    if not from_control(comment, owner):
         return None
     body = comment.get("body")
     if not isinstance(body, str) or not body.startswith("### Cloudflare control: token expires soon"):
@@ -212,12 +225,20 @@ class CfRelay:
                 if seen.get("announced") or now > ev.created + PENDING_TTL:
                     continue
                 self._push_pending(ev)
-                ids[ev.id] = {"announced": True, "at": now}
+                ids[ev.id] = {"announced": True, "at": now, "created": ev.created, "worker": ev.worker}
                 sent.append(f"{ev.id}:{PENDING}")
             elif seen.get("announced") and not seen.get("final"):
                 self._push_final(ev)
                 ids[ev.id] = {**seen, "final": ev.state, "at": now}
                 sent.append(f"{ev.id}:{ev.state}")
+        for rid, seen in list(ids.items()):          # 0.9.40: one reminder before a waiting request expires
+            created = seen.get("created")
+            if not seen.get("announced") or seen.get("final") or seen.get("reminded") or created is None:
+                continue
+            if float(created) + PENDING_TTL - REMIND_BEFORE <= now < float(created) + PENDING_TTL:
+                self._push_reminder(rid, str(seen.get("worker") or "control"), float(created))
+                ids[rid] = {**seen, "reminded": True}
+                sent.append(f"{rid}:REMINDER")
         for token, days, end, step in expiries:
             key = f"expiry:{token}:{step}:{end}"
             if key in ids:
@@ -244,6 +265,18 @@ class CfRelay:
             "title": "Cloudflare: approve?",
             "message": "\n".join(lines)[:900],
             "data": {"tag": f"hbm-cf-{ev.id}", "url": url, "clickAction": url,
+                     "push": {"interruption-level": "time-sensitive"},
+                     "actions": [{"action": "URI", "title": "Open Approve page", "uri": url}]},
+        })
+
+    def _push_reminder(self, rid: str, worker: str, created: float) -> None:
+        left = max(0, int((created + PENDING_TTL - self.clock()) / 60))
+        url = self.link(rid)
+        self.ha.notify(self.notify_service, {
+            "title": "Cloudflare: still waiting for your Approve",
+            "message": f"{worker} ({rid}) expires in about {left} min. Open the page to Approve or Reject; "
+                       "after that a chat has to ask again."[:900],
+            "data": {"tag": f"hbm-cf-{rid}", "url": url, "clickAction": url,
                      "push": {"interruption-level": "time-sensitive"},
                      "actions": [{"action": "URI", "title": "Open Approve page", "uri": url}]},
         })
