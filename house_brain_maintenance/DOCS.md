@@ -578,6 +578,15 @@ The cloud AI reviewer (a Claude routine) stops when the owner's weekly plan limi
 - `free_reviewer: shadow` drafts and compares but never posts; `off` turns the lane off. `companion_url` is worked out
   from the Broker's Cloudflare account; set `off` to forbid the call.
 
+## Retiring the two local rollback copies — 0.9.43
+
+The local Engineering Observer (0.2.4) and the local Engineering Inspector (0.2.5) were kept stopped as rollback copies
+when their store versions took over on 2026-10-13. A `RETIRE_LOCAL_APP` request (one per App, from a chat you trust)
+asks your phone once: **retire the local Engineering Observer?** On Approve this App makes one backup of that App
+alone (its settings and data), checks the backup lists it, uninstalls it, and checks the store version is still
+running. If the local copy is running, the store one is stopped, or the backup does not hold the App, nothing is
+removed and you are told why. Nothing else is ever uninstalled.
+
 ## Rules first, then the free model — from 0.9.42
 
 - **Closed rules answer the obvious problems at once, for free.** An internet blip and its parts, several devices of

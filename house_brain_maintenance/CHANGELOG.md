@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.43
+
+`RETIRE_LOCAL_APP` (Inspector/perimeter chat hand-off 2026-11-01; owner pop-up "Yes, build it next"; owner words
+"figure out how you can retire those apps just based on my approval, and I approve"). Contains 0.9.42 unchanged
+otherwise. The one destructive step sits behind the owner's phone Approve per App; `CONTROL_AUTHORITY=NONE` otherwise.
+
+- **One request type, two slugs only:** `local_house_brain_engineering_observer` (0.2.4) and
+  `local_house_brain_engineering_inspector` (0.2.5), the rollback copies kept stopped since the 2026-10-13 store
+  switches. Any other slug is refused by the manifest.
+- **Refuse, never force:** the local App must be installed and `stopped` (this job never stops anything), the store
+  twin this App uses must be `started`, and the switch to the store must have happened. Otherwise nothing is asked
+  and nothing changes.
+- **Backup first, then remove, then read back:** after the Approve, one partial Supervisor backup of that App alone
+  (`hbm-pre-retire-<slug>`; its settings and the Observer's `/data/observer-state.json` travel with it), its info
+  read back and checked to list exactly that App and version (otherwise nothing is removed and the backup is kept),
+  then `POST /addons/<slug>/uninstall`, then the App list read again: the local copy gone, the store twin still
+  `started`. Recorded in the `retired_apps` doc and the audit (`RETIRE_BACKUP`, `RETIRE_DONE`).
+- **Routes:** `ha.retire_target(slug)` opens that App's info and its one backup; `retire_target(slug, backup)` opens
+  that backup's info and that App's uninstall with an empty body. Never the twin, never another App, never nested,
+  never outside the step. The module's "no uninstall" promise now names this one owner-approved exception.
+- Tests: `test_l4_retire_local_apps.py`. Mutants `rt-*` (14).
+
 ## 0.9.42
 
 The rules layer and the `primary` lane mode (reviewer chat's spec R1 part B1; owner 2026-10-31 D1 "primary replaces

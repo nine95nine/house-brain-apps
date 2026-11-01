@@ -27,8 +27,8 @@ from . import approval, net
 from .ha import AppView, ForbiddenCall, HAError, HomeAssistant, fingerprint
 from .journal import Journal
 from . import logwindow
-from .manifest import (APP_LOG_WINDOW, CHECK_BROKER, HISTORY_MEASURE, LEGACY_STAGE, ROTATE_SCOUT_KEY, RUN_SCOUT_ONCE,
-                       WRITER_PROBE, Manifest)
+from .manifest import (APP_LOG_WINDOW, CHECK_BROKER, HISTORY_MEASURE, LEGACY_STAGE, RETIRE_LOCAL_APP, ROTATE_SCOUT_KEY,
+                       RUN_SCOUT_ONCE, WRITER_PROBE, Manifest)
 from .writer import WriterError
 from .web import ApprovalBoard
 
@@ -195,6 +195,9 @@ class Engine:
             if m.job == LEGACY_STAGE:                       # 0.9.5: #985 test plan M2/M3
                 from .legacystage import STAGE_ROOT, LegacyStager
                 return LegacyStager(self, self.legacy_stage_root or STAGE_ROOT).run(m)
+            if m.job == RETIRE_LOCAL_APP:                   # 0.9.43: the two local rollback copies
+                from .retire import Retirer
+                return Retirer(self).run(m)
         except (HAError, net.NetError) as err:
             reason = net.redact(str(err))[:200]
             if self.j.load_txn():

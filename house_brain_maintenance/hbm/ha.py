@@ -7,7 +7,8 @@ boundary is this module:
 
 * every HTTP call and WebSocket command passes ``_guard``/``_ws_guard`` before any I/O;
 * App routes are pinned at construction to the two configured target slugs (the Scout and
-  the Observer). There is no generic ``/addons`` listing, no uninstall, stop, rebuild,
+  the Observer). There is no generic ``/addons`` listing, no uninstall (0.9.43 exception: one owner-approved
+  ``RETIRE_LOCAL_APP`` of a stopped local rollback copy inside ``retire_target``, after its backup), no stop, rebuild,
   stdin (0.9.24 exception below: one owner-approved Energy AI settings frame), security, store-repository, host, OS,
   network or Docker route (0.5.4 exceptions, both read-only: the
   House Brain App log read and the host boot list, below; 0.6.0 exceptions: the read-only OS info and the
@@ -711,6 +712,22 @@ OBSERVER_OPTION_NAMES = ("broker_url", "broker_write_key", "publish_interval_sec
 # 0.9.9 (owner pop-ups 2026-10-13 "Inspector 0.2.6 adds it", "Only in export mode"): the Engineering Inspector follows.
 # It is a manual_only App, so its switch never touches a boot setting.
 RE_STORE_INSPECTOR = re.compile(r"[0-9a-f]{8}_house_brain_engineering_inspector")
+# 0.9.43 (owner pop-up 2026-11-01 "Yes, build it next"): the two local rollback copies may be retired, one owner
+# Approve each, inside ``retire_target`` only: that App's info, one partial backup of that App, that backup's info,
+# then that App's uninstall. Never the store twin, never another App, never this App.
+RETIRE_SLUGS = (LOCAL_OBSERVER, "local_house_brain_engineering_inspector")
+RETIRE_TWIN_RE = {LOCAL_OBSERVER: RE_STORE_OBSERVER, "local_house_brain_engineering_inspector": RE_STORE_INSPECTOR}
+
+
+def retire_call_ok(slug: str, bslug: str | None, method: str, path: str, body: Any) -> bool:
+    """0.9.43: True only for the exact calls of one open ``retire_target`` step (bodies compared whole)."""
+    if method == "GET":
+        return path == f"/addons/{slug}/info" or (bslug is not None and path == f"/backups/{bslug}/info")
+    if method != "POST":
+        return False
+    if bslug is None:
+        return path == "/backups/new/partial" and app_backup_body_ok(slug, path, body)
+    return path == f"/addons/{slug}/uninstall" and body in (None, {})
 INSPECTOR_OPTION_NAMES = ("broker_entity_url", "entity_snapshot_mode", "entity_write_key")
 # The Deployer 0.3.7 option names; nothing else is ever copied (the store App has the same schema).
 DEPLOYER_OPTION_KEYS = ("github_repo", "github_token", "github_auth", "retire_old_token", "requests_branch",
@@ -857,6 +874,7 @@ class HomeAssistant:
         self._stage: str | None = None            # 0.7.4: the allowlisted local App whose source is being staged
         self._key: dict | None = None             # 0.8.0: {"role", "slug", "names"} during one key change
         self._legacy: dict | None = None          # 0.9.5: {"bslug"} during one legacy Deployer backup/stage step
+        self._retire: dict | None = None          # 0.9.43: {"slug", "bslug"} during one local rollback copy's retirement
         self._obsmove: dict | None = None         # 0.9.8: {"old", "new"} during the Observer switch to the store
         self._insmove: dict | None = None         # 0.9.9: {"old", "new"} during the Inspector switch to the store
         self._energy: dict | None = None          # 0.9.24: {"slug", "options", "frame_sha256", "frame_sent"}
@@ -927,6 +945,9 @@ class HomeAssistant:
         om = self._obsmove                        # 0.9.8: the Observer switch to the store
         if om is not None and observer_move_call_ok(om["old"], om["new"], method, path, body):
             return
+        rt = self._retire                         # 0.9.43: one local rollback copy's backup, then its uninstall
+        if rt is not None and retire_call_ok(rt["slug"], rt["bslug"], method, path, body):
+            return
         im = self._insmove                        # 0.9.9: the Inspector switch (no boot setting)
         if im is not None and observer_move_call_ok(im["old"], im["new"], method, path, body,
                                                     names=INSPECTOR_OPTION_NAMES, boot=False):
@@ -952,7 +973,7 @@ class HomeAssistant:
 
     def _busy(self) -> bool:
         return any(t is not None for t in (self._target, self._fix, self._system, self._os_act, self._pifw,
-                                           self._migrate, self._legacy, self._obsmove, self._insmove,
+                                           self._migrate, self._legacy, self._obsmove, self._insmove, self._retire,
                                            self._entity,
                                            self._stage, self._key, self._energy, self._drive))
 
@@ -1329,6 +1350,49 @@ class HomeAssistant:
             yield
         finally:
             self._legacy = None
+
+    def store_twin(self, slug: str) -> str | None:
+        """0.9.43: the store App that replaced a local rollback copy, as this App uses it today (after the owner-approved
+        switch); None while the local one is still the one in use."""
+        pattern = RETIRE_TWIN_RE.get(slug)
+        twin = self.observer if slug == LOCAL_OBSERVER else self.inspector
+        return twin if pattern is not None and isinstance(twin, str) and pattern.fullmatch(twin) else None
+
+    @contextmanager
+    def retire_target(self, slug: str, bslug: str | None = None):
+        """0.9.43: open the calls of one retirement step: without ``bslug`` the App's info and one partial backup of it;
+        with ``bslug`` that backup's info and the App's uninstall. Only the two built-in local slugs, never nested."""
+        if slug not in RETIRE_SLUGS or (bslug is not None and (not isinstance(bslug, str) or not RE_BACKUP_SLUG.fullmatch(bslug))):
+            raise ForbiddenCall("retire target")
+        if self._busy():
+            raise ForbiddenCall("nested retire target")
+        self._retire = {"slug": slug, "bslug": bslug}
+        try:
+            yield
+        finally:
+            self._retire = None
+
+    def retire_backup(self, slug: str, name: str) -> str:
+        if self._retire is None or self._retire["slug"] != slug or self._retire["bslug"] is not None:
+            raise ForbiddenCall("retire backup outside its step")
+        return self.backup_app(slug, name)
+
+    def retire_backup_info(self, slug: str, bslug: str) -> dict:
+        """The backup's custody facts only: which Apps and versions it holds, nothing else."""
+        rt = self._retire
+        if rt is None or rt["slug"] != slug or rt["bslug"] != bslug:
+            raise ForbiddenCall("retire backup info outside its step")
+        data = self._supervisor("GET", f"/backups/{bslug}/info")
+        data = data if isinstance(data, dict) else {}
+        return {"slug": bslug, "addons": [{"slug": str(a.get("slug"))[:80], "version": str(a.get("version"))[:32]}
+                                          for a in (data.get("addons") or [])[:20] if isinstance(a, dict)],
+                "protected": bool(data.get("protected"))}
+
+    def retire_uninstall(self, slug: str) -> None:
+        rt = self._retire
+        if rt is None or rt["slug"] != slug or rt["bslug"] is None:
+            raise ForbiddenCall("retire uninstall outside its step")
+        self.uninstall_app(slug)
 
     def legacy_backup(self, name: str) -> str:
         if self._legacy is None or self._legacy["bslug"] is not None:

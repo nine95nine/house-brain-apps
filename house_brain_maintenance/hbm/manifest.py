@@ -94,8 +94,13 @@ JOBS[WRITER_PROBE] = (frozenset({"operation"}), frozenset())
 # 0.9.5 (#985 Pi test plan R1 M2/M3, owner pop-up 2026-10-12 "Backup + shared folder"): back up the stopped legacy
 # Deployer and stage its history. Owner-approved per phase; ``stage`` must name the pinned backup's custody digest.
 LEGACY_STAGE = "LEGACY_STAGE"
+# 0.9.43 (Inspector/perimeter chat hand-off; owner pop-up 2026-11-01 "Yes, build it next"): retire one of the two
+# stopped local rollback copies. It asks the owner, so it is NOT in NO_APPROVAL_JOBS. The slugs are built in.
+RETIRE_LOCAL_APP = "RETIRE_LOCAL_APP"
+RETIRE_SLUGS = ("local_house_brain_engineering_observer", "local_house_brain_engineering_inspector")
 LEGACY_PHASES = ("backup", "stage")
 JOBS[LEGACY_STAGE] = (frozenset({"phase"}), frozenset({"custody_sha256"}))
+JOBS[RETIRE_LOCAL_APP] = (frozenset({"slug"}), frozenset())
 # 0.9.24 (owner pop-up 2026-10-20 "Yes, build 0.9.24"): deliver Energy AI's private household settings once, to the
 # store-installed Energy AI App only, through its Supervisor stdin in setup-only mode. It asks the owner first. The
 # settings file sits next to the manifest (``household.bundle``) on this private repository's request branch and is
@@ -166,6 +171,8 @@ class Manifest:
     key_role: str | None = None
     # 0.9.4 WRITER_PROBE
     probe_operation: str | None = None
+    # 0.9.43 RETIRE_LOCAL_APP
+    retire_slug: str | None = None
     # 0.9.5 LEGACY_STAGE
     legacy_phase: str | None = None
     custody_sha256: str | None = None
@@ -254,6 +261,10 @@ def parse(raw: bytes) -> Manifest:
         if params["operation"] not in PROBE_OPERATIONS:
             raise ManifestError("PROBE_OPERATION")
         log["probe_operation"] = params["operation"]
+    if job == RETIRE_LOCAL_APP:
+        if params["slug"] not in RETIRE_SLUGS:
+            raise ManifestError("RETIRE_SLUG")
+        log["retire_slug"] = params["slug"]
     if job == LEGACY_STAGE:
         phase, digest = params["phase"], params.get("custody_sha256")
         if phase not in LEGACY_PHASES or (phase == "backup") != (digest is None):
