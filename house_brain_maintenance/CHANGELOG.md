@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.46
+
+Housekeeping release for 0.9.45 (Inspector/perimeter chat 2026-11-01 21:41Z: main's reason-code gate read the bare
+`"AUTO_"` prefix in `watch.py` as a malformed code). Contains 0.9.45 unchanged otherwise.
+
+- The outcome a self-healing run returns is one of three whole codes (`autofix.OUTCOME_CODES`: `AUTO_CLEARED`,
+  `AUTO_STILL_THERE`, `AUTO_HANDOVER`), registered in `contracts/house_brain_reason_code_registry.v1.json`. No
+  behaviour change.
+
 ## 0.9.45
 
 Self-healing and retired devices (reviewer chat's spec of 2026-11-01; owner words "figure out a way to clear all

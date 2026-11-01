@@ -52,6 +52,8 @@ PHYSICAL_CONTROL = ("pool", "pump", "irrigation", "sprinkler", "climate", "therm
 RADIO_APP_MARKERS = ("zwave", "z-wave", "matter", "zigbee", "z2m", "openthread", "otbr", "thread", "bluetooth",
                      "silabs", "zha", "esphome", "deconz")
 JOB_PREFIX = "AUTO_FIX_"
+# what ``Watcher._offer_fix`` returns for a fix that ran without a tap (the reason-code registry lists these)
+OUTCOME_CODES = {"CLEARED": "AUTO_CLEARED", "STILL_THERE": "AUTO_STILL_THERE", "HANDOVER": "AUTO_HANDOVER"}
 
 
 def day_of(now: float) -> str:

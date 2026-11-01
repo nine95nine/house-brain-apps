@@ -1469,4 +1469,4 @@ class Watcher:
                       todo=I.owner_steps(f), if_ignored=f.if_ignored, key=f.key, link=f.link)
         else:
             self.j.save_doc(DOC, st)
-        return "AUTO_" + result
+        return AF.OUTCOME_CODES[result]                                # AUTO_CLEARED / AUTO_STILL_THERE / AUTO_HANDOVER
