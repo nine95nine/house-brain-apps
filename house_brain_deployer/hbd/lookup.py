@@ -56,6 +56,15 @@ long-term statistics window through the read-only WebSocket command
 (``STS1``). Numeric power sensors cannot be posted as ``HST1`` state changes; hourly
 mean/min/max can. Sense's ``NameUserGuess`` turned out to be a true/false flag and is
 shown as ``name-guessed``.
+
+0.3.41 (A/C Insight, owner pop-up 2026-10-31 "Yes, build 0.3.40"; built as 0.3.40, renumbered after #1401): the statistics
+part also reads Home Assistant's 5-minute short-term statistics
+(``statistics_period: "5minute"`` with ``statistics_hours`` 1-24 instead of days), and
+any statistics window can start at a fixed UTC time (``statistics_start``,
+``YYYY-MM-DDTHH:MM:SSZ``). A window that would end in the future is refused, and so
+is a 5-minute window that starts before the 40-day short-term retention; nothing is
+read then. Same ``STS1`` rows and budget rules. Without the new fields, 0.3.38
+behaviour is unchanged byte for byte.
 """
 from __future__ import annotations
 
@@ -82,6 +91,13 @@ MAX_HISTORY_STATES = 32          # distinct states per entity in the legend; mor
 MAX_STATISTICS_DAYS = {"hour": 31, "day": 366, "month": 1096}
 STATISTICS_TYPES = ("mean", "min", "max", "change")
 DEFAULT_STATISTICS_TYPES = ("mean", "min", "max")
+# 0.3.41: 5-minute short-term statistics, ``statistics_hours`` 1-24 instead of days, and an optional fixed window start
+# ``statistics_start`` (UTC). Short-term statistics are purged with the states (40 days here); the guard in hbd/ha.py
+# refuses a 5-minute window that starts earlier or ends in the future.
+STATISTICS_SHORT_PERIOD = "5minute"
+MAX_STATISTICS_HOURS = 24
+SHORT_TERM_STATISTICS_KEEP_DAYS = 40
+RE_STATISTICS_START = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 # 0.3.34: the Sense URLs the Deployer can build: the device overview and (0.3.35) the renew that Home Assistant's own
 # startup makes after a 401. Never authenticate (password) or logout.
 SENSE_API_BASE = "https://api.sense.com/apiservice/api/v1/"
@@ -135,6 +151,8 @@ class LookupRequest:
     statistics_period: str = ""
     statistics_days: int = 0
     statistics_types: tuple[str, ...] = field(default_factory=tuple)
+    statistics_hours: int = 0
+    statistics_start: str = ""
 
 
 def is_lookup(raw_bytes: bytes) -> bool:
@@ -175,7 +193,7 @@ def parse_lookup(raw_bytes: bytes) -> LookupRequest:
     required = {"schema", "request_id", "title", "requested_by", "tracking_issue", "template"}
     unknown = set(data) - required - {"note", "zwave_config_entity", "sense_device_tags", "history_entities",
                                       "history_days", "statistics_entities", "statistics_period", "statistics_days",
-                                      "statistics_types"}
+                                      "statistics_types", "statistics_hours", "statistics_start"}
     if required - set(data):
         raise ManifestError("MISSING_KEY", sorted(required - set(data))[0])
     if unknown:
@@ -222,12 +240,21 @@ def parse_lookup(raw_bytes: bytes) -> LookupRequest:
             or not all(isinstance(e, str) and RE_ENTITY_ID.fullmatch(e) for e in stats)):
         raise ManifestError("PATTERN", "statistics_entities")
     period = data.get("statistics_period", "hour" if stats else "")
-    if (stats and period not in MAX_STATISTICS_DAYS) or (not stats and period != ""):
+    short = period == STATISTICS_SHORT_PERIOD
+    if (stats and period not in MAX_STATISTICS_DAYS and not short) or (not stats and period != ""):
         raise ManifestError("PATTERN", "statistics_period")
-    sdays = data.get("statistics_days", 1 if stats else 0)
+    sdays = data.get("statistics_days", 1 if stats and not short else 0)
     if isinstance(sdays, bool) or not isinstance(sdays, int) or (
-            stats and not 1 <= sdays <= MAX_STATISTICS_DAYS[period]) or (not stats and sdays != 0):
+            stats and not short and not 1 <= sdays <= MAX_STATISTICS_DAYS[period]) or ((not stats or short) and sdays != 0):
         raise ManifestError("RANGE", "statistics_days")
+    shours = data.get("statistics_hours", 1 if stats and short else 0)
+    if isinstance(shours, bool) or not isinstance(shours, int) or (
+            stats and short and not 1 <= shours <= MAX_STATISTICS_HOURS) or ((not stats or not short) and shours != 0):
+        raise ManifestError("RANGE", "statistics_hours")
+    sstart = data.get("statistics_start", "")
+    if not isinstance(sstart, str) or (sstart and (not stats or not RE_STATISTICS_START.fullmatch(sstart)
+                                                    or _epoch(sstart) is None)):
+        raise ManifestError("PATTERN", "statistics_start")
     stypes = data.get("statistics_types", list(DEFAULT_STATISTICS_TYPES) if stats else [])
     if (not isinstance(stypes, list) or len(set(map(str, stypes))) != len(stypes)
             or not all(isinstance(t, str) and t in STATISTICS_TYPES for t in stypes)
@@ -235,7 +262,7 @@ def parse_lookup(raw_bytes: bytes) -> LookupRequest:
         raise ManifestError("PATTERN", "statistics_types")
     return LookupRequest(rid, sanitize_text(title, 80), data["requested_by"], issue, template,
                          sanitize_text(note, 300), hashlib.sha256(raw_bytes).hexdigest(), zwave,
-                         sense, tuple(hist), days, tuple(stats), period, sdays, tuple(stypes))
+                         sense, tuple(hist), days, tuple(stats), period, sdays, tuple(stypes), shours, sstart)
 
 
 def scrub(output: str) -> str:
@@ -686,13 +713,34 @@ def _stat_skipped(eid: str) -> str:
 
 
 def read_statistics(ha, entities: tuple[str, ...], days: int, period: str, types: tuple[str, ...],
-                    now: float | None = None, budget: int = MAX_OUTPUT_CHARS) -> str:
-    """One read-only statistics window; the returned text (header line included) is at most ``budget`` characters."""
-    end = int(now if now is not None else time.time())
-    start = end - days * 86400
+                    now: float | None = None, budget: int = MAX_OUTPUT_CHARS, hours: int = 0,
+                    start_iso: str = "") -> str:
+    """One read-only statistics window; the returned text (header line included) is at most ``budget`` characters.
+
+    0.3.41: ``period`` ``5minute`` spans ``hours``; ``start_iso`` fixes the window start (else it ends now). A window
+    that would end in the future, or a 5-minute window starting before the short-term retention, is refused (no read)."""
+    now_s = int(now if now is not None else time.time())
+    short = period == STATISTICS_SHORT_PERIOD
+    span = hours * 3600 if short else days * 86400
+    if start_iso:
+        start = _epoch(start_iso)
+        if start is None:
+            raise ValueError("STATISTICS_START_INVALID")
+        end = start + span
+        if end > now_s:
+            raise ValueError("STATISTICS_WINDOW_IN_FUTURE")
+        if short and start < now_s - SHORT_TERM_STATISTICS_KEEP_DAYS * 86400:
+            raise ValueError("STATISTICS_START_TOO_OLD")
+    else:
+        end = now_s
+        start = end - span
     reply = ha.statistics_during_period(entities, start, end, period, types)
-    head = (f"Statistics of {len(entities)} entities over {days} day(s), period {period}, read-only "
-            f"(Recorder long-term statistics):")
+    if short:
+        head = (f"Statistics of {len(entities)} entities over {hours} hour(s), period {period}, read-only "
+                f"(Recorder short-term statistics):")
+    else:
+        head = (f"Statistics of {len(entities)} entities over {days} day(s), period {period}, read-only "
+                f"(Recorder long-term statistics):")
     lines = project_statistics(reply, entities, start, period, types, budget - len(head) - 1)
     return "\n".join([head, *lines])
 
@@ -716,9 +764,12 @@ def run_lookup(engine, lr: LookupRequest):
         message += (f"\nAlso reads {lr.history_days} day(s) of history of {len(lr.history_entities)} entities: "
                     + ", ".join(lr.history_entities[:6]) + (" ..." if len(lr.history_entities) > 6 else ""))
     if lr.statistics_entities:
-        message += (f"\nAlso reads {lr.statistics_days} day(s) of {lr.statistics_period}ly statistics of "
+        span = (f"{lr.statistics_hours} hour(s) of 5-minute" if lr.statistics_period == STATISTICS_SHORT_PERIOD
+                else f"{lr.statistics_days} day(s) of {lr.statistics_period}ly")
+        message += (f"\nAlso reads {span} statistics of "
                     f"{len(lr.statistics_entities)} entities: " + ", ".join(lr.statistics_entities[:6])
-                    + (" ..." if len(lr.statistics_entities) > 6 else ""))
+                    + (" ..." if len(lr.statistics_entities) > 6 else "")
+                    + (f" (window from {lr.statistics_start})" if lr.statistics_start else ""))
     outcome = engine._ask(lr.request_id, "LOOKUP", "House Brain Deployer: approve lookup?", message,
                           engine.s.timing.approval_timeout)
     if outcome != approval.APPROVE:
@@ -754,7 +805,8 @@ def run_lookup(engine, lr: LookupRequest):
     if lr.statistics_entities:
         try:
             rendered += "\n\n" + read_statistics(engine.ha, lr.statistics_entities, lr.statistics_days,
-                                                 lr.statistics_period, lr.statistics_types, budget=budget())
+                                                 lr.statistics_period, lr.statistics_types, budget=budget(),
+                                                 hours=lr.statistics_hours, start_iso=lr.statistics_start)
         except Exception as err:  # noqa: BLE001 - reported once, never retried
             return Result(LOOKUP_FAILED, [f"statistics read error: {scrub(str(err))[:300]}"],
                           {"lookup_output": scrub(rendered)})

@@ -59,6 +59,11 @@ MAX_HISTORY_WINDOW_S = 7 * 86400
 # 0.3.38: Recorder long-term statistics (read-only). One window per owner-approved lookup; the window is bounded per
 # period so a reply stays small (hour: 31 days, day: 366 days, month: 3 years).
 STATISTICS_PERIODS = {"hour": 31 * 86400, "day": 366 * 86400, "month": 1096 * 86400}
+# 0.3.41: Home Assistant's 5-minute short-term statistics, purged with the states (purge_keep_days 40 here). One window
+# of at most 24 h, starting no more than 40 days ago and ending no later than now (plus clock slack).
+STATISTICS_PERIODS["5minute"] = 24 * 3600
+SHORT_TERM_STATISTICS_KEEP_S = 40 * 86400
+STATISTICS_CLOCK_SLACK_S = 300
 STATISTICS_TYPES = frozenset({"mean", "min", "max", "change"})
 RE_WS_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "system_log/list", "config/auth/list",
@@ -173,7 +178,8 @@ def _ws_guard(msg: dict) -> None:
 
 def _statistics_guard(msg: dict) -> None:
     """0.3.38: exactly the read the statistics lookup builds: ≤ 16 entity-shaped ids, a known period, known types,
-    a UTC window within the period's bound. No units conversion, no other field."""
+    a UTC window within the period's bound. No units conversion, no other field. 0.3.41: a ``5minute`` window is at
+    most 24 h, starts no more than 40 days ago and does not end in the future."""
     if set(msg) != {"type", "start_time", "end_time", "statistic_ids", "period", "types"}:
         raise ForbiddenCall("ws statistics fields")
     ids, types, period = msg.get("statistic_ids"), msg.get("types"), msg.get("period")
@@ -192,6 +198,11 @@ def _statistics_guard(msg: dict) -> None:
         time.strptime(start, "%Y-%m-%dT%H:%M:%SZ"))
     if not 0 < span <= STATISTICS_PERIODS[period]:
         raise ForbiddenCall("ws statistics window")
+    if period == "5minute":
+        now = time.time()
+        if (calendar.timegm(time.strptime(start, "%Y-%m-%dT%H:%M:%SZ")) < now - SHORT_TERM_STATISTICS_KEEP_S
+                or calendar.timegm(time.strptime(end, "%Y-%m-%dT%H:%M:%SZ")) > now + STATISTICS_CLOCK_SLACK_S):
+            raise ForbiddenCall("ws statistics window")
 
 
 class HomeAssistant:

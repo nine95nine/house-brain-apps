@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.41 — 2026-10-31 (5-minute statistics and a fixed window; owner "Yes, build 0.3.40")
+
+- Built as 0.3.40 and renumbered: the Deployer lane merged its own 0.3.40 first (#1401, missed approvals + Try again).
+
+- The statistics part of a lookup can also read Home Assistant's **5-minute short-term statistics**:
+  - `statistics_period: "5minute"` with `statistics_hours` 1–24 (instead of `statistics_days`);
+  - the guard refuses a 5-minute window that is longer than 24 h, starts more than 40 days ago (the short-term
+    statistics are purged with the states) or ends in the future.
+- Any statistics window can start at a fixed UTC time: `statistics_start` (`YYYY-MM-DDTHH:MM:SSZ`). A window that
+  would end in the future is refused before any read. The approval message names the window.
+- Same `STS1` rows and budget rules; the header says "short-term statistics" for 5-minute reads.
+- Without the new fields, a request behaves exactly as in 0.3.40. No new outcome; AppArmor and every other part unchanged.
+- 0.3.39 is held by the draft pool-inspector overlay (#1371) and is not published.
 
 ## 0.3.40
 
