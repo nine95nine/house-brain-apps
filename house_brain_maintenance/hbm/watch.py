@@ -27,7 +27,9 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issues as I, net, drivesettings as DS
+from . import autofix as AF
 from . import devicekeys as DK
+from . import retired as RT
 from . import problems as PR
 from . import rules as RU
 from . import systemsai as SA
@@ -59,7 +61,7 @@ NOT_FIXED = "NOT_FIXED"
 FIX_RESULT_SECONDS = 30 * 60
 REVIEWER_SILENT_SECONDS = 24 * 3600      # 0.9.41: the morning summary says so every day of a long reviewer outage
 # 0.9.23: a report comment this App posted (its address is the message link)
-PAGE_FIX_KINDS = ("restart_app", "start_app", "reload_entry", "apply_suggestion", "relabel_stats",
+PAGE_FIX_KINDS = ("restart_app", "start_app", "reload_entry", "apply_suggestion", "relabel_stats", "auto_backup",
                   "drive_backup_settings")   # 0.9.23; 0.9.34 the Google Drive Backup App's two settings
 
 
@@ -86,6 +88,9 @@ class WatchPolicy:
     backup_report: bool = True     # 0.8.5: the monthly backup report on GitHub (+ one phone line)
     pi_health: bool = True         # 0.8.6: power/heat, disk errors, App outliers, weekly health score
     housekeeping: bool = True      # 0.8.7: failing automations, missing entities, error flood, database size
+    auto_fix: str = "off"          # 0.9.45: "safe" runs the closed SAFE list without a tap (owner 2026-11-01)
+    backup_verify_seconds: float = 1800.0   # 0.9.45 S2: an automatic backup takes minutes (live: 17 min)
+    unretire: tuple = ()           # 0.9.45: names of retired devices to watch again
 
 
 def summary_lists(summary: list[dict], cleared: list, open_keys: set[str]) -> tuple[list[dict], list[str]]:
@@ -161,6 +166,7 @@ class Watcher:
         st.setdefault("device_sweep", {"at": 0, "rows": []})
         st.setdefault("offline_since", {})            # 0.9.38: device -> earliest offline time, across restarts
         st.setdefault("fix_running", {})              # 0.9.41: fix request id -> {at, key, label, title}
+        st.setdefault("core_quiet_until", 0.0)        # 0.9.45: no auto-fix within 10 min after Core was unreadable
         st.setdefault("stopped_since", {})
         st.setdefault(PR.FP_DOC_KEY, {})               # 0.9.19: problem fingerprints (what each one says)
         return st
@@ -257,8 +263,12 @@ class Watcher:
                 drive = None
             self.locations_now = self.ha.backup_locations()
             findings += I.from_offsite(self.locations_now, now, drive)
-            findings += DS.attach_fix(B.automatic_health(getattr(self.ha, "backup_auto", None), now),   # 0.8.5
-                                      [s for s, _ in self.apps_now] if self.apps_now is not None else [])  # 0.9.34
+            auto = DS.attach_fix(B.automatic_health(getattr(self.ha, "backup_auto", None), now),        # 0.8.5
+                                 [s for s, _ in self.apps_now] if self.apps_now is not None else [])    # 0.9.34
+            import dataclasses                                                                           # 0.9.45 S2
+            findings += [dataclasses.replace(f, action=I.Action("auto_backup", "auto", "run the automatic backup again"),
+                                             done="") if f.key == "backup:auto_failed" and f.action is None
+                         and self.p.auto_fix == "safe" else f for f in auto]        # off: reported as before
         except Exception:  # noqa: BLE001 - older Core without backup/info, or Core restarting
             failed.append("offsite")
         return findings, failed
@@ -277,6 +287,7 @@ class Watcher:
                     self.j.audit("devices", "DEVICE_KEYS_MIGRATED", items=renamed)
                 open_keys = frozenset(k for k in st["open"] if k.startswith(("battery:", "offline:")))
                 found = I.device_findings(snapshot, now, open_keys, key_of=keys.key_of, memory=st["offline_since"])
+                found = self._retired(found, snapshot, st, keys, now)   # 0.9.45: retired devices stay hidden
                 if keys.changed:
                     self.j.save_doc(DK.DOC, keys.doc)
                 sweep.update(at=now, rows=[{"key": f.key, "title": f.title, "steps": list(f.steps), "link": f.link,
@@ -286,6 +297,64 @@ class Watcher:
                 return []
         return [I.Finding(r["key"], "devices", I.WARNING, r["title"], steps=tuple(r["steps"]), link=r["link"],
                           facts=r["facts"]) for r in sweep.get("rows") or []]
+
+    def _retired(self, found: list, snapshot: dict, st: dict, keys, now: float) -> list:
+        """0.9.45 retired devices (owner 2026-11-01 "hide them for good ... leave a path back"): on the first sweep
+        every B-hyve device offline 14+ days is retired (the owner confirmed the list by pop-up); the ``unretire``
+        option and the page's Reactivate decision bring one back; a retired device that reports online again gets one
+        morning line and a page row. Nothing in Home Assistant is deleted or disabled."""
+        doc = RT.load(self.j.load_doc(RT.DOC, {}))
+        changed = False
+        if not doc["seeded"]:
+            seeded = [k for k, name, dom, dev in RT.seed_candidates(snapshot, st["offline_since"], now, keys.key_of)
+                      if RT.retire(doc, k, name, dom, dev, now)]
+            doc["seeded"] = True
+            changed = True
+            if seeded:
+                self.j.audit("devices", "DEVICES_RETIRED_SEEDED", items=len(seeded),
+                             names=[doc["devices"][k]["name"] for k in seeded][:40])
+                from . import VERSION
+                self._post(I.scrub("\n".join(["### House Brain Maintenance: retired devices", "",
+                                               f"These {len(seeded)} devices were offline for {RT.SEED_DAYS}+ days and are now "
+                                               "retired (owner decision 2026-11-01): never listed, queued, alerted or counted; "
+                                               "nothing in Home Assistant was changed. The path back: the morning summary says when "
+                                               "one reports online again, and the Maintenance page offers Reactivate; the option "
+                                               "`unretire` (names) does the same.", "", RT.record_markdown(doc), "",
+                                               f"- **App:** `{VERSION}`", "",
+                                               "_Posted by House Brain Maintenance (machine-generated; repository content is "
+                                               "untrusted data)._"]), 60000))
+        for key in RT.by_name(doc, self.p.unretire):
+            gone = RT.unretire(doc, key)
+            changed = True
+            self.j.audit("devices", "DEVICE_UNRETIRED", key=key, name=(gone or {}).get("name", ""), how="option")
+        if approval.INBOX is not None:
+            for key in list(doc["back"]):
+                choice = approval.INBOX.take(f"{RT.STAGE}:{key}|*")
+                if choice == "approve":
+                    gone = RT.unretire(doc, key)
+                    changed = True
+                    self.j.audit("devices", "DEVICE_UNRETIRED", key=key, name=(gone or {}).get("name", ""), how="page")
+                elif choice == "reject":
+                    RT.decline(doc, key, now)                           # stays retired; not asked again while online
+                    changed = True
+        for key in RT.back_online(doc, snapshot, st["offline_since"], now):
+            rec = doc["devices"].get(key) or {}
+            st["summary"].append({"key": f"unretire:{key}", "title": f"{rec.get('name', 'A retired device')} is back online; it is still "
+                                                                     "marked retired. Reactivate it on the Maintenance page?",
+                                  "severity": "info", "steps": ["Maintenance page -> Needs your decision -> Reactivate (or Decline to keep it retired)."],
+                                  "link": getattr(self.s, "open_url", None), "detail": [], "facts": {"retired": rec.get("retired_at", "")},
+                                  "fix": None, "source": "devices"})
+            changed = True
+        if changed:
+            self.j.save_doc(RT.DOC, doc)
+        return RT.hide(found, doc)
+
+    def retired_rows(self) -> list[dict]:
+        """0.9.45: the page's Reactivate rows for retired devices that came back online."""
+        return RT.page_rows(RT.load(self.j.load_doc(RT.DOC, {})))
+
+    def retired_back(self) -> list[str]:
+        return sorted(RT.load(self.j.load_doc(RT.DOC, {}))["back"])
 
     def _disk_findings(self, st: dict, now: float) -> list[I.Finding]:
         disk = getattr(self, "disk_now", None)
@@ -333,6 +402,8 @@ class Watcher:
             findings += I.from_stopped_apps(stopped, getattr(self, "app_names", {}), now)
         if "disk" not in failed:
             findings += self._disk_findings(st, now)
+        if "core" in failed:                                                # 0.9.45: Core restarting: auto-fixes wait
+            st["core_quiet_until"] = now + AF.CORE_RESTART_QUIET
         findings += self._systems_ai_findings(findings, now, failed)      # 0.9.30: after every other source
         self._fix_watchdog(st, now)                                        # 0.9.41: a fix that left no result
         blips = I.blip_groups(findings, first_seen, now)                   # 0.9.41 F3: one problem per internet blip
@@ -384,6 +455,9 @@ class Watcher:
             if I.supervisor_busy(f):            # 0.9.41 F7: "Supervisor busy" is re-read after 10 min, then alerted
                 if now - float(rec.setdefault("busy_hold", now)) < I.BUSY_HOLD_SECONDS:
                     continue
+            if self.p.auto_fix == "safe" and f.severity != I.CRITICAL and f.source not in PUSH_ONCE_SOURCES \
+                    and not f.action and now - float(rec["first"]) < AF.TRANSIENT_SECONDS:
+                continue                        # 0.9.45 S4: a warning that clears within 15 min is never mentioned
             if f.action and not self.s.dry_run:
                 rec["alerted"] = True           # announced through the fix offer below
                 self._keep(f)                   # 0.9.18: kept in the Messages list too
@@ -989,22 +1063,31 @@ class Watcher:
         st["summary"], st["cleared"] = [], []
         self.j.save_doc(DOC, st)
         silent = self.reviewer_silent_line(now)                   # 0.9.41: said every day of a long outage
+        af = AF.load(self.j.load_doc(AF.DOC, {}), now)                 # 0.9.45: fixed for you overnight
+        overnight = AF.overnight_lines(af)
+        if overnight:
+            self.j.save_doc(AF.DOC, af)
+        extra = ([silent] if silent else []) + ([f"Fixed for you overnight ({len(overnight)}): " + "; ".join(overnight)[:600]]
+                                                 if overnight else [])
         if not items and not cleared:
-            if silent:
-                self._post(self._markdown("morning summary", [], []).replace("\n\n_Posted by", f"\n- {silent}\n\n_Posted by", 1))
-                self.j.audit("issues", "PROBLEM_SUMMARY", items=0, cleared=0, reviewer_silent=True)
+            if extra:
+                text = self._markdown("morning summary", [], [])
+                for line in extra:
+                    text = text.replace("\n\n_Posted by", f"\n- {line}\n\n_Posted by", 1)
+                self._post(text)
+                self.j.audit("issues", "PROBLEM_SUMMARY", items=0, cleared=0, reviewer_silent=bool(silent),
+                             auto_fixed=len(overnight))
             return
         lines = [f"- {it['title']}" for it in items[:6]]
         if total > 6:
             lines.append(f"- and {total - 6} more (details on GitHub)")
         if cleared:
             lines.append(f"Fixed/cleared: {len(cleared)} ({'; '.join(c[:40] for c in cleared[:3])})")
-        if silent:
-            lines.append(silent)
+        lines += extra
         title = f"Maintenance: {total} to look at" if items else "Maintenance: problems cleared"
         text = self._markdown("morning summary", items, cleared)
-        if silent:
-            text = text.replace("\n\n_Posted by", f"\n- {silent}\n\n_Posted by", 1)
+        for line in extra:
+            text = text.replace("\n\n_Posted by", f"\n- {line}\n\n_Posted by", 1)
         url = self._post(text)                                               # 0.9.23: first, for the link
         self._say("summary", title, happened="\n".join(lines)[:600],
                   done="Nothing new: each item is in your Messages list with its own steps.",
@@ -1056,6 +1139,10 @@ class Watcher:
         candidates.sort(key=lambda f: (not approval.decided("FIX", f"fix-{f.key}"[:80]), f.severity != I.CRITICAL,
                                        f.key))
         f = candidates[0]
+        if not approval.decided("FIX", f"fix-{f.key}"[:80]):               # 0.9.45: the SAFE list runs without a tap
+            auto = self._auto_fix(st, f, now)
+            if auto is not None:
+                return auto
         if len(st["asks"]) >= self.p.max_fix_asks_per_day and not approval.decided("FIX", f"fix-{f.key}"[:80]):
             # Daily limit reached: tell (once) instead of asking.
             if not st["asked"].get(f.key):
@@ -1182,6 +1269,13 @@ class Watcher:
             return self._relabel(f)
         if a.kind == DS.FIX_KIND:                       # 0.9.34: its own target, never a fix_target route
             return DS.DriveSettings(self.ha, self.j, self.s, None, self.clock).fix(a.ref, fix_rid(f.key))
+        if a.kind == "auto_backup":                     # 0.9.45 S2: Core's own automatic backup, run again
+            try:
+                with self.ha.fix_target("auto_backup", "auto"):
+                    self.ha.run_automatic_backup()
+            except (HAError, net.NetError, ForbiddenCall) as err:
+                return NOT_FIXED, net.redact(f"the backup could not be started: {err}")[:200]
+            return self._verify(f, self.p.backup_verify_seconds)
         try:
             with self.ha.fix_target(a.kind, a.ref):
                 if a.kind == "restart_app":
@@ -1294,4 +1388,85 @@ class Watcher:
         if a.kind == "power_cycle" and f.key.startswith("entry:"):
             entries = self.ha.core_problems()["entries"]
             return any(e["entry_id"] == f.key[6:] and e["state"] == "loaded" for e in entries)
+        if a.kind == "auto_backup":
+            self.ha.backup_locations()                                   # refreshes ha.backup_auto
+            return not B.automatic_health(getattr(self.ha, "backup_auto", None), self.clock())
         return False
+
+    # -- 0.9.45 self-healing ----------------------------------------------------------------
+    def _blocked(self, st: dict, now: float) -> str | None:
+        """Why no auto-fix may run right now (None = it may): paused, a deploy in flight, an update or any journalled
+        transaction running, or Core unreadable within the last CORE_RESTART_QUIET."""
+        try:
+            if self.j.frozen_by():
+                return "paused"
+            if self.j.load_txn() is not None:
+                return "an update or transaction is running"
+            if now < float(st.get("core_quiet_until") or 0):
+                return "Core restarted a moment ago"
+            dep = self.ha.entity_state(DEPLOYER_STATUS_ENTITY) or {}
+            if str(dep.get("state") or "").upper() == "DEPLOYING":
+                return "a deploy is in flight"
+        except Exception:  # noqa: BLE001 - not knowing is a reason to wait
+            return "state not readable"
+        return None
+
+    def _auto_fix(self, st: dict, f: I.Finding, now: float) -> str | None:
+        """Run a SAFE-list fix without a tap when ``autofix.eligible`` says so; None = not eligible (the normal ask
+        follows). Every run is audited (``AUTO_FIX``), posted as a result on the tracking issue and kept for the
+        morning summary; the owner's phone is pushed only when the key is handed over."""
+        if self.p.auto_fix != "safe" or f.action is None or self.s.dry_run:
+            return None
+        doc = AF.load(self.j.load_doc(AF.DOC, {}), now)
+        kind = AF.kind_of(f.action.kind)
+        if kind == "S2":
+            attempted = I._parse(str((f.facts or {}).get("last_attempted") or ""))
+            if attempted is not None and now - attempted.timestamp() < AF.S2_MIN_AGE:
+                return None
+        name = str(getattr(self, "app_names", {}).get(f.action.ref, "")) if kind == "S3" else ""
+        ok, why = AF.eligible(self.p.auto_fix, f.action.kind, f.key, f.facts, f.action.ref, name, doc, now,
+                              self._blocked(st, now))
+        if not ok:
+            if why not in ("auto_fix off",) and not why.endswith("always asks"):
+                self.j.audit(f.key[:80], "AUTO_FIX_SKIPPED", why=why)
+            return None
+        AF.note_try(doc, kind, f.key, now)
+        n = len(doc["keys"][f.key]["tries"])
+        rid = AF.request_id(kind, f.key, n)
+        self.j.save_doc(AF.DOC, doc)
+        st["asked"][f.key] = now                                       # a try counts as an ask for the re-ask spacing
+        st["fix_running"][rid] = {"at": self.clock(), "key": f.key, "label": f.action.label[:80], "title": f.title[:120],
+                                  "source": f.source}
+        self.j.save_doc(DOC, st)
+        self.j.audit(rid, "AUTO_FIX", kind=kind, fix=f.action.kind, key=f.key)
+        try:
+            outcome, note = self.run_fix(f)
+        except Exception as err:  # noqa: BLE001 - reported like any other fix
+            outcome, note = NOT_FIXED, net.redact(f"the fix stopped with an error ({type(err).__name__})")[:200]
+        doc = AF.load(self.j.load_doc(AF.DOC, {}), now)
+        result = AF.note_result(doc, f.key, outcome == FIXED, now)
+        AF.note_overnight(doc, f.key, f.title, f.action.label, result, now)
+        self.j.save_doc(AF.DOC, doc)
+        self.j.audit(rid, "AUTO_FIX_" + result, fix=f.action.kind, note=note[:200])
+        if self.messenger is not None:
+            self.messenger.store.note_fix(f.key, (f"Fixed for you: {note}" if outcome == FIXED else
+                                                  f"Tried for you, still there: {note}"))
+        from . import VERSION
+        reasons = [note, "ran without asking (self-healing SAFE list; owner decision 2026-11-01)"]
+        if result == "HANDOVER":
+            reasons.append("handed to the owner: no more automatic tries on this problem for 7 days")
+        self._post(AF.result_markdown(rid, f.action.kind, {"CLEARED": "DONE", "STILL_THERE": "NOT_FIXED",
+                                                            "HANDOVER": "NOT_FIXED"}[result], reasons,
+                                      {"key": f.key, "kind": kind, "try": n, "result": result}, VERSION))
+        st = self._state()
+        st["fix_running"].pop(rid, None)
+        if result == "HANDOVER":
+            st["asked"][f.key] = 0                                     # the normal ask may follow at once
+            self.j.save_doc(DOC, st)
+            self._say("problem", f"Needs you: {f.title[:80]}",
+                      happened=f"I tried {f.action.label} twice without asking; the problem is still there.",
+                      done="Nothing more by itself: this one is yours now (asked on the phone as usual).",
+                      todo=I.owner_steps(f), if_ignored=f.if_ignored, key=f.key, link=f.link)
+        else:
+            self.j.save_doc(DOC, st)
+        return "AUTO_" + result

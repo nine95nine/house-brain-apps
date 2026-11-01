@@ -46,6 +46,7 @@ from .updatequeue import UpdateQueue, rows_from
 from .afterupdate import JOB as AFTER_JOB, AfterPolicy, AfterUpdate, after_request_id, loaded_snapshot
 from .afterreport import AfterReports, item_of
 from .problems import STALL_KEY
+from . import retired as RT
 from .web import INGRESS_PEER, MAX_WAITING, ApprovalBoard, IngressServer, ReaskQueue
 from .writer import SharedWriter
 
@@ -136,6 +137,8 @@ class Options:
     cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
     free_reviewer: str = "lockout"    # 0.9.29: off | shadow | lockout (owner 2026-10-24); 0.9.42: primary (owner D1 2026-10-31)
     companion_url: str = ""           # 0.9.29: "" = the Companion on the Broker's Cloudflare account; "off" = never
+    auto_fix: str = "safe"            # 0.9.45: off | safe (owner 2026-11-01 "Yes, build 0.9.45 as proposed"; off = before)
+    unretire: tuple[str, ...] = ()    # 0.9.45: names of retired devices to watch again (owner 2026-11-01 "path back")
 
 
 def load_options(path: str) -> Options:
@@ -239,6 +242,9 @@ def load_options(path: str) -> Options:
         free_reviewer=raw.get("free_reviewer", "lockout") if raw.get("free_reviewer", "lockout") in ("off", "shadow", "lockout", "primary")
         else _bad("free_reviewer"),
         companion_url=_companion_url(raw.get("companion_url")),
+        auto_fix=raw.get("auto_fix", "safe") if raw.get("auto_fix", "safe") in ("off", "safe") else _bad("auto_fix"),
+        unretire=tuple(str(n)[:80] for n in raw.get("unretire") or [] if isinstance(n, str) and n.strip())
+        if isinstance(raw.get("unretire", []), list) else _bad("unretire"),
     )
 
 
@@ -536,7 +542,8 @@ class Service:
                                 power_off_seconds=10.0 * self.health_scale,
                                 power_verify_seconds=600.0 * self.health_scale,
                                 backup_report=self.o.backup_report, pi_health=self.o.pi_health,
-                                housekeeping=self.o.housekeeping)
+                                housekeeping=self.o.housekeeping, auto_fix=self.o.auto_fix,
+                                backup_verify_seconds=1800.0 * self.health_scale, unretire=self.o.unretire)
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
             self.watcher.step_errors = self.step_errors                   # 0.9.22
             if self.o.report_issue:                                        # 0.9.26: after-update reports
@@ -991,6 +998,7 @@ class Service:
         if self.watcher is not None and not self.o.dry_run:   # 0.9.23: "Fix it" for problems with a built-in fix
             try:
                 rows += self.watcher.fix_rows()
+                rows += self.watcher.retired_rows()                   # 0.9.45: retired devices back online
             except Exception as err:  # noqa: BLE001 - the update rows stay; the fix rows return next poll
                 LOG.warning("fix rows wait: %s", net.redact(f"{type(err).__name__}: {err}")[:200])
         return rows
@@ -1345,8 +1353,9 @@ class Service:
             return
         valid = {str(r.get("key", "")).split("|", 1)[0] for r in rows if r.get("key")}
         valid |= {f"FIX:{h}" for h in self.watcher.open_fix_heads()}
+        valid |= {f"{RT.STAGE}:{k}" for k in self.watcher.retired_back()}          # 0.9.45
         try:
-            dropped = approval.reconcile(valid, ("UPDATE", "SYSTEM", "FIX"))
+            dropped = approval.reconcile(valid, ("UPDATE", "SYSTEM", "FIX", RT.STAGE))
         except Exception as err:  # noqa: BLE001 - a page clean-up problem never stops the poll
             LOG.warning("page reconcile waits: %s", net.redact(str(err))[:200])
             return

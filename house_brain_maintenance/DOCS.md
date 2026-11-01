@@ -578,6 +578,27 @@ The cloud AI reviewer (a Claude routine) stops when the owner's weekly plan limi
 - `free_reviewer: shadow` drafts and compares but never posts; `off` turns the lane off. `companion_url` is worked out
   from the Broker's Cloudflare account; set `off` to forbid the call.
 
+## Self-healing: the safe fixes run without asking — from 0.9.45
+
+You decided on 2026-11-01 that the obvious, safe fixes should just happen. With `auto_fix: safe` (the default) this
+App, without a tap:
+- reloads an integration that is stuck failing to start (not a pool, pump, irrigation, thermostat, cover, lock, alarm,
+  vehicle or valve one: those still ask), waiting 30 minutes, then 2, 6 and 24 hours between tries, at most 3 a day,
+  and hands it to you after four failures;
+- runs your automatic backup again when the last one failed (your own backup settings), once a day;
+- restarts an App that crashed, or starts one that should be running (not Z-Wave, Zigbee, Matter, Thread, Bluetooth or
+  ESPHome: those still ask), at most twice a day per App.
+Never more than 10 of these a day; none while this App is paused, a deploy runs, an update runs or Home Assistant just
+restarted. Each one is written to the tracking issue like any result, and the morning summary says "Fixed for you
+overnight (N)". If a fix did not take twice, that problem is yours again and your phone asks as before. A warning
+that goes away within 15 minutes is never mentioned at all. `auto_fix: off` returns to asking for every fix.
+
+## Retired devices — from 0.9.45
+
+Devices you have written off (your B-hyve timers, offline for weeks) are retired: never listed, queued or counted,
+nothing changed in Home Assistant. If one reports online again, the morning summary says so once and the page offers
+**Reactivate**; the option `unretire` (device names) does the same. The list is also kept in the repository.
+
 ## Retiring the two local rollback copies — 0.9.43
 
 The local Engineering Observer (0.2.4) and the local Engineering Inspector (0.2.5) were kept stopped as rollback copies

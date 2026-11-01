@@ -1,5 +1,5 @@
 name: "House Brain Maintenance"
-version: "0.9.44"
+version: "0.9.45"
 slug: "house_brain_maintenance"
 description: >-
   Reviews pending App, HACS and device-firmware updates and applies them after your iPhone approval
@@ -122,6 +122,8 @@ options:
   ai_review: true
   free_reviewer: "lockout"
   companion_url: ""
+  auto_fix: "safe"
+  unretire: []
 schema:
   github_repo: "match(^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$)"
   github_token: password?
@@ -173,6 +175,9 @@ schema:
   housekeeping: "bool?"
   ai_review: "bool?"
   free_reviewer: "list(off|shadow|lockout|primary)?"
+  auto_fix: "list(off|safe)?"
+  unretire:
+    - "match(^[^\\n]{1,80}$)?"
   companion_url: "match(^(off|https://house-brain-companion\\.[a-z0-9-]{1,63}\\.workers\\.dev)?$)?"
   cf_control_url: "match(^(https://house-brain-cloudflare-control\\.[a-z0-9-]{1,63}\\.workers\\.dev)?$)?"
   update_hold:

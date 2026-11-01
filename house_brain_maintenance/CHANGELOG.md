@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.9.45
+
+Self-healing and retired devices (reviewer chat's spec of 2026-11-01; owner words "figure out a way to clear all
+those issues on your own… I'd like you to do all the work for me" and "hide them for good… leave something behind
+so… I have a path forward"; owner pop-ups 2026-11-01 "Yes, build 0.9.45 as proposed", "Yes, as proposed"). Contains
+0.9.44 unchanged otherwise.
+
+- **Standing owner decision: the closed SAFE list runs without a tap** (`auto_fix: safe`, the default; `off` is
+  exactly the behaviour before this release). S1 reload a config entry stuck in setup error/retry whose integration is
+  not physical control (back-off 30 min → 2 h → 6 h → 24 h, at most 3 a day per entry, handed to the owner after 4
+  failed tries); S2 run Home Assistant's own automatic backup again after a failed one (`backup/generate_with_automatic_settings`,
+  the owner's agents, password and retention; at least 30 min after the failure; once a day; only while idle); S3
+  restart or start a crashed / stopped-but-should-run App (at most 2 a day per App; never a radio App; Core and the
+  Supervisor have no such fix); S4 a non-critical finding is mentioned only after 15 minutes, so one that cleared
+  before never is. **Still asked, always:** power cycles, Repairs suggestions, statistics relabels, Drive settings,
+  updates, and any pool / pump / irrigation / thermostat / cover / lock / alarm / vehicle / valve / AquaRite /
+  iAqualink / B-hyve integration. Guards: at most 10 auto-fixes a day in all; none while paused, while a deploy is in
+  flight, while an update or any journalled transaction runs, or within 10 min after Core was unreachable. Every run is
+  an audit row (`AUTO_FIX`, then `AUTO_FIX_CLEARED` / `_STILL_THERE` / `_HANDOVER`) and one "House Brain Maintenance
+  result" comment (Job `AUTO_FIX_<kind>`), so the reviewers and the after-check see it; two STILL_THERE results on one
+  problem hand it to the owner for 7 days with one phone line; the morning summary lists "Fixed for you overnight (N)";
+  no push for a success. (S5 cloud-coordinator reload, S6 store reload: not in this release; S7 stale version asks:
+  already handled by 0.9.39 and the update check.)
+- **Retired devices.** The `retired_devices` doc keeps, per device, its stable key, name, integration, date and the
+  owner's note. On the first sweep every B-hyve device offline 14+ days is retired (the owner confirmed the list by
+  pop-up); retired devices are never listed, queued, alerted or counted (their names leave the group and long-offline
+  lines too); nothing in Home Assistant is deleted or disabled. A retired device that reports online again gets one
+  morning line and a **Reactivate** row on the Maintenance page (Approve = watched again, Decline = stays retired and
+  is not asked again while it stays online); the option `unretire` (names) does the same. The list is written to a
+  repository record so it survives a reinstall.
+- Tests: `test_l1_autofix.py`, `test_l4_self_healing.py`, `test_l4_retired_devices.py`; the test service factory
+  keeps `auto_fix: off` so older tests keep their meaning. Mutants `af-*`, `rd-*`.
+
 ## 0.9.44
 
 Hotfix for 0.9.43 (live 2026-11-01 17:29Z: `retire-local-observer-1` was REFUSED with "the local Engineering Observer

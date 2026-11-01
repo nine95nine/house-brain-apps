@@ -143,7 +143,7 @@ RE_ST = re.compile(r"^[A-Za-z0-9._:/-]{1,120}$")
 SSDP_READ_SECONDS = 4.0
 SSDP_MAX_ROWS = 400
 RE_SWITCH = re.compile(r"^switch\.[a-z0-9_]{1,80}$")
-FIX_KINDS = frozenset({"restart_app", "start_app", "apply_suggestion", "reload_entry", "power_cycle",
+FIX_KINDS = frozenset({"restart_app", "start_app", "apply_suggestion", "reload_entry", "power_cycle", "auto_backup",
                        "relabel_stats"})          # 0.9.6: statistics unit label (never a delete)
 RE_UNIT_TEXT = re.compile(r"^[^\x00-\x1f<>`|]{0,24}$")
 RE_UNIT_CLASS = re.compile(r"^[a-z_]{1,40}$")
@@ -170,7 +170,10 @@ _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/li
                        # 0.9.27 HISTORY_MEASURE (owner pop-ups 2026-10-24 "Yes, measure first" / "Yes, 0.9.27 next"):
                        # one past day's full history and its long-term statistics, read to count rows and bytes.
                        # Counted and compressed in memory per chunk; nothing is kept, logged or posted but numbers.
-                       "recorder/list_statistic_ids", "recorder/statistics_during_period"})
+                       "recorder/list_statistic_ids", "recorder/statistics_during_period",
+                       # 0.9.45 self-healing S2 (owner 2026-11-01): run Home Assistant's own automatic backup again,
+                       # with the owner's agents, password and retention; only inside fix_target("auto_backup").
+                       "backup/generate_with_automatic_settings"})
 HISTORY_KEYS = frozenset({"type", "start_time", "end_time", "entity_ids", "minimal_response", "no_attributes",
                           "significant_changes_only", "include_start_time_state"})
 STATISTICS_KEYS = frozenset({"type", "start_time", "end_time", "statistic_ids", "period"})
@@ -917,6 +920,7 @@ class HomeAssistant:
                 "apply_suggestion": {f"/resolution/suggestion/{ref}"},
                 "reload_entry": {"/core/api/services/homeassistant/reload_config_entry"},
                 "power_cycle": {"/core/api/services/switch/turn_off", "/core/api/services/switch/turn_on"},
+                "auto_backup": set(),                           # 0.9.45: one WebSocket command, no HTTP route
             }[kind]
             if path in allowed:
                 return
@@ -996,6 +1000,8 @@ class HomeAssistant:
             raise ForbiddenCall("power-cycle target is not the configured switch")
         elif kind == "relabel_stats" and ref != "units_changed":
             raise ForbiddenCall("relabel target")
+        elif kind == "auto_backup" and ref != "auto":
+            raise ForbiddenCall("automatic backup target")
         if self._busy():
             raise ForbiddenCall("nested target")
         self._fix = (kind, ref)
@@ -1610,6 +1616,8 @@ class HomeAssistant:
             raise ForbiddenCall("ws search related")
         if kind == "system_health/info" and set(msg) != {"type"}:
             raise ForbiddenCall("ws system health")
+        if kind == "backup/generate_with_automatic_settings" and set(msg) != {"type"}:
+            raise ForbiddenCall("ws automatic backup")
         if kind == "history/history_during_period":
             ids = msg.get("entity_ids")
             # Two shapes only: 0.9.2 counts (minimal, no attributes, no start row) and 0.9.27 full day (everything,
@@ -2442,6 +2450,17 @@ class HomeAssistant:
             pass  # visibility only
 
     # -- 0.5.0 read-only checks ------------------------------------------------
+    def run_automatic_backup(self) -> None:
+        """0.9.45 (self-healing S2): ask Core to run its automatic backup now, with the owner's own settings. Only
+        inside ``fix_target("auto_backup", "auto")``; the socket allowlist takes the bare command and nothing else."""
+        if self._fix != ("auto_backup", "auto"):
+            raise ForbiddenCall("automatic backup outside its fix")
+        sock = self.shared_ws()
+        try:
+            sock.command({"type": "backup/generate_with_automatic_settings"}, timeout=60)
+        finally:
+            sock.close()
+
     def backup_locations(self) -> list[dict]:
         """Every backup as ``{"date", "agents": [location ids], "ha": bool}`` (names and contents dropped)."""
         sock = self.shared_ws()
