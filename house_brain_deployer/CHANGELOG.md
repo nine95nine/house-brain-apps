@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.45 — 2026-11-02 (an active "Allow more today" no longer holds a start; owner "dig deep and figure it out")
+
+0.3.44 named the live cause: `STARTUP_REFUSED:HistoryError:ACTIVE_SOURCE_LIMIT_GRANT`. On 2026-11-01 at 10:50 (Arizona)
+the daily install limit was lifted until midnight ("Allow more today"). The startup re-check of the moved history ran the
+migration rule "a still-active limit lift must not travel with a history moved in from elsewhere" on the Deployer's own
+history, so every start before midnight was held: first the 0.3.43 update (an approved Cooling install waiting for its
+preconditions was stopped by it), then every Start after it.
+- The startup re-check of the Deployer's own history (`deployer_working_journal`, `qualify(..., own_history=True)`) no
+  longer applies that rule; the owner's current lift keeps working (`Journal.limit_lifted_until`). A history moved in
+  from elsewhere (Prepare/Select, imports, recovery merges) still refuses an active lift, and `own_history` is refused
+  for any merge (`OWN_HISTORY_SCOPE`). Mutants LG01–LG04.
+- Before 0.3.45, a restart on a day with an active lift simply had to wait until local midnight.
+- **Daily install limit up to 24** (owner 2026-11-02: "I would increase that from 12 to 24"): the option
+  `max_approval_requests_per_day` now accepts 1 to 24 (was 1 to 12). The default stays 4; the owner's own setting is
+  changed in the App's Configuration.
+
 ## 0.3.44 — 2026-11-02 (a held start names its cause; dashboard outcomes admitted; owner "dig deep and figure it out")
 
 Live 2026-11-01 22:30Z: the owner updated 0.3.42 to 0.3.43 while an approved install (the Cooling chat's

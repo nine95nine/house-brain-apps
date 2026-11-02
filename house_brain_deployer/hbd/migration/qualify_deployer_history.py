@@ -186,7 +186,7 @@ def _record(rec):
     return undo.build(rec)
 
 
-def plan_chronology(source, destination, *, now):
+def plan_chronology(source, destination, *, now, own_history=False):
     """Offline interleaving proposal preserving each stream's occurrence order.
 
     Reuses staging's exact multiset-maximum overlap rule. Matching the nth equal
@@ -195,7 +195,7 @@ def plan_chronology(source, destination, *, now):
     """
     source = dict(source) if isinstance(source, dict) else source
     destination = dict(destination) if isinstance(destination, dict) else destination
-    base = history.plan(source, destination, now=now)
+    base = history.plan(source, destination, now=now, own_history=own_history)
     streams = [history._decode(files)["audit"] for files in (destination, source)]
     records, timestamps, order, edges, degree = {}, {}, {}, {}, {}
     for stream in streams:
@@ -234,7 +234,7 @@ def plan_chronology(source, destination, *, now):
     return history.Plan(base.source_sha256, base.destination_sha256, history.fingerprint(files), files, counts)
 
 
-def required_recovery(source, destination, *, selected, now):
+def required_recovery(source, destination, *, selected, now, own_history=False):
     """Derive exact selected backup paths from fully validated byte histories.
 
     Comparison inventory only, never authenticated custody or owner consent.
@@ -242,7 +242,7 @@ def required_recovery(source, destination, *, selected, now):
     _require(type(selected) is tuple and all(type(v) is str for v in selected)
              and len(selected) == len(set(selected)), "RECOVERY_SELECTION")
     try:
-        planned = plan_chronology(source, destination, now=now)
+        planned = plan_chronology(source, destination, now=now, own_history=own_history)
         decoded = history._decode(planned.private_files())
         for files in (source, destination, planned.private_files()):
             _ledger_safety(history._decode(files))
@@ -267,7 +267,7 @@ def required_recovery(source, destination, *, selected, now):
 
 
 def qualify(source: dict[str, bytes], destination: dict[str, bytes], recovery: dict[str, bytes],
-            *, selected: tuple[str, ...], now: float) -> dict:
+            *, selected: tuple[str, ...], now: float, own_history: bool = False) -> dict:
     """Refuse incomplete schema/chronology or missing selected actual recovery bytes.
 
     Strict known package schema only; unsupported metadata refuses without editing
@@ -283,7 +283,8 @@ def qualify(source: dict[str, bytes], destination: dict[str, bytes], recovery: d
                                                   for k, v in recovery.items()), "RECOVERY_BYTES")
         recovery = dict(recovery)
         _require(sum(map(len, recovery.values())) <= MAX_RECOVERY_BYTES, "RECOVERY_SIZE")
-        planned, required = required_recovery(source, destination, selected=selected, now=now)
+        _require(own_history is False or (own_history is True and not destination and not selected), "OWN_HISTORY_SCOPE")
+        planned, required = required_recovery(source, destination, selected=selected, now=now, own_history=own_history)
         _require(set(recovery) == set(required), "RECOVERY_INVENTORY")
         _require(all(hashlib.sha256(recovery[p]).hexdigest() == sha for p, sha in required.items()),
                  "RECOVERY_HASH")

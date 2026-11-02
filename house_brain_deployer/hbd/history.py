@@ -235,7 +235,7 @@ class Plan:
                 "undo_verified": False, "stopped_verified": False, "uninstall_allowed": False}
 
 
-def plan(source: dict[str, bytes], destination: dict[str, bytes], *, now: float) -> Plan:
+def plan(source: dict[str, bytes], destination: dict[str, bytes], *, now: float, own_history: bool = False) -> Plan:
     """Validate and plan locally. Never apply or grant migration permission."""
     if not _finite_number(now):
         raise HistoryError("BAD_CLOCK")
@@ -244,7 +244,10 @@ def plan(source: dict[str, bytes], destination: dict[str, bytes], *, now: float)
     source = dict(source) if isinstance(source, dict) else source
     destination = dict(destination) if isinstance(destination, dict) else destination
     old, new = _decode(source), _decode(destination)
-    if any(rec["event"] == "LIMIT_LIFTED" and rec["until"] > now for rec in old["audit"]):
+    # A still-active "Allow more today" must not travel with a history moved in from elsewhere. 0.3.45: the startup
+    # re-check of the Deployer's OWN history (own_history=True) is not a move: the owner's lift is current and
+    # Journal.limit_lifted_until() honours it. Live 2026-11-01: a lift until midnight held every start until then.
+    if not own_history and any(rec["event"] == "LIMIT_LIFTED" and rec["until"] > now for rec in old["audit"]):
         raise HistoryError("ACTIVE_SOURCE_LIMIT_GRANT")
     ledger = copy.deepcopy(new["ledger"])
     for key, rec in old["ledger"].items():

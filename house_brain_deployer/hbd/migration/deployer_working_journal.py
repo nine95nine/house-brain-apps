@@ -355,7 +355,7 @@ class WorkingJournal:
                 _require(rec["request_id"] in retained
                          and all(retained[rec["request_id"]].get(k) == v for k, v in rec.items()), "HISTORY_LOST")
             _require(current["audit"][:len(initial["audit"])] == initial["audit"], "HISTORY_LOST")
-            qualify(regular, {}, {}, selected=(), now=self.clock())
+            qualify(regular, {}, {}, selected=(), now=self.clock(), own_history=True)   # 0.3.45: a start, not a move
             state = "RECOVERY_REQUIRED" if pending is not None else ("INITIAL" if history.fingerprint(snapshot) == completed["initial_sha256"] else "PROGRESSED")
             self.checkpoint("restart_observed")
             _require(reader(journal_root) == snapshot, "WORKING_DRIFT")

@@ -191,7 +191,7 @@ def load_options(path: str) -> Options:
         owner_username=s("owner_username", RE_USERNAME),
         dry_run=raw["dry_run"],
         poll_seconds=i("poll_seconds", 60, 3600),
-        max_approval_requests_per_day=i("max_approval_requests_per_day", 1, 12),
+        max_approval_requests_per_day=i("max_approval_requests_per_day", 1, 24),   # 0.3.45: owner "increase that from 12 to 24"
         approval_timeout_minutes=i("approval_timeout_minutes", 2, 720),
         restart_approval_timeout_minutes=i("restart_approval_timeout_minutes", 2, 60),   # 0.3.40: was 2-30
         require_phone_unlock=raw["require_phone_unlock"],
