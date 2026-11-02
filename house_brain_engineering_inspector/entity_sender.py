@@ -21,6 +21,13 @@ list, applies the name aliases and its bounds. History never fails the snapshot:
 of the newest changes per id are sent; if the read fails or nothing fits, the snapshot is sent without history. The
 log line names which (``history_status``) with counts only, never a value.
 
+0.2.24 (2026-11-02, #212 / #1455 R6; owner pop-ups "Claim 0.2.24/0.4.12 now", "HA system health"): in export mode
+each cycle also reads Home Assistant's Bluetooth scanners and, at most hourly, the ``hassio`` part of system health,
+through four bounded read-only WebSocket subscriptions on the same socket (``diagnostics_probe``). The sanitized
+result (no MAC, address, UUID, nameserver or App list) rides in the snapshot as the optional ``diagnostics`` member
+for perimeter 0.4.12. It is left out when it does not fit; it can never fail or shrink the entity export, except that
+it takes its few KB before history is trimmed. No new privilege: ``hassio_api`` stays false.
+
 The sender reads Home Assistant only through the Inspector's GET-only REST and allowlisted WebSocket
 registry reads. It makes no service call and has no control authority. Its log lines carry metadata
 only (counts, status codes, ``generated_at``), never the key, the Broker URL or the body.
@@ -47,7 +54,7 @@ SENDER_SCHEMA: Final = "house_brain_engineering_inspector.entity_sender.v1"
 # 0.2.3 (live 2026-10-06): Cloudflare's edge answered 403 (error 1010) to Python's default "Python-urllib"
 # user agent before the Broker ran (ENTITY_SNAPSHOT_BROKER_HTTP_ERROR). The POST now names the App, like the
 # Maintenance App 0.5.1, the Scout and the Observer. Keep it equal to config.yaml ``version``.
-APP_VERSION: Final = "0.2.23"
+APP_VERSION: Final = "0.2.24"
 USER_AGENT: Final = f"house-brain-engineering-inspector/{APP_VERSION}"
 OPTIONS_PATH: Final = Path("/data/options.json")
 APP_DIR: Final = Path(__file__).resolve().parent
@@ -78,6 +85,10 @@ HISTORY_PATH_RE: Final = re.compile(
     r"\A/history/period/" + HISTORY_STAMP + r"\?filter_entity_id=([a-z0-9_.,]{1,4096})&end_time="
     + HISTORY_STAMP + r"&minimal_response&no_attributes\Z")
 ENTITY_ID_RE: Final = re.compile(r"\A[a-z0-9_]{1,64}\.[a-z0-9_]{1,128}\Z")
+# 0.2.24 (#1455 R6): the bounded diagnostics subscriptions (diagnostics_probe.SUBSCRIPTIONS) on the same socket.
+SUBSCRIPTION_SETTLE_S: Final = 1.0
+MAX_SUBSCRIPTION_EVENTS: Final = 64
+MAX_DIAGNOSTICS_BYTES: Final = 16384
 
 
 class SenderError(RuntimeError):
@@ -292,7 +303,7 @@ def read_history(rest_get: Callable[[str], Any], builder: Any, policy: dict[str,
 
 
 def build_with_history(builder: Any, states: list, registry: dict, *, now: str, mode: str,
-                       hist: HistoryRead) -> tuple[dict[str, Any], bytes | None]:
+                       hist: HistoryRead, diagnostics: dict[str, Any] | None = None) -> tuple[dict[str, Any], bytes | None]:
     """Build (and in export, encode) with history. The live snapshot is ~435 KB of the 512 KiB bound, so when only
     the size bound refuses it, fewer of the newest changes per id are tried (HISTORY_ROW_CAPS,
     ``ENTITY_HISTORY_TRIMMED``); any other refusal, or no cap fitting, builds again without history
@@ -307,6 +318,8 @@ def build_with_history(builder: Any, states: list, registry: dict, *, now: str, 
                 result = builder.build(states, registry, now=now, mode=mode, history=rows)
                 if mode == "dry_run" and not result["export_size_ok"]:
                     raise SenderError("ENTITY_SENDER_BODY_TOO_LARGE")
+                if mode == "export":
+                    result = with_diagnostics(result, diagnostics)
                 body = encode(result) if mode == "export" else None
                 hist.row_cap = cap
                 if cap < longest:
@@ -317,7 +330,24 @@ def build_with_history(builder: Any, states: list, registry: dict, *, now: str, 
                 if hist.error_code not in HISTORY_SIZE_CODES:
                     break
     result = builder.build(states, registry, now=now, mode=mode)
-    return result, (encode(result) if mode == "export" else None)
+    if mode != "export":
+        return result, None
+    try:
+        sent = with_diagnostics(result, diagnostics)
+        return sent, encode(sent)
+    except SenderError:
+        if not diagnostics:
+            raise
+        return result, encode(result)          # 0.2.24: diagnostics never cost the snapshot itself
+
+
+def with_diagnostics(snapshot: dict[str, Any], diagnostics: dict[str, Any] | None) -> dict[str, Any]:
+    """0.2.24: the optional ``diagnostics`` member (perimeter 0.4.12 reads it); left out when absent or oversized."""
+    if not diagnostics:
+        return snapshot
+    size = len(json.dumps(diagnostics, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                          allow_nan=False).encode("utf-8"))
+    return {**snapshot, "diagnostics": diagnostics} if size <= MAX_DIAGNOSTICS_BYTES else snapshot
 
 
 def encode(snapshot: dict[str, Any]) -> bytes:
@@ -365,6 +395,16 @@ def post_snapshot(url: str, key: str, body: bytes, *, opener: Any = None,
 SEND_OUTCOMES: Final = {204: "ENTITY_SNAPSHOT_STORED", 409: "ENTITY_SNAPSHOT_NOT_NEWER",
                         400: "ENTITY_SNAPSHOT_REJECTED", 401: "ENTITY_SNAPSHOT_UNAUTHORIZED",
                         413: "ENTITY_SNAPSHOT_TOO_LARGE", 0: "ENTITY_SNAPSHOT_BROKER_UNREACHABLE"}
+
+
+def _diagnostics_log(diagnostics: dict[str, Any] | None, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """0.2.24: two reason codes and a scanner count, never a name or a value."""
+    if not diagnostics:
+        return {}
+    bluetooth, storage = diagnostics.get("bluetooth") or {}, diagnostics.get("storage") or {}
+    return {"diagnostics_sent": "diagnostics" in snapshot,
+            "diag_bluetooth": bluetooth.get("reason"), "diag_scanners": len(bluetooth.get("scanners") or []),
+            "diag_storage": storage.get("reason")}
 
 
 def _history_error(hist: HistoryRead) -> dict[str, str]:
@@ -479,6 +519,75 @@ class PersistentRegistrySocket:
             raise error("WS_READ_FAILED") from exc
 
 
+    async def subscribe_once(self, command_type: str, until: Callable[[Any], bool] | None = None) -> list[Any]:
+        """0.2.24 (#1455 R6): one bounded read-only subscription on the same socket.
+
+        Only the four ``diagnostics_probe.SUBSCRIPTIONS`` are allowed. Core answers ``result`` and then sends the
+        current data as events straight away; events are kept until ``until(event)`` is true or Core is quiet for
+        ``SUBSCRIPTION_SETTLE_S`` (at most ``MAX_SUBSCRIPTION_EVENTS`` events and ``WS_TIMEOUT_SECONDS`` for the reply and
+        the events), then the subscription is closed with ``unsubscribe_events`` (up to ``WS_TIMEOUT_SECONDS`` more). Any failure to close it closes the socket, which ends
+        every subscription on it. Late events for a closed subscription have an old id and are skipped.
+        """
+        import diagnostics_probe
+        g = self._g
+        error = g["InspectionError"]
+        if command_type not in diagnostics_probe.SUBSCRIPTIONS:
+            raise error("WS_COMMAND_NOT_ALLOWLISTED")
+        try:
+            if self._conn is None:
+                self._connect()
+            self._next_id += 1
+            sub_id = self._next_id
+            self._conn.send(json.dumps({"id": sub_id, "type": command_type}))
+            deadline = time.monotonic() + g["WS_TIMEOUT_SECONDS"]
+            response = self._recv_for(sub_id, deadline)
+            if response.get("type") != "result" or response.get("success") is not True:
+                code = (response.get("error") or {}).get("code") if isinstance(response.get("error"), dict) else None
+                raise error("WS_UNKNOWN_COMMAND" if code == "unknown_command" else "WS_READ_COMMAND_FAILED")
+            events: list[Any] = []
+            while len(events) < MAX_SUBSCRIPTION_EVENTS:
+                settle = min(SUBSCRIPTION_SETTLE_S, deadline - time.monotonic())
+                if settle <= 0:
+                    break
+                try:
+                    message = self._recv_for(sub_id, time.monotonic() + settle)
+                except TimeoutError:
+                    break                                   # Core is quiet: everything current has been sent
+                if message.get("type") == "event":
+                    events.append(message.get("event"))
+                    if until is not None and until(message.get("event")):
+                        break
+            self._next_id += 1
+            self._conn.send(json.dumps({"id": self._next_id, "type": "unsubscribe_events",
+                                        "subscription": sub_id}))
+            closed = self._recv_for(self._next_id, time.monotonic() + g["WS_TIMEOUT_SECONDS"])
+            if closed.get("type") != "result" or closed.get("success") is not True:
+                self.close()                                # a subscription that will not close ends with the socket
+            if until is not None and not any(until(e) for e in events):
+                raise error("WS_READ_COMMAND_FAILED")
+            return events
+        except error as exc:
+            if str(exc) not in ("WS_READ_COMMAND_FAILED", "WS_UNKNOWN_COMMAND"):
+                self.close()
+            raise
+        except TimeoutError as exc:
+            self.close()
+            raise error("WS_TIMEOUT") from exc
+        except Exception as exc:
+            self.close()
+            raise error("WS_READ_FAILED") from exc
+
+    def _recv_for(self, msg_id: int, deadline: float) -> dict[str, Any]:
+        """Next message with this id before the deadline; others (stale events, old ids) are skipped."""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            message = json.loads(self._conn.recv(timeout=remaining))
+            if isinstance(message, dict) and message.get("id") == msg_id:
+                return message
+
+
 def persistent_ws_command(ws_command: Callable) -> Callable:
     """The production ``inspector.ha_ws_command`` becomes one long-lived socket; anything else (tests) is kept."""
     if getattr(ws_command, "__name__", "") == "ha_ws_command" and "READ_ONLY_WS_COMMANDS" in getattr(
@@ -501,6 +610,9 @@ def run_export(rest_get: Callable, ws_command: Callable, opts: dict[str, str], *
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     ws_command = persistent_ws_command(ws_command)   # 0.2.4: one socket for every cycle
     import registry_probe  # 0.2.9; only exact known identifiers, no extra HA reads
+    import diagnostics_probe  # 0.2.24 (#1455 R6): Bluetooth every cycle, storage hourly; read-only subscriptions
+    diag_collector = diagnostics_probe.DiagnosticsCollector()
+    subscribe = getattr(ws_command, "subscribe_once", None)
     done = 0
     while cycles is None or done < cycles:
         done += 1
@@ -521,9 +633,16 @@ def run_export(rest_get: Callable, ws_command: Callable, opts: dict[str, str], *
             states, registry, dropped = asyncio.run(
                 collect(rest_get, ws_command, audit_raw_registry=_audit_registry))
             end_ts = clock()
+            diagnostics = None
+            if subscribe is not None:
+                try:
+                    diagnostics = asyncio.run(diag_collector.collect(subscribe, now_ts=end_ts,
+                                                                     observed_at=utc_now(lambda: end_ts)))
+                except Exception:  # noqa: BLE001 - diagnostics never break the accepted entity export
+                    diagnostics = None
             hist = read_history(rest_get, builder, policy, end_ts)   # 0.2.5: fail soft, never raises
             snapshot, body = build_with_history(builder, states, registry, now=utc_now(lambda: end_ts),
-                                                mode="export", hist=hist)
+                                                mode="export", hist=hist, diagnostics=diagnostics)
             status = post_snapshot(opts["broker_entity_url"], opts["entity_write_key"], body, opener=opener)
             history = snapshot["history"]
             _emit({"status": SEND_OUTCOMES.get(status, "ENTITY_SNAPSHOT_BROKER_HTTP_ERROR"), "http_status": status,
@@ -536,7 +655,8 @@ def run_export(rest_get: Callable, ws_command: Callable, opts: dict[str, str], *
                    "family_registry_uid_hits": family_probe["unique_id_collisions"],
                    "family_registry_rows": family_probe["registry_rows_examined"],
                    "history_status": hist.status, "history_entity_count": len(history),
-                   "history_change_count": sum(len(v) for v in history.values()), **_history_error(hist)}, out)
+                   "history_change_count": sum(len(v) for v in history.values()), **_history_error(hist),
+                   **_diagnostics_log(diagnostics, snapshot)}, out)
         except Exception as exc:  # one bounded line per failed cycle; the next cycle retries
             _emit({"status": "ENTITY_SNAPSHOT_CYCLE_FAILED", "error_code": _code(exc)}, out)
         if cycles is None or done < cycles:

@@ -1183,6 +1183,34 @@
       "purpose": "DIAGNOSTICS",
       "default_class": "HOUSEHOLD",
       "note": "Privacy-filtered entity snapshot (#212 G0, contracts/house_brain_entity_read_policy.v1.json) returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/get_bluetooth_diagnostics/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "No arguments (empty closed object), validated locally."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/get_bluetooth_diagnostics/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Perimeter 0.4.12 / Inspector 0.2.24 (#212 / #1455 R6): sanitized Home Assistant Bluetooth scanner capability (ordinal labels, no MAC or device address, no advertisement) returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/get_storage_diagnostics/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "No arguments (empty closed object), validated locally."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/get_storage_diagnostics/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Perimeter 0.4.12 / Inspector 0.2.24 (#212 / #1455 R6): sanitized Home Assistant storage readiness from the hassio system-health section (no nameservers, App list, URLs or paths) returned to an admitted AI provider; default = strongest declared AI-fabric label."
     }
   },
   "restricted_ha_domains": {
