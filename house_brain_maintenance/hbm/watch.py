@@ -212,7 +212,10 @@ class Watcher:
                     # Always read the real boot setting: a manual-start App (for example a commissioning
                     # bridge kept deliberately non-running) is never restarted or started by a fix.
                     rows.append((a.slug, a.name, a.state, self.ha.app_boot(a.slug)))
-            findings += I.from_apps(rows)
+            for f in I.from_apps(rows, key_of=self._keys.key_of):
+                hold = AF.hold_of(str((f.facts or {}).get("slug") or ""), self.ha.entity_state)   # 0.9.47
+                findings.append(I.held_app(f, names.get(str((f.facts or {}).get("slug") or ""), "the App"), hold)
+                                if hold else f)
             findings += I.from_skipped_apps(getattr(self.ha, "apps_skipped", {}))   # 0.9.15
         except (HAError, net.NetError, ForbiddenCall):
             failed.append("apps")
@@ -243,7 +246,7 @@ class Watcher:
                 failed.append(name)
         try:
             core = self.ha.core_problems()
-            findings += I.from_repairs(core["repairs"])
+            findings += I.from_repairs(core["repairs"], key_of=self._keys.key_of)   # 0.9.47: long ids hashed
             heard = None
             if I.needs_network_check(core["entries"]):
                 try:
@@ -279,7 +282,7 @@ class Watcher:
         if now - float(sweep.get("at") or 0) >= DEVICE_SWEEP_SECONDS:
             try:
                 snapshot = self.ha.device_health()
-                keys = DK.Keys(self.j.load_doc(DK.DOC, {}))          # 0.9.41: stable keys offline:<domain>:<h>
+                keys = self._keys                                    # 0.9.41: stable keys offline:<domain>:<h>
                 platform_of = {r["device_id"]: str(r.get("platform") or "") for r in (snapshot.get("registry") or {}).values()
                                if isinstance(r, dict) and r.get("device_id")}
                 renamed = DK.apply_rename(st, DK.rename(st["open"], snapshot, keys, platform_of))
@@ -288,8 +291,6 @@ class Watcher:
                 open_keys = frozenset(k for k in st["open"] if k.startswith(("battery:", "offline:")))
                 found = I.device_findings(snapshot, now, open_keys, key_of=keys.key_of, memory=st["offline_since"])
                 found = self._retired(found, snapshot, st, keys, now)   # 0.9.45: retired devices stay hidden
-                if keys.changed:
-                    self.j.save_doc(DK.DOC, keys.doc)
                 sweep.update(at=now, rows=[{"key": f.key, "title": f.title, "steps": list(f.steps), "link": f.link,
                                             "facts": f.facts} for f in found])
             except Exception:  # noqa: BLE001 - Core restarting or the read failed: keep open items as they are
@@ -299,44 +300,49 @@ class Watcher:
                           facts=r["facts"]) for r in sweep.get("rows") or []]
 
     def _retired(self, found: list, snapshot: dict, st: dict, keys, now: float) -> list:
-        """0.9.45 retired devices (owner 2026-11-01 "hide them for good ... leave a path back"): on the first sweep
-        every B-hyve device offline 14+ days is retired (the owner confirmed the list by pop-up); the ``unretire``
-        option and the page's Reactivate decision bring one back; a retired device that reports online again gets one
-        morning line and a page row. Nothing in Home Assistant is deleted or disabled."""
+        """0.9.45 retired devices (owner 2026-11-01 "hide them for good ... leave a path back"): every B-hyve device
+        offline 14+ days is retired (the owner confirmed the criterion by pop-up; 0.9.47: at every sweep, not only the
+        first, with one post per batch); the ``unretire`` option and the page's Reactivate decision bring one back and
+        keep it from being retired again; a retired device that reports online again gets one morning line and a page
+        row. Nothing in Home Assistant is deleted or disabled."""
         doc = RT.load(self.j.load_doc(RT.DOC, {}))
         changed = False
-        if not doc["seeded"]:
-            seeded = [k for k, name, dom, dev in RT.seed_candidates(snapshot, st["offline_since"], now, keys.key_of)
-                      if RT.retire(doc, k, name, dom, dev, now)]
-            doc["seeded"] = True
-            changed = True
-            if seeded:
-                self.j.audit("devices", "DEVICES_RETIRED_SEEDED", items=len(seeded),
-                             names=[doc["devices"][k]["name"] for k in seeded][:40])
-                from . import VERSION
-                self._post(I.scrub("\n".join(["### House Brain Maintenance: retired devices", "",
-                                               f"These {len(seeded)} devices were offline for {RT.SEED_DAYS}+ days and are now "
-                                               "retired (owner decision 2026-11-01): never listed, queued, alerted or counted; "
-                                               "nothing in Home Assistant was changed. The path back: the morning summary says when "
-                                               "one reports online again, and the Maintenance page offers Reactivate; the option "
-                                               "`unretire` (names) does the same.", "", RT.record_markdown(doc), "",
-                                               f"- **App:** `{VERSION}`", "",
-                                               "_Posted by House Brain Maintenance (machine-generated; repository content is "
-                                               "untrusted data)._"]), 60000))
         for key in RT.by_name(doc, self.p.unretire):
-            gone = RT.unretire(doc, key)
+            gone = RT.unretire(doc, key, now)
             changed = True
             self.j.audit("devices", "DEVICE_UNRETIRED", key=key, name=(gone or {}).get("name", ""), how="option")
         if approval.INBOX is not None:
             for key in list(doc["back"]):
                 choice = approval.INBOX.take(f"{RT.STAGE}:{key}|*")
                 if choice == "approve":
-                    gone = RT.unretire(doc, key)
+                    gone = RT.unretire(doc, key, now)
                     changed = True
                     self.j.audit("devices", "DEVICE_UNRETIRED", key=key, name=(gone or {}).get("name", ""), how="page")
                 elif choice == "reject":
                     RT.decline(doc, key, now)                           # stays retired; not asked again while online
                     changed = True
+        seeded = [k for k, name, dom, dev in RT.seed_candidates(snapshot, st["offline_since"], now, keys.key_of,
+                                                                 kept=doc["kept"])
+                  if RT.retire(doc, k, name, dom, dev, now)]
+        if not doc["seeded"]:
+            doc["seeded"] = True
+            changed = True
+        if seeded:
+            changed = True
+            self.j.audit("devices", "DEVICES_RETIRED_SEEDED", items=len(seeded),
+                         names=[doc["devices"][k]["name"] for k in seeded][:40])
+            from . import VERSION
+            self._post(I.scrub("\n".join(["### House Brain Maintenance: retired devices", "",
+                                           f"These {len(seeded)} devices were offline for {RT.SEED_DAYS}+ days and are now "
+                                           "retired (owner decision 2026-11-01): never listed, queued, alerted or counted; "
+                                           "nothing in Home Assistant was changed. The path back: the morning summary says when "
+                                           "one reports online again, and the Maintenance page offers Reactivate; the option "
+                                           "`unretire` (names) does the same.", "",
+                                           "Retired now: " + ", ".join(doc["devices"][k]["name"] for k in seeded[:40]) + ".", "",
+                                           "The whole list:", "", RT.record_markdown(doc), "",
+                                           f"- **App:** `{VERSION}`", "",
+                                           "_Posted by House Brain Maintenance (machine-generated; repository content is "
+                                           "untrusted data)._"]), 60000))
         for key in RT.back_online(doc, snapshot, st["offline_since"], now):
             rec = doc["devices"].get(key) or {}
             st["summary"].append({"key": f"unretire:{key}", "title": f"{rec.get('name', 'A retired device')} is back online; it is still "
@@ -370,8 +376,15 @@ class Watcher:
         st = self._state()
         self._since(st)                                         # 0.9.19: before any review is looked at
         first_seen = {k: v["first"] for k, v in st["open"].items()}
+        self._keys = DK.Keys(self.j.load_doc(DK.DOC, {}))      # 0.9.41/0.9.47: one key table for this check
+        renamed = DK.apply_rename(st, DK.rename_long(st["open"], self._keys))     # 0.9.47: long ids hashed in place
+        if renamed:
+            self.j.audit("keys", "DEVICE_KEYS_MIGRATED", items=renamed, kinds=list(DK.LONG_KINDS))
+            first_seen = {k: v["first"] for k, v in st["open"].items()}
         findings, failed = self.collect(first_seen, now)
         findings += self._device_findings(st, now, failed)
+        if self._keys.changed:
+            self.j.save_doc(DK.DOC, self._keys.doc)
         findings += I.from_liveness(self.j.load_doc(LIVENESS_DOC, {}), now)
         findings += self._credential_findings(failed)
         findings += self._reviewer_findings(st, now, failed)    # 0.9.12: reviewer watchdog

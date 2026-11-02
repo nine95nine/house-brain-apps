@@ -488,7 +488,7 @@ def problem_domain(key: str, facts: dict) -> str:
 def after_update(installs: list, key: str, facts: dict, first: float) -> str | None:
     """The newest install at most AFTER_UPDATE_HOURS before ``first`` that the problem is about: the App itself or an
     App that needs it (``app:<slug>``), or an integration it provides."""
-    slug = key[4:] if key.startswith("app:") else ""
+    slug = str((facts or {}).get("slug") or (key[4:] if key.startswith("app:") else ""))   # 0.9.47: hashed app keys
     domain = problem_domain(key, facts)
     best: tuple[float, str] | None = None
     for r in installs:

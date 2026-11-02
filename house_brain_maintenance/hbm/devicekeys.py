@@ -10,6 +10,10 @@ long-id scrub, and the domain says which integration the device belongs to witho
 
 Open records are re-keyed in place when the App first sweeps with this release (``rename``), keeping ``first``,
 ``alerted`` and the fingerprint, so no new alert goes out for a device already reported.
+
+0.9.47 (live 2026-11-01: ``repair:homeassistant:[long-id]`` and ``app:[long-id]`` on #454): a Repairs issue id or a
+store App slug of 32+ characters with a digit is hidden by the same scrub, so those keys take the same shape:
+``repair:<domain>:<h>`` and ``app:<h>`` (``mangled`` says when; ``rename_long`` re-keys open records in place).
 """
 from __future__ import annotations
 
@@ -22,6 +26,8 @@ DOC = "device_keys"
 HASH_CHARS = 10
 MAX_MAP = 500
 KINDS = ("offline", "battery")
+LONG_KINDS = ("repair", "app")                               # 0.9.47: keys whose id the scrub would hide
+RE_LONG = re.compile(r"(?=[A-Za-z_\-]*\d)[A-Za-z0-9_\-]{32,}")   # the long-id rule of issues._SCRUB
 RE_SALT = re.compile(r"^[0-9a-f]{32}$")
 RE_DOMAIN = re.compile(r"^[a-z0-9_]{1,64}$")
 RE_OLD_DEVICE = re.compile(r"^[A-Za-z0-9]{20,64}$")        # a raw Home Assistant device id (never "group"/"long")
@@ -50,7 +56,12 @@ def domain_of(device: dict | None, platform: str | None) -> str:
 
 
 def key(kind: str, domain: str, h: str) -> str:
-    return f"{kind}:{domain}:{h}"
+    return f"{kind}:{domain}:{h}" if domain else f"{kind}:{h}"
+
+
+def mangled(ident: str) -> bool:
+    """Would the long-id scrub hide this identifier in a post (32+ id characters with a digit)?"""
+    return bool(RE_LONG.search(str(ident)))
 
 
 class Keys:
@@ -84,6 +95,23 @@ def rename(open_keys, snapshot: dict, keys: Keys, platform_of: dict[str, str]) -
         if kind not in KINDS or not RE_OLD_DEVICE.fullmatch(rest) or rest not in devices:
             continue
         out[old] = keys.key_of(kind, rest, domain_of(devices.get(rest), platform_of.get(rest)))
+    return out
+
+
+def rename_long(open_keys, keys: Keys) -> dict[str, str]:
+    """0.9.47: old key -> new key for every open ``repair:<domain>:<issue id>`` / ``app:<slug>`` record whose id the
+    scrub would hide. Keys of another shape, and ids short enough to stay readable, are left alone."""
+    out: dict[str, str] = {}
+    for old in list(open_keys):
+        kind, _, rest = str(old).partition(":")
+        if kind not in LONG_KINDS or not rest:
+            continue
+        if kind == "repair":
+            domain, _, ident = rest.partition(":")
+            if domain and ident and mangled(ident):
+                out[old] = keys.key_of(kind, ident, domain)
+        elif mangled(rest):
+            out[old] = keys.key_of(kind, rest, "")
     return out
 
 

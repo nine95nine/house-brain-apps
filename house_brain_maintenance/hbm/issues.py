@@ -466,7 +466,9 @@ def _label(unit) -> str:
     return f"'{unit}'" if unit else "no unit"
 
 
-def from_repairs(issues: list[dict]) -> list[Finding]:
+def from_repairs(issues: list[dict], key_of=None) -> list[Finding]:
+    """``key_of(kind, ident, domain)`` (0.9.47, ``devicekeys.Keys.key_of``): a Repairs issue id the scrub would hide
+    is keyed ``repair:<domain>:<h>`` instead of by the id itself; without it, or for a short id, as before."""
     out = []
     relabel = relabel_items(issues)
     if relabel:                                     # 0.9.6: one problem, one Approve, for all of them
@@ -500,34 +502,52 @@ def from_repairs(issues: list[dict]) -> list[Finding]:
             steps.append("It has a built-in fix: follow the steps Home Assistant shows.")
         if row.get("breaks_in_ha_version"):
             steps.append(f"Fix it before updating Home Assistant to {row['breaks_in_ha_version']}.")
-        out.append(Finding(f"repair:{row.get('domain')}:{row.get('issue_id')}", "repairs", severity, title,
+        key = f"repair:{row.get('domain')}:{row.get('issue_id')}"
+        if key_of is not None and DK.mangled(str(row.get("issue_id") or "")):
+            key = key_of("repair", str(row.get("issue_id")), str(row.get("domain") or "")[:64])
+        out.append(Finding(key, "repairs", severity, title,
                            steps=tuple(steps), link=row.get("learn_more_url") or REPAIRS_LINK,
                            facts={"domain": row.get("domain"), "issue": row.get("issue_id"),
                                   "severity": row.get("severity")}))
     return out
 
 
-def from_apps(rows: list[tuple[str, str, str, str]]) -> list[Finding]:
-    """rows: (slug, name, state, boot) for Apps worth checking."""
+def from_apps(rows: list[tuple[str, str, str, str]], key_of=None) -> list[Finding]:
+    """rows: (slug, name, state, boot) for Apps worth checking. ``key_of`` (0.9.47): a store slug the scrub would
+    hide is keyed ``app:<h>``; the slug itself stays in ``facts`` and in the fix action."""
     out = []
     for slug, name, state, boot in rows:
+        key = key_of("app", slug, "") if key_of is not None and DK.mangled(slug) else f"app:{slug}"
         if state == "error" and boot != "auto":
-            out.append(Finding(f"app:{slug}", "app", WARNING, f"App stopped with an error: {name}",
+            out.append(Finding(key, "app", WARNING, f"App stopped with an error: {name}",
                                steps=("It is set to start only by hand, so I never restart it.",
                                       "If you expected it to be running, open its Log tab first."),
                                link=APPS_LINK, facts={"slug": slug, "state": state, "boot": boot}))
         elif state == "error":
-            out.append(Finding(f"app:{slug}", "app", CRITICAL, f"App crashed: {name}",
+            out.append(Finding(key, "app", CRITICAL, f"App crashed: {name}",
                                steps=("Open the App's Log tab to see why.", "A restart often fixes it."),
                                link=APPS_LINK, action=Action("restart_app", slug, f"restart {name}"),
                                facts={"slug": slug, "state": state}))
         elif state == "stopped" and boot == "auto":
-            out.append(Finding(f"app:{slug}", "app", CRITICAL, f"App stopped but should be running: {name}",
+            out.append(Finding(key, "app", CRITICAL, f"App stopped but should be running: {name}",
                                steps=("If you stopped it on purpose, tap Reject; it won't ask again until it"
                                       " runs and stops again.",),
                                link=APPS_LINK, action=Action("start_app", slug, f"start {name}"),
                                facts={"slug": slug, "state": state}))
     return out
+
+
+def held_app(f: Finding, name: str, reason: str) -> Finding:
+    """0.9.47 (live 2026-11-01 22:39Z: the Deployer 0.3.43 refused to start by its own startup check and the
+    self-healing restart could not help): an App whose own status entity reports a deliberate hold is a problem for
+    the owner at once, with the hold's reason; it carries no fix, so nothing restarts it, by itself or by a tap."""
+    import dataclasses
+    reason = re.sub(r"[^A-Z0-9_]", "", str(reason).upper())[:40] or "HELD"
+    return dataclasses.replace(
+        f, severity=CRITICAL, title=f"App refuses to run on purpose: {name} ({reason})", action=None,
+        steps=("Its own startup check refused to run, so a restart cannot help; this App never restarts it.",
+               "Open the App's Log tab for the reason; fix its configuration or roll back to the previous version."),
+        facts={**(f.facts or {}), "hold": reason})
 
 
 def from_skipped_apps(skipped: dict) -> list[Finding]:

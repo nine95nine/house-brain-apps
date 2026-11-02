@@ -222,6 +222,7 @@ DRIVE_BACKUP_STATES = ("backed_up", "waiting", "error")
 # 0.5.2: Deployer request ids (``hbd/manifest.py`` RE_REQUEST_ID, optionally the Undo suffix) and the
 # ``last_result`` text it publishes ("<request id>: <OUTCOME>").
 RE_DEPLOYER_RID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}(?:#undo)?$")
+RE_HOLD_REASON = re.compile(r"^[A-Z][A-Z0-9_]{1,39}$")       # 0.9.47: the Deployer's own hold reason (a code)
 RE_DEPLOYER_LAST = re.compile(r"^([a-z0-9][a-z0-9-]{2,63}(?:#undo)?): ([A-Z][A-Z_]{1,39})$")
 MESH_PLATFORMS = ("zha", "zwave_js", "matter")
 # 0.6.0 Core/OS update gate (owner decision 2026-10-06)
@@ -333,7 +334,9 @@ def project_attrs(entity_id: str, attrs: Any) -> dict:
                 "instance": inst if isinstance(inst := attrs.get("instance"), str) and RE_INSTANCE.fullmatch(inst)
                 else None,
                 "version": ver if isinstance(ver := attrs.get("version"), str) and RE_APP_VERSION.fullmatch(ver)
-                else None}
+                else None,
+                # 0.9.47: why it holds itself (STARTUP_REFUSED), a code only
+                "reason": why if isinstance(why := attrs.get("reason"), str) and RE_HOLD_REASON.fullmatch(why) else None}
     if entity_id == AI_CONNECTORS_ENTITY:
         return {"providers": project_connectors(attrs.get("providers"))}
     if entity_id == AI_ACTIVITY_ENTITY:

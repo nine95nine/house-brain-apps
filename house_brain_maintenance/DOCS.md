@@ -593,11 +593,20 @@ restarted. Each one is written to the tracking issue like any result, and the mo
 overnight (N)". If a fix did not take twice, that problem is yours again and your phone asks as before. A warning
 that goes away within 15 minutes is never mentioned at all. `auto_fix: off` returns to asking for every fix.
 
+From 0.9.47 an App that refuses to run **on purpose** (today: the House Brain Deployer when its own startup check
+holds it, `HELD` / `STARTUP_REFUSED`) is never restarted, by this App or by a tap: you get one problem line with the
+reason and the steps (its Log tab, its configuration, or a rollback). When the hold lifts it is an ordinary crashed
+App again.
+
 ## Retired devices — from 0.9.45
 
 Devices you have written off (your B-hyve timers, offline for weeks) are retired: never listed, queued or counted,
 nothing changed in Home Assistant. If one reports online again, the morning summary says so once and the page offers
 **Reactivate**; the option `unretire` (device names) does the same. The list is also kept in the repository.
+
+From 0.9.47 a B-hyve timer is retired at whichever sweep it reaches two weeks offline (not only on the first sweep
+after install), and each batch is posted once on the tracking issue. A device you brought back is never retired
+again by itself.
 
 ## Retiring the two local rollback copies — 0.9.43
 

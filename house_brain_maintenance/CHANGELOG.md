@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.47
+
+Fixes from the first live day of 0.9.45/0.9.46 (owner pop-up 2026-11-02 "Build 0.9.47 fix first"). Contains 0.9.46
+unchanged otherwise.
+
+- **Retired devices: the seeding runs at every sweep.** 0.9.45 seeded on the first sweep only; the offline memory
+  (0.9.38) was two days old then, so no B-hyve device could show 14+ days and the one shot was spent on an empty
+  list. Now every B-hyve device offline 14+ days is retired at whichever sweep it reaches two weeks (the criterion the
+  owner confirmed on 2026-11-01), with one "retired devices" post per batch (the whole list each time). A device the
+  owner brought back (`unretire`, by option or by the page's Reactivate) is kept (`kept` in the doc) and is never
+  retired again by the seeding.
+- **An App that holds itself is never restarted.** Live 2026-11-01 22:39Z: the self-healing S3 restarted the Deployer
+  0.3.43, which refuses to start by its own startup check (`sensor.house_brain_deployer_status` = `HELD`,
+  `reason: STARTUP_REFUSED`), so the restart could not help (NOT_FIXED). An App whose own status entity reports
+  such a hold (`autofix.HOLD_STATUS`; today the Deployer) is a problem for the owner at once: "App refuses to run on
+  purpose: <name> (<reason>)", with the reason and the steps, and **without a fix**, so neither the SAFE list nor a
+  tap restarts it; `autofix.eligible` refuses a hold as well. When the hold lifts it is a crashed App like any other.
+- **Stable keys for long Repairs issue ids and store slugs.** Live 2026-11-01: `repair:homeassistant:[long-id]` and
+  `app:[long-id]` on #454, the same defect the 0.9.41 device keys fixed. An issue id or slug of 32+ characters with
+  a digit is now keyed `repair:<domain>:<h>` / `app:<h>` (the 0.9.41 salt and `device_keys` map; `devicekeys.mangled`
+  decides); the slug stays in the facts and in the fix action; open records are re-keyed in place on the first check
+  (`DEVICE_KEYS_MIGRATED`, `first`/`alerted`/fingerprint kept, no second alert). Short ids are keyed as before.
+
 ## 0.9.46
 
 Housekeeping release for 0.9.45 (Inspector/perimeter chat 2026-11-01 21:41Z: main's reason-code gate read the bare

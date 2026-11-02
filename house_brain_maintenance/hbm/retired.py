@@ -6,8 +6,13 @@ The ``retired_devices`` doc keeps, per device: its stable key (0.9.41 ``deviceke
 was retired and the owner's note. A retired device is never listed, queued, alerted or counted by this App; nothing
 in Home Assistant is deleted or disabled. The path back: when a retired device reports online again, ONE morning
 line says so and the page offers **Reactivate** (an ``UNRETIRE`` decision); the option ``unretire`` (names) does the
-same at the next sweep. ``seed()`` lists every B-hyve device offline SEED_DAYS or more; the owner confirmed the first
-list by pop-up on 2026-11-01, so the seeding happens on the first sweep after install.
+same at the next sweep. ``seed_candidates()`` lists every B-hyve device offline SEED_DAYS or more; the owner confirmed
+the criterion by pop-up on 2026-11-01.
+
+0.9.47 (owner pop-up 2026-11-02 "Build 0.9.47 fix first"): the seeding runs at EVERY sweep, not once. 0.9.45 seeded
+on the first sweep only, but the offline memory (0.9.38) was two days old then, so no device could show 14+ days and
+the one shot was spent on an empty list. A device the owner brought back (``unretire``, by option or by the page)
+is remembered in ``kept`` and is never retired again by the seeding.
 """
 from __future__ import annotations
 
@@ -24,7 +29,7 @@ DEFAULT_NOTE = "assumed broken or at another location (owner 2026-11-01)"
 def load(raw) -> dict:
     doc = raw if isinstance(raw, dict) else {}
     devices = doc.get("devices") if isinstance(doc.get("devices"), dict) else {}
-    out = {"devices": {}, "seeded": bool(doc.get("seeded")), "back": {}, "declined": {}}
+    out = {"devices": {}, "seeded": bool(doc.get("seeded")), "back": {}, "declined": {}, "kept": {}}
     for key, rec in list(devices.items())[:MAX_RETIRED]:
         if isinstance(rec, dict) and isinstance(key, str):
             out["devices"][key] = {"name": str(rec.get("name") or "")[:80], "integration": str(rec.get("integration") or "")[:64],
@@ -34,6 +39,8 @@ def load(raw) -> dict:
     out["back"] = {str(k): float(v) for k, v in back.items() if isinstance(v, (int, float)) and k in out["devices"]}
     declined = doc.get("declined") if isinstance(doc.get("declined"), dict) else {}
     out["declined"] = {str(k): float(v) for k, v in declined.items() if isinstance(v, (int, float)) and k in out["devices"]}
+    kept = doc.get("kept") if isinstance(doc.get("kept"), dict) else {}
+    out["kept"] = {str(k): float(v) for k, v in list(kept.items())[-MAX_RETIRED:] if isinstance(v, (int, float))}
     return out
 
 
@@ -46,10 +53,17 @@ def retire(doc: dict, key: str, name: str, integration: str, device_id: str, now
     return True
 
 
-def unretire(doc: dict, key: str) -> dict | None:
+def unretire(doc: dict, key: str, now: float = 0.0) -> dict | None:
+    """Watch it again; from 0.9.47 the key is kept so the seeding never retires it again."""
     doc["back"].pop(key, None)
     doc["declined"].pop(key, None)
-    return doc["devices"].pop(key, None)
+    rec = doc["devices"].pop(key, None)
+    if rec is not None:
+        doc["kept"][key] = now
+        if len(doc["kept"]) > MAX_RETIRED:
+            for old in sorted(doc["kept"], key=doc["kept"].get)[:len(doc["kept"]) - MAX_RETIRED]:
+                del doc["kept"][old]
+    return rec
 
 
 def decline(doc: dict, key: str, now: float) -> None:
@@ -64,9 +78,10 @@ def by_name(doc: dict, names) -> list[str]:
     return [k for k, r in doc["devices"].items() if r["name"].lower() in wanted]
 
 
-def seed_candidates(snapshot: dict, memory: dict, now: float, key_of) -> list[tuple[str, str, str, str]]:
+def seed_candidates(snapshot: dict, memory: dict, now: float, key_of, kept=()) -> list[tuple[str, str, str, str]]:
     """(key, name, integration, device_id) of every SEED_INTEGRATIONS device offline for SEED_DAYS or more
-    (``memory`` = the 0.9.38 offline_since doc; ``key_of`` = devicekeys.Keys.key_of)."""
+    (``memory`` = the 0.9.38 offline_since doc; ``key_of`` = devicekeys.Keys.key_of), minus the keys in ``kept``
+    (0.9.47: devices the owner brought back)."""
     from . import devicekeys as DK
     registry = snapshot.get("registry") or {}
     devices = snapshot.get("devices") or {}
@@ -81,7 +96,10 @@ def seed_candidates(snapshot: dict, memory: dict, now: float, key_of) -> list[tu
         domain = DK.domain_of(devices.get(dev), platform_of.get(dev))
         if domain not in SEED_INTEGRATIONS:
             continue
-        out.append((key_of("offline", dev, domain), str(devices[dev].get("name") or "a device"), domain, dev))
+        key = key_of("offline", dev, domain)
+        if key in kept:
+            continue
+        out.append((key, str(devices[dev].get("name") or "a device"), domain, dev))
     return out
 
 

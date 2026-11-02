@@ -25,6 +25,10 @@ owner for HANDOVER_DAYS.
 
 Excluded, still asked: ``power_cycle`` (physical), ``apply_suggestion`` and Repairs flows, ``relabel_stats`` and
 anything touching history or statistics, ``drive_backup_settings``, updates, any PHYSICAL_CONTROL domain.
+
+0.9.47 (live 2026-11-01 22:39Z: S3 restarted the Deployer 0.3.43, which refuses to start by its own startup check,
+``sensor.house_brain_deployer_status`` = ``HELD`` / ``STARTUP_REFUSED``; NOT_FIXED): an App whose own status entity
+reports a deliberate hold (``hold_of``) is never restarted or started by this App and goes to the owner at once.
 """
 from __future__ import annotations
 
@@ -52,6 +56,9 @@ PHYSICAL_CONTROL = ("pool", "pump", "irrigation", "sprinkler", "climate", "therm
 RADIO_APP_MARKERS = ("zwave", "z-wave", "matter", "zigbee", "z2m", "openthread", "otbr", "thread", "bluetooth",
                      "silabs", "zha", "esphome", "deconz")
 JOB_PREFIX = "AUTO_FIX_"
+# 0.9.47: Apps that publish their own status entity; state HELD (with attribute ``reason``) is a deliberate hold.
+HOLD_STATUS = {"house_brain_deployer": "sensor.house_brain_deployer_status"}
+HOLD_STATES = ("HELD",)
 # what ``Watcher._offer_fix`` returns for a fix that ran without a tap (the reason-code registry lists these)
 OUTCOME_CODES = {"CLEARED": "AUTO_CLEARED", "STILL_THERE": "AUTO_STILL_THERE", "HANDOVER": "AUTO_HANDOVER"}
 
@@ -97,6 +104,22 @@ def radio_app(slug: str, name: str = "") -> bool:
     return any(m in text for m in RADIO_APP_MARKERS)
 
 
+def hold_of(slug: str, read) -> str | None:
+    """The App's own deliberate hold (its status entity in a HOLD_STATES state): the reason, else None.
+    ``read(entity_id)`` is ``ha.entity_state`` ({"state", "attrs"} or None); an unreadable entity is no hold."""
+    for suffix, entity in HOLD_STATUS.items():
+        if slug != suffix and not str(slug).endswith("_" + suffix):
+            continue
+        try:
+            row = read(entity) or {}
+        except Exception:  # noqa: BLE001 - not knowing is not a hold
+            return None
+        if str(row.get("state") or "").upper() in HOLD_STATES:
+            reason = str((row.get("attrs") or {}).get("reason") or "").strip()
+            return reason or "HELD"
+    return None
+
+
 def eligible(mode: str, action_kind: str, key: str, facts: dict | None, ref: str, name: str, doc: dict, now: float,
              blocked: str | None) -> tuple[bool, str]:
     """May this fix run without a tap right now? (False, reason) says why not; the reason is for the audit only."""
@@ -111,6 +134,8 @@ def eligible(mode: str, action_kind: str, key: str, facts: dict | None, ref: str
         return False, "physical-control domain always asks"
     if kind == "S3" and radio_app(ref, name):
         return False, "radio App always asks"
+    if kind == "S3" and (facts or {}).get("hold"):
+        return False, f"the App holds itself ({str((facts or {}).get('hold'))[:40]}): yours at once"
     if doc["count"] >= DAILY_CAP:
         return False, "daily cap reached"
     rec = doc["keys"].get(key, {"tries": [], "fails": 0, "still": 0, "handed_at": 0.0})
