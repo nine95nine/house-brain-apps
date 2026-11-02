@@ -222,7 +222,8 @@ DRIVE_BACKUP_STATES = ("backed_up", "waiting", "error")
 # 0.5.2: Deployer request ids (``hbd/manifest.py`` RE_REQUEST_ID, optionally the Undo suffix) and the
 # ``last_result`` text it publishes ("<request id>: <OUTCOME>").
 RE_DEPLOYER_RID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}(?:#undo)?$")
-RE_HOLD_REASON = re.compile(r"^[A-Z][A-Z0-9_]{1,39}$")       # 0.9.47: the Deployer's own hold reason (a code)
+RE_HOLD_REASON = re.compile(r"^[A-Za-z][A-Za-z0-9_:.-]{1,79}$")   # 0.9.47/0.9.48: the Deployer's hold reason, a code chain
+                                                                   # (0.3.44: STARTUP_REFUSED:<class>:<CODE>); no spaces, no paths
 RE_DEPLOYER_LAST = re.compile(r"^([a-z0-9][a-z0-9-]{2,63}(?:#undo)?): ([A-Z][A-Z_]{1,39})$")
 MESH_PLATFORMS = ("zha", "zwave_js", "matter")
 # 0.6.0 Core/OS update gate (owner decision 2026-10-06)

@@ -594,7 +594,7 @@ overnight (N)". If a fix did not take twice, that problem is yours again and you
 that goes away within 15 minutes is never mentioned at all. `auto_fix: off` returns to asking for every fix.
 
 From 0.9.47 an App that refuses to run **on purpose** (today: the House Brain Deployer when its own startup check
-holds it, `HELD` / `STARTUP_REFUSED`) is never restarted, by this App or by a tap: you get one problem line with the
+holds it, `HELD` / `STARTUP_REFUSED:<class>:<CODE>`) is never restarted, by this App or by a tap: you get one problem line with the
 reason and the steps (its Log tab, its configuration, or a rollback). When the hold lifts it is an ordinary crashed
 App again.
 

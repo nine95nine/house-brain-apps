@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.48
+
+Hotfix for 0.9.47, live 2026-11-02 04:02Z: the held Deployer showed as "App refuses to run on purpose: House Brain
+Deployer (HELD)" because Deployer 0.3.44 (installed 04:00Z) names its hold as a code chain,
+`STARTUP_REFUSED:HistoryError:ACTIVE_SOURCE_LIMIT_GRANT`, which 0.9.47's reason pattern (one upper-case code) did not
+accept. Contains 0.9.47 unchanged otherwise.
+
+- The hold reason may be a chain of codes and class names joined by `:` (letters, digits, `_`, `:`, `.`, `-`; at most
+  80 characters; never spaces or paths), kept as written; the problem line now reads
+  "App refuses to run on purpose: House Brain Deployer (STARTUP_REFUSED:HistoryError:ACTIVE_SOURCE_LIMIT_GRANT)".
+  The hold itself worked as designed in 0.9.47 (no restart, no fix offered).
+
 ## 0.9.47
 
 Fixes from the first live day of 0.9.45/0.9.46 (owner pop-up 2026-11-02 "Build 0.9.47 fix first"). Contains 0.9.46

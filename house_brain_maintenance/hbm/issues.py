@@ -542,7 +542,7 @@ def held_app(f: Finding, name: str, reason: str) -> Finding:
     self-healing restart could not help): an App whose own status entity reports a deliberate hold is a problem for
     the owner at once, with the hold's reason; it carries no fix, so nothing restarts it, by itself or by a tap."""
     import dataclasses
-    reason = re.sub(r"[^A-Z0-9_]", "", str(reason).upper())[:40] or "HELD"
+    reason = re.sub(r"[^A-Za-z0-9_:.-]", "", str(reason))[:80] or "HELD"      # 0.9.48: a code chain, case kept
     return dataclasses.replace(
         f, severity=CRITICAL, title=f"App refuses to run on purpose: {name} ({reason})", action=None,
         steps=("Its own startup check refused to run, so a restart cannot help; this App never restarts it.",
