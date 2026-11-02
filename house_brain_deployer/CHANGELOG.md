@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.44 — 2026-11-02 (a held start names its cause; dashboard outcomes admitted; owner "dig deep and figure it out")
+
+Live 2026-11-01 22:30Z: the owner updated 0.3.42 to 0.3.43 while an approved install (the Cooling chat's
+`2026-11-01-cooling-r20-diagnostics-r4-install-01`) was waiting for its preconditions. The App logged "stop requested
+while waiting (PRECONDITIONS)", and every start of 0.3.43 since then was held with a bare `STARTUP_REFUSED`. That code
+hid the underlying error, so the cause could not be read from the log.
+- **A refused moved-history start names its cause:** `STARTUP_REFUSED:<class>[:<CODE>]`, e.g.
+  `STARTUP_REFUSED:HistoryError:LEDGER_SCHEMA` or `STARTUP_REFUSED:FileNotFoundError:ENOENT`. Only the exception class and
+  a fixed upper-case code or errno name are shown; never a message, path or data. Same for the startup authorization.
+- **The 0.3.43 dashboard outcomes are admitted** by the startup history check (`DASHBOARD_SCAN_OK`,
+  `DASHBOARD_SCAN_FAILED`, `DASHBOARD_RENAMED`, `DASHBOARD_RENAME_FAILED`, `DASHBOARD_UNDONE`, `DASHBOARD_UNDO_FAILED`).
+  Without this, the first dashboard result would have held every later start, the same failure as 0.3.33. No dashboard
+  request had run, so this was not the cause of the live hold. The existing guard test
+  (`tests/test_qualify_deployer_history.py`) would have caught it, but it was not run before the 0.3.43 merge.
+- Nothing else changes; every other startup check is unchanged.
+
 ## 0.3.43 — 2026-11-01 (dashboards: read-only scan and owner-approved rename; owner "Build it")
 
 The replacement Ondilo probe reports on `sensor.tonto_ln_pool_*_2`; the old names stay for the spa, so the dashboards

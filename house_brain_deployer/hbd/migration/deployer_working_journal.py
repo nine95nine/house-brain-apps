@@ -379,8 +379,9 @@ class WorkingJournal:
                     "capture_trusted": False, "native_verified": False, "uninstall_allowed": False}
         except WorkingError:
             raise
-        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError):
-            raise WorkingError("STARTUP_REFUSED") from None
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError) as err:
+            # 0.3.44: name the cause (class and fixed code only), so a held start can be diagnosed from the log.
+            raise WorkingError("STARTUP_REFUSED:" + history.refusal_cause(err)) from None
         finally:
             for fd in reversed(descriptors):
                 os.close(fd)

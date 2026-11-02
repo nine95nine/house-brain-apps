@@ -131,5 +131,5 @@ class StartupAuthorization:
                     'native_verified':False, 'uninstall_allowed':False}
         except StartupError:
             raise
-        except (OSError, ValueError, RuntimeError, TypeError, AttributeError):
-            raise StartupError('STARTUP_REFUSED') from None
+        except (OSError, ValueError, RuntimeError, TypeError, AttributeError) as err:
+            raise StartupError('STARTUP_REFUSED:' + history.refusal_cause(err)) from None   # 0.3.44: cause

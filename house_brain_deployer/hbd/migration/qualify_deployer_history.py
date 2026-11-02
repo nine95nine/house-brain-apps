@@ -26,7 +26,11 @@ OUTCOMES = {"SUCCEEDED", "DRY_RUN_OK", "DRY_RUN_BLOCKED", "ALREADY_APPLIED", "RE
             "LEGACY_PREPARED", "LEGACY_SELECTED", "LEGACY_UNSELECTED", "LEGACY_FAILED", "LEGACY_RESET",
             # 0.3.33: the Companion requests of 0.3.30 record these; the live moved history holds them (#561
             # 2026-10-19), and without them every start after 0.3.30 was held with STARTUP_REFUSED.
-            "COMPANION_KEY_READY", "COMPANION_SETUP_DONE", "COMPANION_SETUP_FAILED", "COMPANION_ALREADY_SET_UP"}
+            "COMPANION_KEY_READY", "COMPANION_SETUP_DONE", "COMPANION_SETUP_FAILED", "COMPANION_ALREADY_SET_UP",
+            # 0.3.44: the 0.3.43 dashboard requests record these; without them the first dashboard result would hold
+            # every later start (the 0.3.33 failure again).
+            "DASHBOARD_SCAN_OK", "DASHBOARD_SCAN_FAILED", "DASHBOARD_RENAMED", "DASHBOARD_RENAME_FAILED",
+            "DASHBOARD_UNDONE", "DASHBOARD_UNDO_FAILED"}
 STAGES = {"DEPLOY", "DRYRUN", "RESTART", "ROLLBACK", "LOOKUP"}
 UNKNOWN_DIGEST = "unknown"   # main.recover / _raw_digest when the request could not be read again
 

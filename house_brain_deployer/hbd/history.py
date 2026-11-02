@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import stat
 from collections import Counter
 from dataclasses import dataclass, field
@@ -19,6 +20,21 @@ FILES = ("ledger.json", "installs.json", "audit.jsonl", "FROZEN.json", "txn.json
 MAX_BYTES = 8 * 1024 * 1024  # staging admission only; never a retention/delete rule
 MAX_EVENTS = 20_000
 MAX_DEPTH = 64
+
+
+def refusal_cause(err: BaseException) -> str:
+    """0.3.44: a short, path-free cause for a refused start, e.g. ``HistoryError:SIZE_LIMIT`` or
+    ``FileNotFoundError:ENOENT``. Only the exception class and a fixed code; never a message, path or data."""
+    import errno as _errno
+    name = type(err).__name__[:40]
+    code = ""
+    if isinstance(err, OSError) and isinstance(err.errno, int):
+        code = _errno.errorcode.get(err.errno, str(err.errno))
+    else:
+        text = str(err.args[0]) if err.args else ""
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{1,59}", text):
+            code = text
+    return f"{name}:{code}" if code else name
 
 
 class HistoryError(ValueError):

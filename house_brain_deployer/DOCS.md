@@ -321,6 +321,8 @@ If the Deployer finds a migration start file (`MIGRATED_STARTUP.json` in its dat
   install's marker is never overwritten, because recovery needs it), and
 - one push "House Brain Deployer: startup held" (not repeated for the same reason).
 
+From 0.3.44 the reason names its cause after a colon, for example `STARTUP_REFUSED:HistoryError:LEDGER_SCHEMA` (a class and a fixed code only, never a path or data).
+
 What to do: tell the Deployer chat. The file belongs to the history migration and is only created by that process; do
 not delete files by hand. Nothing in Home Assistant was changed.
 
