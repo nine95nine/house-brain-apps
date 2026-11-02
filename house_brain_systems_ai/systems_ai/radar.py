@@ -159,12 +159,22 @@ def parse_advisories(raw):
     return out
 
 
+def _patched_out(installed, patched, hit):
+    """0.3.2 (live 2026-11-02): GitHub ranges can be open-ended (ESPHome GHSA-4h3h-63v6-88qx: affected '>=2025.9.0',
+    patched '2025.12.7'). An installed version at or past the single patched version is not affected."""
+    if hit is not True or not isinstance(patched, str):      # 'a, b' never parses as one version: stays a hit
+        return hit
+    fixed, have = version(patched), version(installed)
+    return False if fixed is not None and have is not None and have >= fixed else hit
+
+
 def advisory_verdict(advisory, installed, component=None):
     """TOUCHES_YOU, NOT_AFFECTED or UNKNOWN_VERSION (also when no range for this component can be read)."""
     if installed is None or version(installed) is None:
         return 'UNKNOWN_VERSION', None
     others = set().union(*(names for c, names in PACKAGES.items() if c != component)) if component else set()
-    answers = [(in_range(installed, v['range']), v['patched']) for v in advisory['vulns']
+    answers = [(_patched_out(installed, v['patched'], in_range(installed, v['range'])), v['patched'])
+               for v in advisory['vulns']
                if v.get('package') is None or v['package'] in PACKAGES.get(component, ()) or v['package'] not in others]
     hit = [p for a, p in answers if a is True]
     if hit:

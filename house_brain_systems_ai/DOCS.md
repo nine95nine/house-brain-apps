@@ -1,5 +1,9 @@
 # House Brain Systems AI
 
+Version 0.3.2 (shadow). 0.3.2 fixes two things seen on the first live 0.3.1 page:
+- **Patched versions:** an advisory whose fix is already installed (your version is at or past its patched version) reads "not affected", even when GitHub's affected range is open-ended.
+- **Investigations:** each changing thing is one line ("changed 3 times shortly before"), with updates and App states ranked above routine status flips.
+
 Version 0.3.1 (shadow). 0.3.1 fixes two things seen on the first live 0.3.0 page:
 - **ESPHome:** an ESPHome add-on that is not installed still answers with no version; that now counts as "not installed" and the next ID is tried, so the beta Device Builder is found.
 - **Investigations:** they open only while a problem is still active (or has come back), and live ones are listed first. The closed items the 0.3.0 install opened for already-cleared cases are cleared once.

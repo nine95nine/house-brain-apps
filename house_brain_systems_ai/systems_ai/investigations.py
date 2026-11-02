@@ -131,11 +131,20 @@ def answer(case, incident, cases):
         ref = case.get('reopens') or back[0]['case']
         hyps.append({'kind': 'HYPOTHESIS', 'text': 'It keeps coming back: the earlier clear treated a symptom, '
                      'not the cause.', 'evidence': [f'case:{ref}']})
-    for change in (incident or {}).get('related_changes', [])[-3:]:
+    # 0.3.2 (live 2026-11-02): one line per subject, however often it flipped; updates and App states rank above
+    # routine status churn (Maintenance IDLE/WATCHING, Core up/down).
+    groups = {}
+    for change in (incident or {}).get('related_changes', [])[-12:]:
         ev = f"change:{change['kind']}:{change['subject']}@{int(change['at'])}"
         evidence.append(ev)
-        hyps.append({'kind': 'HYPOTHESIS', 'text': f"{change['kind'].lower()} {change['subject']} changed shortly "
-                     f"before ({change['before']} → {change['after']}).", 'evidence': [ev]})
+        groups.setdefault((change['kind'], change['subject']), []).append((change, ev))
+    rank = {'UPDATE': 0, 'APP_STATE': 1, 'HOST_BOOT': 2}
+    for (kind, subject), rows in sorted(groups.items(), key=lambda g: (rank.get(g[0][0], 3), -g[1][-1][0]['at'])):
+        first, last = rows[0][0], rows[-1][0]
+        text = (f"{kind.lower()} {subject} changed shortly before ({first['before']} → {last['after']})." if len(rows) == 1
+                else f"{kind.lower()} {subject} changed {len(rows)} times shortly before ({first['before']} → … → "
+                     f"{last['after']}).")
+        hyps.append({'kind': 'HYPOTHESIS', 'text': text, 'evidence': [ev for _, ev in rows][-3:]})
     parents = [k for k in keys if k.startswith('KILL:') or k in ('CORE_API_UNREADABLE', 'SUPERVISOR_UNREADABLE')]
     for k in parents[:2]:
         hyps.append({'kind': 'HYPOTHESIS', 'text': f'{k} holds or hides other work; the rest may follow from it.',
