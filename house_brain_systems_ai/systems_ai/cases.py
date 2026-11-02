@@ -27,6 +27,11 @@ STATUSES = ('OPEN', 'ACTION_SUGGESTED', 'WATCHING', 'FIXED_VERIFIED', 'REOPENED'
 LIVE = ('OPEN', 'ACTION_SUGGESTED', 'WATCHING')
 
 
+def repair_slot():
+    """0.3.0: the O&M repair record on each case (agentic design §11 C1). Created empty here, written only by O&M."""
+    return {'owner': 'O&M', 'state': 'NOT_STARTED', 'cause': None, 'obligations': [], 'prevention': None}
+
+
 def _new(inc):
     return {'id': inc['id'], 'opened_at': inc['opened_at'], 'closed_at': None, 'status': 'OPEN',
             'severity': inc['severity'], 'problems': list(inc['problems']), 'reasons': [],
@@ -34,7 +39,7 @@ def _new(inc):
             'cleared_while_held': False,
             'checks': {'service_restored': 'UNVERIFIED', 'cause_corrected': 'NOT_MEASURED',
                        'side_effects_reconciled': 'NOT_MEASURED', 'prevention_proven': 'UNVERIFIED'},
-            'summary': None}
+            'summary': None, 'repair': repair_slot()}
 
 
 class Cases:
@@ -62,6 +67,7 @@ class Cases:
                 case = cases[inc['id']] = _new(inc)
                 self._link_reopen(case, now)
             case['problems'] = sorted(set(case['problems']) | set(inc['problems']))
+            case.setdefault('repair', repair_slot())       # cases from before 0.3.0
             case['severity'] = inc['severity']
             case['reasons'] = sorted({t['reason'] for t in inc['timeline'] if t.get('reason')})[:10]
             if inc['closed_at'] is None:

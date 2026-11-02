@@ -18,6 +18,7 @@ from . import app_health
 from .archive import Archive
 from .cases import Cases
 from .incidents import Incidents
+from .investigations import Investigations
 from .learn import trend, days_until, freeze, score, hourly
 from .logs import LogLearner
 from .radar import Radar
@@ -149,6 +150,7 @@ class Runtime:
         self.client = client
         self.incidents = Incidents(self.store)
         self.cases = Cases(self.store)
+        self.investigations = Investigations(self.store)        # 0.3.0 (agentic design step A1)
         # 0.2.1: the World Change Radar; without a public client it reads nothing ("not checked yet").
         self.public = public
         self.radar = Radar(self.store, public)
@@ -272,13 +274,18 @@ class Runtime:
             self.store.put('installed', found)
             # 0.2.2: the ESPHome Device Builder, for the radar's version match only. First slug that answers.
             self.esphome = None
+            probe = {}          # 0.3.0: what each try answered, so "not found" always says why (live 2026-11-01)
             for slug in ESPHOME_SLUGS:
                 try:
                     info = self.client.info(f'/addons/{slug}/info')
-                except (OSError, ValueError, TransportError):
+                except (OSError, ValueError, TransportError) as error:
+                    code = getattr(error, 'code', None)
+                    probe[slug] = (f'HTTP {code}' if isinstance(code, int) else str(error)[:60] or type(error).__name__)
                     continue
+                probe[slug] = 'FOUND' if isinstance(info.get('version'), str) else 'FOUND_NO_VERSION'
                 self.esphome = {'slug': slug, 'version': info.get('version'), 'state': info.get('state')}
                 break
+            self.view['esphome_probe'] = probe
             if self.esphome is None or not isinstance(self.esphome.get('version'), str):
                 self.radar.forget('esphome')
             self.store.put('esphome', self.esphome)
@@ -495,6 +502,7 @@ class Runtime:
         self.proposals = self._proposals(rescue, result, now) if held else self._proposals(problems, result, now)
         self._score_proposals(now)
         cases = self.cases.update(self.incidents.state['incidents'], self.proposals, now, held)
+        investigations = self.investigations.update(self.cases.state['cases'], self.incidents.state['incidents'], now, held)
         forecasts = {}
         for name, threshold, rising in (('db_mib', None, True), ('disk_free_gb', DISK_FLOOR_GB, False),
                                         ('mem_free', LOW_FREE_MIB, False), ('mem_swap_pct', HIGH_SWAP_PCT, True)):
@@ -508,7 +516,7 @@ class Runtime:
             'state': 'HELD' if held else 'SHADOW', 'version': __version__, 'mode': 'SHADOW', 'at': now,
             'physical_actions': False, 'control_authority': 'NONE', 'hold_reason': self.hold,
             'open_problems': result['open'], 'hidden_by_parent': result['hidden_by_parent'],
-            'flapping': result['flapping'], 'incidents': self.incidents.recent(), 'cases': cases,
+            'flapping': result['flapping'], 'incidents': self.incidents.recent(), 'cases': cases, 'investigations': investigations,
             'world_changes': {**self.radar.report(now), 'last_read': self.radar_last},
             'error_budgets': self.incidents.slo_report(now), 'forecasts': forecasts,
             'changes': self.incidents.state['changes'][-30:], 'proposals': self.proposals,

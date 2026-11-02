@@ -1,6 +1,18 @@
 # House Brain Systems AI
 
-Version 0.2.3 (shadow). 0.2.3: when the AI kill switch is missing or stale (never on FULL_STOP), this App still makes
+Version 0.3.0 (shadow). 0.3.0 adds **investigations**, the first step of the approved agentic layer (design R1 step A1):
+- **When one opens:** automatically, for a serious problem, one that came back, or a warning still open after an hour.
+- **What it is:** a bounded work packet: case, question, budget, a 7-day expiry, read-only research permission and no
+  execution authority.
+- **How it answers:** today only Systems AI's own rule agent (T0) answers, from the evidence:
+  - the problems and the changes seen before them;
+  - the same problem in earlier cases (case memory) and how it ended;
+  - possible causes listed side by side;
+  - the fix Systems AI already suggests, if any (your tap);
+  - otherwise "needs an engineer".
+- **O&M's part:** each case also carries an empty repair record that only O&M will fill in.
+- **Unchanged:** no new read, outside request, model or authority.
+0.2.3: when the AI kill switch is missing or stale (never on FULL_STOP), this App still makes
 one read-only Supervisor read of AI Access every 5 minutes. AI Access publishes the switch, and if it stops, every
 House Brain AI holds (seen live on 2026-11-01). If AI Access is stopped, the page and the family line say so, and
 after 15 minutes Maintenance shows a "Start AI Access" suggestion, carried out only on your tap. Nothing else runs while
