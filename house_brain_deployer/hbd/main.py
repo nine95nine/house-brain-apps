@@ -486,6 +486,12 @@ class Service:
         if hashlib.sha256(original_raw).hexdigest() != ledger[rq.reask_of].get("digest"):
             self._reask_refused(request_id, digest, rq.reask_of, "REASK_ORIGINAL_CHANGED", "changed", issue)
             return False
+        dash = dashboards.kind(original_raw)
+        if dash == "scan":   # 0.3.46: a read-only scan is re-filed, like a lookup
+            self._reask_refused(request_id, digest, rq.reask_of, "REASK_LOOKUP", "", issue)
+            return False
+        if dash is not None:
+            return self._reask_dashboard(request_id, digest, issue, rq, original_raw)
         if is_lookup(original_raw):
             self._reask_refused(request_id, digest, rq.reask_of, "REASK_LOOKUP", "", issue)
             return False
@@ -512,6 +518,36 @@ class Service:
         self._finish_reask(request_id, digest, issue, result, rq.reask_of, writer_result=True)
         if result.outcome == FAILED_MANUAL:
             self.j.freeze(request_id)
+        return True
+
+    def _reask_dashboard(self, request_id: str, digest: str, issue: int | None, rq, original_raw: bytes) -> bool:
+        """0.3.46 (live 2026-11-02: the page's Try again of a timed-out dashboard rename was REFUSED
+        ``manifest: MISSING_KEY``): a dashboard rename or undo asked again runs the dashboard path under the
+        re-ask's id, with a fresh owner approval, the daily limit, the same scan binding (config SHA-256 and count)
+        and its own Undo copy (``undo_of`` = the re-ask id). Returns True when the poll must end."""
+        try:
+            req = dashboards.parse(original_raw)
+        except ManifestError as err:
+            self._finish_reask(request_id, digest, issue, Result(REFUSED, [f"dashboard: {err.code}"]), rq.reask_of)
+            return False
+        of = rq.reask_of
+        held = self._limit_reason(request_id)   # the same daily install limit as a re-asked install
+        if held:
+            self.j.audit(request_id, "RATE_LIMITED")
+            self.diag.add(held)
+            self._announce_hold(held, issue)
+            self._offer_lift()
+            return True   # try again on a later poll; not recorded in the ledger
+        if not self.o.dry_run:
+            self.j.link_reask(of, request_id)
+        self.j.audit(request_id, "REASK", reask_of=of, requested_by=rq.requested_by)
+        req = dataclasses.replace(req, request_id=request_id, tracking_issue=issue or req.tracking_issue)
+        engine = self.ensure_engine()
+        if req.kind == "rename":
+            result = dashboards.run_rename(engine, req, self._data_dir(), self.o.dry_run)
+        else:
+            result = dashboards.run_undo(engine, req, self._data_dir(), self.o.dry_run)
+        self._finish_reask(request_id, digest, issue, result, rq.reask_of)
         return True
 
     def _lookup(self, request_id: str, raw: bytes, digest: str) -> None:
@@ -1329,8 +1365,10 @@ def startup_manifest_reader(opts, api, data_dir):
             raw = gh.read_file(f"{REQUESTS_DIR}/{request_id}/manifest.json", head)
             if is_reask(raw):
                 rq = parse_reask(raw)
-                original = parse(gh.read_file(f"{REQUESTS_DIR}/{rq.reask_of}/manifest.json", head))
-                return Service._reask_run(original, rq.request_id, rq.tracking_issue, rq.reask_of)
+                original_raw = gh.read_file(f"{REQUESTS_DIR}/{rq.reask_of}/manifest.json", head)
+                if dashboards.kind(original_raw) is not None:
+                    return None                   # 0.3.46: a dashboard re-ask changes no files either
+                return Service._reask_run(parse(original_raw), rq.request_id, rq.tracking_issue, rq.reask_of)
             if is_lookup(raw) or dashboards.kind(raw) is not None:
                 return None                       # lookups and dashboard requests never change files; nothing to recover
             return parse(raw)

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.46 — 2026-11-02 (Try again works for a dashboard rename or undo)
+
+Live on 2026-11-02 (#561 6578409740), the page's **Try again** for a timed-out dashboard rename was REFUSED
+`manifest: MISSING_KEY`: the re-ask path read every original as a package install. Nothing changed.
+- A re-ask (page Try again or a filed `house_brain_reask_request.v1`) of a dashboard **rename or undo** now runs the
+  dashboard path under the re-ask's id, with the same guards as a re-asked install: the original is pinned to its
+  ledger digest, at most 2 tries, Reject stays final, the daily install limit applies and it is linked to its original.
+  The rename stays bound to the scan (config SHA-256 and replacement count), asks the owner again, makes the backup
+  and keeps its own Undo copy (`undo_of` = the re-ask id).
+- A re-ask of a dashboard **scan** is refused `REASK_LOOKUP`, like a lookup (file the scan again).
+- Startup recovery treats a dashboard re-ask like a dashboard request: no files changed, nothing to recover.
+- Tests `test_dashboards.py` `ReaskDashboard` (6; the 5 behaviour tests fail on 0.3.45); mutants RD01–RD05.
+
 ## 0.3.45 — 2026-11-02 (an active "Allow more today" no longer holds a start; owner "dig deep and figure it out")
 
 0.3.44 named the live cause: `STARTUP_REFUSED:HistoryError:ACTIVE_SOURCE_LIMIT_GRANT`. On 2026-11-01 at 10:50 (Arizona)

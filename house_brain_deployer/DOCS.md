@@ -192,6 +192,9 @@ Open Web UI, or the sidebar). Under **Missed (last 24 hours)** each such request
 - No chat is needed. The tap is handled on the next check (within about 5 minutes).
 - The same limits apply: at most 2 tries per request, Reject stays final, read-only lookups are not asked again, and
   each try counts toward the daily install limit.
+- From 0.3.46, a **dashboard rename or undo** can be tried again too. It asks you again, it is still bound to the
+  scan (the dashboard must be unchanged and the count must match), and it keeps its own Undo copy under the new id
+  (the result says which `undo_of` to use). A dashboard scan is read-only and is filed again instead.
 - **Coming up** lists the requests waiting on GitHub behind the current one (read-only).
 
 ## Asked again after no answer — from 0.3.8
