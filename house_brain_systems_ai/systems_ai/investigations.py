@@ -31,12 +31,18 @@ LIVE = ('OPEN', 'ACTION_SUGGESTED', 'WATCHING')
 STATUSES = ('WORKING', 'ANSWERED', 'NEEDS_ENGINEER', 'EXPIRED', 'CLOSED')
 
 
+ACTIVE = ('OPEN', 'ACTION_SUGGESTED')
+
+
 def should_open(case, now):
-    if case['status'] not in LIVE and case['status'] != 'REOPENED':
+    """0.3.1: only while the problem is still active. A case already cleared (WATCHING) or an old REOPENED case is
+    not investigated again; the newer case that reopens it is (live 2026-11-02: 48 cleared cases were opened and
+    closed at once on the 0.3.0 install)."""
+    if case['status'] not in ACTIVE:
         return False
-    if case['severity'] in SEVERE or case['status'] == 'REOPENED' or case.get('reopens'):
+    if case['severity'] in SEVERE or case.get('reopens'):
         return True
-    return case['status'] != 'WATCHING' and now - case['opened_at'] >= OPEN_AFTER_WARNING_S
+    return now - case['opened_at'] >= OPEN_AFTER_WARNING_S
 
 
 def question(case):
@@ -48,6 +54,11 @@ class Investigations:
     def __init__(self, store):
         self.store = store
         self.state = store.get('investigations:state', {'items': {}})
+        if self.state.get('rule', 1) < 2:
+            # 0.3.1, once: drop what the 0.3.0 rule opened for cases already cleared; they never investigated
+            # anything live. Live items stay.
+            self.state['items'] = {k: v for k, v in self.state['items'].items() if v.get('closed_at') is None}
+            self.state['rule'] = 2
 
     def update(self, cases, incidents, now, held=False):
         """cases: the Cases state dict {id: case}; incidents: the Incidents list. Frozen while held."""
@@ -90,7 +101,7 @@ class Investigations:
                 items.pop(i['id'])
 
     def report(self, now):
-        rows = sorted(self.state['items'].values(), key=lambda i: -i['opened_at'])
+        rows = sorted(self.state['items'].values(), key=lambda i: (i['closed_at'] is not None, -i['opened_at']))
         return {'counts': {s: sum(i['status'] == s for i in rows) for s in STATUSES}, 'items': rows[:SHOW],
                 'kept': len(rows), 'held': False, 'tier_now': 'T0',
                 'note': 'Investigations explain and recommend; they never act. Any fix is your tap in Maintenance '

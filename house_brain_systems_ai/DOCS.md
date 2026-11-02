@@ -1,5 +1,9 @@
 # House Brain Systems AI
 
+Version 0.3.1 (shadow). 0.3.1 fixes two things seen on the first live 0.3.0 page:
+- **ESPHome:** an ESPHome add-on that is not installed still answers with no version; that now counts as "not installed" and the next ID is tried, so the beta Device Builder is found.
+- **Investigations:** they open only while a problem is still active (or has come back), and live ones are listed first. The closed items the 0.3.0 install opened for already-cleared cases are cleared once.
+
 Version 0.3.0 (shadow). 0.3.0 adds **investigations**, the first step of the approved agentic layer (design R1 step A1):
 - **When one opens:** automatically, for a serious problem, one that came back, or a warning still open after an hour.
 - **What it is:** a bounded work packet: case, question, budget, a 7-day expiry, read-only research permission and no

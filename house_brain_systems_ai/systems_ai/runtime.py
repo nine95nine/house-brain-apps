@@ -282,7 +282,12 @@ class Runtime:
                     code = getattr(error, 'code', None)
                     probe[slug] = (f'HTTP {code}' if isinstance(code, int) else str(error)[:60] or type(error).__name__)
                     continue
-                probe[slug] = 'FOUND' if isinstance(info.get('version'), str) else 'FOUND_NO_VERSION'
+                if not isinstance(info.get('version'), str):
+                    # 0.3.1: the Supervisor answers for a store add-on that is not installed (no installed version);
+                    # that is "not installed here", so try the next ID (live 2026-11-02: stable answered, beta runs).
+                    probe[slug] = 'NOT_INSTALLED'
+                    continue
+                probe[slug] = 'FOUND'
                 self.esphome = {'slug': slug, 'version': info.get('version'), 'state': info.get('state')}
                 break
             self.view['esphome_probe'] = probe
