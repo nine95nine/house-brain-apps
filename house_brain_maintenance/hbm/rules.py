@@ -17,6 +17,8 @@ Rows (spec R1 B1):
 - R6  ``offline:group:*``                                                                -> WATCH (IGNORE when snoozed; snooze lands with F2)
 - R7  ``battery:*``                                                                      -> OWNER_ACTION "replace or recharge"
 - R8  an ESPHome single drop that reconnected (D3)                                       -> WATCH
+- R9  a re-login (0.9.49, the re-login playbook): the entry needs a new login             -> OWNER_ACTION with the
+      integration's closed steps (``hbm/reauth.py``), judged first and whatever its severity (a login is the owner's)
 
 The recur doc (``problem_recur``) keeps each key's episode start times over WINDOW_DAYS, at most MAX_EPISODES per key
 and MAX_KEYS keys. It starts empty, so R3 begins to fire after a week.
@@ -26,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import issues as I
+from . import reauth as RA
 
 SOURCE = "rule"
 RECUR_DOC = "problem_recur"
@@ -121,6 +124,8 @@ def allowed(key: str, rec: dict, cleared: bool = False) -> bool:
     (the fix offer and the reviewers decide); a problem that has cleared may be judged whatever fix it offered."""
     if not isinstance(rec, dict) or str(key).startswith(NEVER_PREFIXES):
         return False
+    if rec.get("reauth") and not cleared:                       # 0.9.49 R9: a re-login is the owner's, whatever its severity
+        return True
     if cleared:
         return rec.get("severity") != I.CRITICAL
     return rec.get("severity") != I.CRITICAL and not rec.get("fix")
@@ -132,6 +137,12 @@ def verdict(key: str, rec: dict, recur: dict | None, earlier_steps: list[str] | 
     """The first matching row for an OPEN problem, or None (the model or the cloud reviewer decide)."""
     if not allowed(key, rec):
         return None
+    if rec.get("reauth"):                                       # 0.9.49: before every other row
+        dom = str(rec.get("reauth"))
+        return Rule("R9", "OWNER_ACTION", f"{I.humanize(dom)} needs you to log in again; a reload cannot fix a login",
+                    RA.steps_for(dom))
+    if rec.get("parent") and not str(rec.get("parent")).startswith(I.BLIP_PREFIX):
+        return None                                             # 0.9.49: a re-login's card or log line: the entry speaks
     text = " ".join([str(rec.get("title") or ""), *[str(d) for d in rec.get("detail") or []]])
     # R3 before R1: the third blip of the week is an owner matter
     n = episodes(recur or {}, key, now)

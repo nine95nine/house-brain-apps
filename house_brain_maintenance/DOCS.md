@@ -598,6 +598,17 @@ holds it, `HELD` / `STARTUP_REFUSED:<class>:<CODE>`) is never restarted, by this
 reason and the steps (its Log tab, its configuration, or a rollback). When the hold lifts it is an ordinary crashed
 App again.
 
+## When an integration needs a new login — from 0.9.49
+
+A cloud integration whose login expired (Tuya / Smart Life, Govee, Ondilo, SmartThings, ecobee, Sense, ...) shows up
+as one problem with the exact steps for that integration, written for the phone: for Tuya, the User Code from the
+Smart Life app and the QR scan; for Govee, a new API key from the Govee Home app; for the others, Reconfigure and sign
+in. Home Assistant's own repair card and the integration's log errors about the login are folded into that one
+problem. You get one push per episode, never more than one a day per integration, and it waits for the morning in
+quiet hours unless the integration controls equipment. This App never reloads an integration whose login failed: a
+reload cannot fix a login and only burns the vendor's limits. When one integration needs a re-login twice or more in
+90 days, the morning summary says so and points at the cloud-to-local audit on the tracking issue.
+
 ## Retired devices — from 0.9.45
 
 Devices you have written off (your B-hyve timers, offline for weeks) are retired: never listed, queued or counted,

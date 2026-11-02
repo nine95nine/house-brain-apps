@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 import time
 
-from . import devicekeys as DK, net
+from . import devicekeys as DK, net, reauth as RA
 
 CRITICAL = "critical"
 WARNING = "warning"
@@ -505,10 +505,11 @@ def from_repairs(issues: list[dict], key_of=None) -> list[Finding]:
         key = f"repair:{row.get('domain')}:{row.get('issue_id')}"
         if key_of is not None and DK.mangled(str(row.get("issue_id") or "")):
             key = key_of("repair", str(row.get("issue_id")), str(row.get("domain") or "")[:64])
+        facts = {"domain": row.get("domain"), "issue": row.get("issue_id"), "severity": row.get("severity")}
+        if row.get("translation_key") == RA.REAUTH_TRANSLATION_KEY:          # 0.9.49: Home Assistant's own re-login card
+            facts |= {"reauth_repair": True, "entry_id": RA.entry_id_in(str(row.get("issue_id") or ""))}
         out.append(Finding(key, "repairs", severity, title,
-                           steps=tuple(steps), link=row.get("learn_more_url") or REPAIRS_LINK,
-                           facts={"domain": row.get("domain"), "issue": row.get("issue_id"),
-                                  "severity": row.get("severity")}))
+                           steps=tuple(steps), link=row.get("learn_more_url") or REPAIRS_LINK, facts=facts))
     return out
 
 
@@ -645,10 +646,13 @@ def from_entries(entries: list[dict], first_seen: dict[str, float], now: float,
             title, steps = f"{known_title} ({name})", list(known_steps)
             action = action if keep_reload else None
             facts |= {"diagnosis": diagnosis} | network_summary(heard)
-        if e["entry_id"] in reauth:
+        if e["entry_id"] in reauth or (state in ("setup_error", "setup_retry") and RA.is_auth_text(e.get("reason") or "")):
+            # 0.9.49: a pending re-authentication flow, or a setup error that says the login failed (no flow yet):
+            # the owner's to do; a reload cannot fix a login, so no fix is offered and the self-healing stays out
             seen_reauth.add(e["entry_id"])
-            title, steps, action = f"Needs you to log in again: {name}", list(REAUTH_STEPS), None
+            title, steps, action = f"Needs you to log in again: {name}", list(RA.steps_for(e.get("domain") or "")), None
             facts |= {"reauth": True}
+            severity = CRITICAL if reauth_critical(e.get("domain") or "") else WARNING
         out.append(Finding(key, "integration", severity, title, detail=detail,
                            steps=tuple(steps), link=INTEGRATIONS_LINK, action=action, facts=facts))
     by_id = {e["entry_id"]: e for e in entries}
@@ -657,10 +661,19 @@ def from_entries(entries: list[dict], first_seen: dict[str, float], now: float,
         if e is None or e.get("disabled"):
             continue
         name = f"{humanize(e.get('domain', ''))} ({e.get('title') or 'no name'})"
-        out.append(Finding(f"reauth:{entry_id}", "integration", WARNING, f"Needs you to log in again: {name}",
-                           steps=REAUTH_STEPS, link=INTEGRATIONS_LINK,
+        out.append(Finding(f"reauth:{entry_id}", "integration",
+                           CRITICAL if reauth_critical(e.get("domain") or "") else WARNING,
+                           f"Needs you to log in again: {name}",
+                           steps=RA.steps_for(e.get("domain") or ""), link=INTEGRATIONS_LINK,      # 0.9.49: per integration
                            facts={"domain": e.get("domain"), "reauth": True}))
     return out
+
+
+def reauth_critical(domain: str) -> bool:
+    """0.9.49: a re-login for an integration that controls equipment is pushed even in quiet hours (CRITICAL);
+    any other waits for the morning like every warning."""
+    from . import autofix as AF
+    return AF.physical("", {"domain": domain})
 
 
 def from_log(rows: list[dict]) -> list[Finding]:
@@ -673,12 +686,14 @@ def from_log(rows: list[dict]) -> list[Finding]:
         detail = [row.get("message", "")]
         if row.get("exception"):
             detail.append(row["exception"])
+        facts = {"logger": name, "source": row.get("source"), "count": row.get("count")}
+        if RA.is_auth_text(" ".join(str(d) for d in detail)):
+            facts["auth"] = True                                                  # 0.9.49: joins its entry's re-login
         out.append(Finding(f"log:{name}:{row.get('source')}", "log", WARNING,
                            f"Error from {humanize(who)} (seen {row.get('count', 1)}x)",
                            detail=tuple(detail),
                            steps=("If it keeps happening, I'll review the details and suggest a fix.",),
-                           link=LOGS_LINK, announce_clear=False,
-                           facts={"logger": name, "source": row.get("source"), "count": row.get("count")}))
+                           link=LOGS_LINK, announce_clear=False, facts=facts))
     return out
 
 

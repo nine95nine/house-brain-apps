@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.49
+
+The re-login playbook (the AI reviewer chat's spec of 2026-11-02 after the Tuya re-login; owner "how can I avoid this
+smart life app/Tuya issue in the future or any issue such as this", pop-ups "Let's actually do both" and "Yes, build
+0.9.49 as proposed"). Contains 0.9.48 unchanged otherwise.
+
+- **One problem, not three.** An integration that needs a new login (a config entry with a pending re-authentication
+  flow, or one in setup error / retry whose reason says the login failed: `invalid auth`, `unauthorized`, `401`, `token
+  expired`, `re-authenticate`, `ConfigEntryAuthFailed`, ... a closed list, `reauth.AUTH_MARKERS`) is the problem;
+  Home Assistant's own Repairs card for it (`config_entry_reauth`, linked by the entry id in the card's issue id) and
+  the integration's log errors with an auth marker are its children: never alerted, queued, posted or counted (the
+  0.9.41 blip mechanics). A reload is never offered for a login failure (before: `setup_error` always offered one).
+- **The steps come from a closed table, at once.** `reauth.STEPS` per integration (tuya: Smart Life User Code and the QR
+  scan; govee/goveelife: a new API key from the Govee Home app; ondilo_ico, smartthings, ecobee, sense: Reconfigure and
+  sign in; generic fallback), each line at most 120 characters, iPhone friendly. Rule **R9** gives the problem
+  OWNER_ACTION with those steps on the first check, whatever its severity, so no reviewer has to research a login;
+  the free lane posts it like any rule verdict.
+- **The phone.** One push per re-login episode, at once, carrying the steps; never more than one a day per integration
+  (`REAUTH_PUSH_HELD` audit when held; the problem is still kept and in the morning summary). Quiet hours hold it
+  unless the integration controls equipment (pool, thermostat, irrigation, ...: CRITICAL, pushed through). It is not a
+  stalled review.
+- **Self-healing stays out.** `autofix.eligible` refuses S1 for a login failure (a reload cannot fix a login and burns
+  the vendor's limits); the finding carries no fix anyway.
+- **Repeat learning.** Re-login episodes are counted per integration over 90 days (`reauth` doc, bounded); at 2 or more
+  the morning summary adds "Tuya has needed a re-login N times in 90 days; a local option may stop this (see the
+  cloud-to-local audit on #454)".
+- The spec's item 5 (stable keys for long Repairs ids and App slugs) shipped in 0.9.47.
+
 ## 0.9.48
 
 Hotfix for 0.9.47, live 2026-11-02 04:02Z: the held Deployer showed as "App refuses to run on purpose: House Brain

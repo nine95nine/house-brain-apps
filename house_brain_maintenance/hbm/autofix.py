@@ -132,6 +132,8 @@ def eligible(mode: str, action_kind: str, key: str, facts: dict | None, ref: str
         return False, blocked
     if kind in ("S1", "S2") and physical(key, facts, ref):
         return False, "physical-control domain always asks"
+    if kind == "S1" and ((facts or {}).get("reauth") or (facts or {}).get("auth")):
+        return False, "a login failed: a reload cannot fix it (yours, with the steps)"      # 0.9.49
     if kind == "S3" and radio_app(ref, name):
         return False, "radio App always asks"
     if kind == "S3" and (facts or {}).get("hold"):

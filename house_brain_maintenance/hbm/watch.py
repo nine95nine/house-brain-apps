@@ -30,6 +30,7 @@ from . import backupcheck as B, housekeeping as K, pihealth as P, approval, issu
 from . import autofix as AF
 from . import devicekeys as DK
 from . import retired as RT
+from . import reauth as RA
 from . import problems as PR
 from . import rules as RU
 from . import systemsai as SA
@@ -422,6 +423,8 @@ class Watcher:
         blips = I.blip_groups(findings, first_seen, now)                   # 0.9.41 F3: one problem per internet blip
         for parent in sorted(set(blips.values())):
             findings.append(I.blip_finding(parent, [f for f in findings if blips.get(f.key) == parent], first_seen, now))
+        blips.update(RA.family(findings))                                  # 0.9.49: a re-login's card and log lines join its entry
+        reauth_doc = None                                                  # loaded on the first re-login seen
         current = {f.key: f for f in findings}
         skipped_sources = {src for src in failed}
         push_now: list[I.Finding] = []
@@ -433,6 +436,9 @@ class Watcher:
             if not rec["polls"]:                # 0.9.12: first seen now; within 24 h after an install about it?
                 recur = RU.note_episode(recur if recur is not None else self.j.load_doc(RU.RECUR_DOC, {}),
                                         f.key, float(rec["first"]), now)             # 0.9.42: R3 counts episodes
+                if f.facts.get("reauth") and f.key not in blips:                      # 0.9.49: one episode per integration
+                    reauth_doc = reauth_doc if reauth_doc is not None else RA.load(self.j.load_doc(RA.DOC, {}))
+                    RA.note_episode(reauth_doc, str(f.facts.get("domain") or ""), float(rec["first"]), now)
                 if installs is None:
                     installs = (self.j.load_doc(PR.INSTALLS_DOC, {}) or {}).get("installs") or []
                 tag = PR.after_update(installs, f.key, f.facts, float(rec["first"]))
@@ -457,6 +463,10 @@ class Watcher:
                 rec["fix"] = {"kind": f.action.kind, "label": f.action.label[:80]}
             else:
                 rec.pop("fix", None)
+            if f.facts.get("reauth"):           # 0.9.49: the rule R9 and the free lane read the integration from here
+                rec["reauth"] = str(f.facts.get("domain") or "")[:64]
+            else:
+                rec.pop("reauth", None)
             diagnosis = f.facts.get("diagnosis")
             if diagnosis and diagnosis not in I.UNSURE_DIAGNOSES and rec.get("diagnosis") != diagnosis \
                     and now - rec.get("diagnosed_at", 0) >= REDIAGNOSE_SECONDS:
@@ -469,11 +479,23 @@ class Watcher:
                 if now - float(rec.setdefault("busy_hold", now)) < I.BUSY_HOLD_SECONDS:
                     continue
             if self.p.auto_fix == "safe" and f.severity != I.CRITICAL and f.source not in PUSH_ONCE_SOURCES \
-                    and not f.action and now - float(rec["first"]) < AF.TRANSIENT_SECONDS:
+                    and not f.action and not f.facts.get("reauth") and now - float(rec["first"]) < AF.TRANSIENT_SECONDS:
                 continue                        # 0.9.45 S4: a warning that clears within 15 min is never mentioned
+                                                # (0.9.49: a re-login is said at once; it never clears by itself)
             if f.action and not self.s.dry_run:
                 rec["alerted"] = True           # announced through the fix offer below
                 self._keep(f)                   # 0.9.18: kept in the Messages list too
+            elif f.facts.get("reauth"):         # 0.9.49: one push per re-login episode, at most one a day per integration
+                reauth_doc = reauth_doc if reauth_doc is not None else RA.load(self.j.load_doc(RA.DOC, {}))
+                dom = str(f.facts.get("domain") or "")
+                st["summary"].append(self._summary_item(f))
+                if RA.may_push(reauth_doc, dom, now):
+                    RA.note_push(reauth_doc, dom, now)
+                    push_now.append(f)
+                else:
+                    rec["alerted"] = True
+                    self._keep(f)
+                    self.j.audit(f.key[:80], "REAUTH_PUSH_HELD", domain=dom[:64])
             elif f.severity == I.CRITICAL or f.source in PUSH_ONCE_SOURCES:
                 push_now.append(f)
                 if f.source in PUSH_ONCE_SOURCES:
@@ -494,7 +516,7 @@ class Watcher:
             rec = st["open"][key]
             if key in current or self._source_of(rec) in skipped_sources:
                 continue
-            if rec.get("alerted") and rec.get("clear", True):
+            if rec.get("alerted") and rec.get("clear", True) and not rec.get("parent"):   # 0.9.49: a child is never counted
                 st["cleared"].append({"key": key, "title": rec.get("title", key)[:120]})   # 0.8.3: keyed
             self._rules_on_clear(key, rec, now)                            # 0.9.42: R4, R5, R8
             del st["open"][key]
@@ -509,6 +531,8 @@ class Watcher:
         self.j.save_doc(DOC, st)
         if recur is not None:
             self.j.save_doc(RU.RECUR_DOC, recur)
+        if reauth_doc is not None:
+            self.j.save_doc(RA.DOC, reauth_doc)
         self._apply_rules(st, now)                                 # 0.9.42: the rules table (0.9.41: blips only)
         self._since(st)                                         # 0.9.19: this check's fingerprints
         outcome = self._offer_fix(st, current, now)
@@ -1082,6 +1106,7 @@ class Watcher:
             self.j.save_doc(AF.DOC, af)
         extra = ([silent] if silent else []) + ([f"Fixed for you overnight ({len(overnight)}): " + "; ".join(overnight)[:600]]
                                                  if overnight else [])
+        extra += RA.repeat_lines(RA.load(self.j.load_doc(RA.DOC, {})), now)[:5]      # 0.9.49: re-logins that keep coming back
         if not items and not cleared:
             if extra:
                 text = self._markdown("morning summary", [], [])
