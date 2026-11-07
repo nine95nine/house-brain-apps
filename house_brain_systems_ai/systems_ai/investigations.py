@@ -14,10 +14,13 @@ This release answers with tier T0 only (deterministic, on the Pi, no model and n
 - the recommended request, only when Systems AI already suggests one; it stays the owner's tap in Maintenance;
 - NEEDS_ENGINEER when nothing in the evidence explains the case. Unknown is never an answer.
 
-Playbooks (A2), outside research (A3) and the MacBook investigator and models (A6-A8) add tiers later. Each case
+0.3.3 adds playbooks (A2): a solved real case that matches ranks first. Outside research (A3) and the MacBook
+investigator and models (A6-A8) add tiers later. Each case
 also gets an empty repair record owned by O&M (design §11 C1). Systems AI creates it and never fills it in.
 Nothing here acts.
 """
+from . import playbooks
+
 OPEN_AFTER_WARNING_S = 3600
 EXPIRE_S = 7 * 86400
 KEEP = 100
@@ -60,8 +63,9 @@ class Investigations:
             self.state['items'] = {k: v for k, v in self.state['items'].items() if v.get('closed_at') is None}
             self.state['rule'] = 2
 
-    def update(self, cases, incidents, now, held=False):
-        """cases: the Cases state dict {id: case}; incidents: the Incidents list. Frozen while held."""
+    def update(self, cases, incidents, now, held=False, matched=None):
+        """cases: the Cases state dict {id: case}; incidents: the Incidents list; matched: playbooks.match() this
+        cycle (0.3.3). Frozen while held."""
         items = self.state['items']
         if held:
             return {**self.report(now), 'held': True}
@@ -82,7 +86,7 @@ class Investigations:
             if case['status'] not in LIVE:
                 item.update(status='CLOSED', closed_at=now, outcome=case['status'])
                 continue
-            item['answer'] = answer(case, by_id.get(case['id']), cases)
+            item['answer'] = answer(case, by_id.get(case['id']), cases, matched)
             item['status'] = 'ANSWERED' if item['answer']['hypotheses'] else 'NEEDS_ENGINEER'
             if now >= item['expires_at']:
                 item.update(status='EXPIRED', closed_at=now, outcome=case['status'])
@@ -108,9 +112,11 @@ class Investigations:
                         'or the Deployer.'}
 
 
-def answer(case, incident, cases):
-    """T0: evidence, case memory and ranked hypotheses. Deterministic; every claim cites evidence ids."""
+def answer(case, incident, cases, matched=None):
+    """T0: evidence, case memory and ranked hypotheses. Deterministic; every claim cites evidence ids.
+    0.3.3: a matching playbook (a solved real case) ranks first and gives the recommended request."""
     evidence = [f'case:{case["id"]}'] + [f'problem:{k}' for k in case['problems'][:10]]
+    known = playbooks.for_case(case['problems'], matched or {})
     keys = set(case['problems'])
     similar = []
     for other in cases.values():
@@ -120,7 +126,8 @@ def answer(case, incident, cases):
                         'shared': sorted(keys & set(other['problems']))[:3], 'summary': other.get('summary')})
     similar.sort(key=lambda s: -s['opened_at'])
     similar = similar[:MAX_SIMILAR]
-    hyps = []
+    hyps = [{'kind': 'PLAYBOOK', 'text': f"Known case: {m['title']}. {m['request']}",
+             'evidence': [f"playbook:{m['playbook']}"] + m['evidence'][:2]} for m in known[:2]]
     fixed = [s for s in similar if s['status'] == 'FIXED_VERIFIED']
     if fixed:
         s = fixed[0]
@@ -151,5 +158,6 @@ def answer(case, incident, cases):
                      'evidence': [f'problem:{k}']})
     recommended = case['suggested'][0] if case.get('suggested') else None
     return {'tier': 'T0', 'evidence': evidence[:20], 'similar': similar, 'hypotheses': hyps[:MAX_HYPOTHESES],
-            'recommended': recommended, 'confidence': hyps[0]['kind'] if hyps else 'NEEDS_ENGINEER',
+            'recommended': recommended, 'playbooks': list(dict.fromkeys(m['playbook'] for m in known)),
+            'confidence': hyps[0]['kind'] if hyps else 'NEEDS_ENGINEER',
             'abstained': not hyps}

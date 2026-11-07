@@ -1,5 +1,13 @@
 # House Brain Systems AI
 
+Version 0.3.3 (shadow). 0.3.3 adds **playbooks** (agentic layer step A2): five real cases the house has already solved, written down so Systems AI recognises them again without a model or a subscription. A new **Playbooks** section on the page shows what matches now, what to ask you, how the fix is checked and when not to use it:
+- **AI Access stopped** (2026-10-07 and 2026-11-01): every House Brain AI is held; start AI Access.
+- **Start on boot off** (2026-11-01): AI Access, the Inspector or the Observer stopped with Start on boot off now raises a warning and suggests Start (your tap in Maintenance). Before 0.3.3 it raised nothing, so they stayed down unseen after a restart.
+- **Deployer held at start** (STARTUP_REFUSED, 2026-11-01): restarting does not clear it; the known cause and the fixed version are named.
+- **Deployer daily approval limit** (2026-11-02): nothing to repair; tap "Allow more today" or wait.
+- **An integration needs a new login** (Tuya, 2026-11-02): log in again; Maintenance (rule R9) owns it.
+A matching playbook ranks first in its investigation. Playbooks only suggest: they add no read, no action and no new suggestion of their own.
+
 Version 0.3.2 (shadow). 0.3.2 fixes two things seen on the first live 0.3.1 page:
 - **Patched versions:** an advisory whose fix is already installed (your version is at or past its patched version) reads "not affected", even when GitHub's affected range is open-ended.
 - **Investigations:** each changing thing is one line ("changed 3 times shortly before"), with updates and App states ranked above routine status flips.

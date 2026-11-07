@@ -35,7 +35,7 @@ WS_ALLOW = {'system_log/list': {'type'}, 'repairs/list_issues': {'type'},
             'system_health/info': {'type'}, 'recorder/list_statistic_ids': {'type'}}
 # Fields kept from a sibling App's info; everything else (its options among them) is dropped at once.
 ADDON_FIELDS = ('slug', 'name', 'version', 'version_latest', 'update_available', 'state', 'boot',
-                'hostname', 'ingress_port', 'watchdog')
+                'hostname', 'ingress_port', 'watchdog', 'boot_config')
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

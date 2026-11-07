@@ -21,6 +21,7 @@ from .incidents import Incidents
 from .investigations import Investigations
 from .learn import trend, days_until, freeze, score, hourly
 from .logs import LogLearner
+from . import playbooks
 from .radar import Radar
 from .store import Store
 from .transport import TransportError, ESPHOME_SLUGS
@@ -100,6 +101,12 @@ def app_problems(name, slug, info, observed):
     elif state != 'started' and boot == 'auto':
         out[f'APP:{slug}:STOPPED'] = {'severity': 'ERROR', 'reason': 'APP_STOPPED_WITH_START_ON_BOOT',
                                       'subject': slug, 'owner': 'systems_ai', 'proposal': ('start_app', slug)}
+    elif state not in ('started', None) and name in playbooks.ALWAYS_ON:
+        # 0.3.3 (playbook PB-START-ON-BOOT-OFF, live 2026-11-01): a read-only App that must always run, stopped with
+        # Start on boot off, raised nothing, so it stayed down unseen after a restart.
+        out[f'APP:{slug}:STOPPED_BOOT_OFF'] = {'severity': 'WARNING', 'reason': 'APP_STOPPED_START_ON_BOOT_OFF',
+                                               'subject': slug, 'owner': 'systems_ai',
+                                               'proposal': ('start_app', slug)}
     if state == 'started' and observed is not None and observed['status'] != 'OK':
         status = observed['status']
         out[f'APP:{slug}:HEALTH'] = {
@@ -347,6 +354,7 @@ class Runtime:
                 self._change('app_state:' + slug, info.get('state'), now, 'APP_STATE')
                 problems.update(app_problems(name, slug, info, observed))
                 apps[slug] = {'name': name, 'state': info.get('state'), 'boot': info.get('boot'),
+                              'boot_config': info.get('boot_config'),
                               'version': info.get('version'), 'update_available': info.get('update_available'),
                               'health': observed['status'] if observed else None,
                               'health_reasons': observed['reasons'][:6] if observed else [],
@@ -507,7 +515,12 @@ class Runtime:
         self.proposals = self._proposals(rescue, result, now) if held else self._proposals(problems, result, now)
         self._score_proposals(now)
         cases = self.cases.update(self.incidents.state['incidents'], self.proposals, now, held)
-        investigations = self.investigations.update(self.cases.state['cases'], self.incidents.state['incidents'], now, held)
+        sig = playbooks.signals(hold=self.hold, ai_access_state=(self.view.get('ai_access') or {}).get('state'),
+                                apps=self.view.get('apps'), states=None if held else self.states,
+                                problems=problems.keys())
+        matched = playbooks.match(sig)
+        investigations = self.investigations.update(self.cases.state['cases'], self.incidents.state['incidents'], now,
+                                                    held, matched)
         forecasts = {}
         for name, threshold, rising in (('db_mib', None, True), ('disk_free_gb', DISK_FLOOR_GB, False),
                                         ('mem_free', LOW_FREE_MIB, False), ('mem_swap_pct', HIGH_SWAP_PCT, True)):
@@ -522,6 +535,7 @@ class Runtime:
             'physical_actions': False, 'control_authority': 'NONE', 'hold_reason': self.hold,
             'open_problems': result['open'], 'hidden_by_parent': result['hidden_by_parent'],
             'flapping': result['flapping'], 'incidents': self.incidents.recent(), 'cases': cases, 'investigations': investigations,
+            'playbooks': {**matched, 'library': playbooks.library(), 'authority': playbooks.AUTHORITY},
             'world_changes': {**self.radar.report(now), 'last_read': self.radar_last},
             'error_budgets': self.incidents.slo_report(now), 'forecasts': forecasts,
             'changes': self.incidents.state['changes'][-30:], 'proposals': self.proposals,
