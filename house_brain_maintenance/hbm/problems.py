@@ -365,19 +365,20 @@ def digest_text(items: list[tuple[str, dict, float]], reviews, version: str, ext
 
 
 # -- 0.9.12 reviewer watchdog ---------------------------------------------------------------------------------------
-def problem_waits(open_recs: dict, queued: dict, reviews) -> list[tuple[str, float]]:
-    """(title, waiting since) of each alerted open problem a posted queue line listed that has no AI review yet. It
-    waits from the first post that listed it, or from when it was seen again if it cleared and came back."""
+def problem_waits(open_recs: dict, queued: dict, reviews, needs_you=()) -> list[tuple[str, float]]:
+    """(title, waiting since) of each alerted open problem a posted queue line listed that has no review yet. It
+    waits from the first post that listed it, or from when it was seen again if it cleared and came back.
+    0.9.50 (D7): "reviewed" means any counting review (owner, cloud, rule or the internal model), and an item on the
+    free lane's ``needs_you`` list is the owner's, not a stall (0.9.29 counted cloud reviews only)."""
     out = []
     for key, rec in open_recs.items():
         if key == STALL_KEY or not isinstance(rec, dict) or not rec.get("alerted") or key not in queued:
             continue
         if rec.get("parent"):                   # 0.9.41: a blip's child is counted through its parent
             continue
-        got = reviews.get(key)
-        if isinstance(got, dict) and got.get("source") == "rule":          # 0.9.41: settled by a closed rule
+        if key in needs_you:                    # 0.9.50 B4: escalated to the owner on purpose
             continue
-        if (reviews.cloud(key) if hasattr(reviews, "cloud") else reviews.get(key)) is None:   # 0.9.29: cloud only
+        if reviews.get(key) is None:            # 0.9.50 D7: no review of any kind
             out.append((str(rec.get("title", key)), max(float(queued[key]), float(rec.get("first") or 0))))
     return out
 
@@ -456,6 +457,26 @@ def stalled(waits: list[tuple[str, float]], now: float) -> list[I.Finding]:
         done="Nothing installs and your phone is not asked before a review; after 48 hours you are asked anyway.",
         todo=("Open the \"House Brain Maintenance reviewers\" chat and check its last runs.",),
         if_ignored="Updates wait up to 48 hours, then your phone asks about each one.")]
+
+
+def internal_stalled(since: float, now: float, waiting: int) -> list[I.Finding]:
+    """0.9.50 (D7): the internal reviewer (rules, then the free model through the Companion) has not succeeded for
+    hours while problems waited: one problem, with the time it went rules-only."""
+    when = time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(since))
+    hours = (now - since) / 3600
+    return [I.Finding(
+        STALL_KEY, STALL_SOURCE, I.WARNING,
+        f"Internal reviewer: rules only since {when} ({waiting} waiting)",
+        detail=(f"The free model has not answered for {hours:.0f} h (Companion not answering, or the day's budget is spent); "
+                "the closed rules still run.",),
+        steps=("Nothing installs by itself; this is about reviews, not fixes.",
+               "The Companion (Workers AI, free plan) answers again when its allowance resets at 00:00 UTC, or when it "
+               "is reachable again; the cloud reviewer chat and your own reviews are still read and always win.",
+               "This clears by itself with the next successful internal review."),
+        facts={"waiting": waiting, "rules_only_since": when},
+        done="Rules keep reviewing what they can; the owner and cloud reviews are still read.",
+        todo=("Nothing now; look at the needs-you list in the morning summary.",),
+        if_ignored="Problems the rules cannot settle wait for the cloud reviewer or for you.")]
 
 
 # -- 0.9.12 after-update tag ----------------------------------------------------------------------------------------

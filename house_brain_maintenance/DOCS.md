@@ -631,6 +631,16 @@ Nothing else is ever uninstalled.
 
 ## Rules first, then the free model — from 0.9.42
 
+From 0.9.50 the free model has two tiers: the everyday one (Gemma) for ordinary log errors, and a stronger one (Qwen3.8)
+for App crashes, integration failures, backups, the radio networks and problems that keep coming back; the stronger
+one may say "needs a step by you", but only once it has agreed with the cloud reviewer often enough for that kind of
+problem (10 compared, 80 %). Each tier has its own share of the free daily allowance (1,200 and 1,800 Neurons); when
+the Companion refuses or a share is spent, the rules keep working alone for the rest of the day. Whatever the model
+cannot settle goes on a short "Needs you" list in the morning summary instead of waiting as a stalled review; the
+reviewer watchdog speaks up when a problem has had no review of any kind for 26 hours, or when the internal reviewer
+has not answered for 6 hours while problems waited.
+
+
 - **Closed rules answer the obvious problems at once, for free.** An internet blip and its parts, several devices of
   one integration offline together, a low battery, a problem that came back three times in a week, a single error
   that was gone by the next check, an ESPHome device that dropped once: each gets a verdict from a fixed table

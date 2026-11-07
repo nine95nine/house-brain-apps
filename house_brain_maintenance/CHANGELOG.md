@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.50
+
+The internal reviewer's second half (the reviewer chat's spec R1 B2/B4/B5/B6 and D7; owner D1/D7 2026-10-31/11-01,
+pop-up 2026-11-02 "Yes, build 0.9.50 as proposed"; needs Companion 0.2.0, live 2026-11-02). Contains 0.9.49 unchanged
+otherwise.
+
+- **Two tiers.** The review request is `house_brain_free_review_request.v2` with a `tier`. **Hard** (Qwen3.8 27B through
+  the Companion, low reasoning, 800 output tokens): App crashes and stopped Apps, integration failures, backups, the
+  radio families (Zigbee, Z-Wave, Thread, Matter, Bluetooth, ESPHome, deCONZ) and repeats the rules could not settle
+  (3+ episodes in a week). **Everyday** (Gemma): the low-risk log errors as before. A hard problem is `protected`: the
+  model may say WATCH, OWNER_ACTION or ESCALATE, never IGNORE. The request also carries the family, the repeat count
+  and the after-update tag. The answer's `model_id` and `tier` are kept with the draft; posts name the model.
+- **Budget split ($0).** Gemma ≤ 1,200 and Qwen ≤ 1,800 Neurons a day (the 3,000 lane), at most one Qwen call a run;
+  a Companion refusal or a spent tier means **rules only** for the rest of the day (`FREE_REVIEW_RULES_ONLY`; the
+  status line says `rules_only`). The day's count resets at 00:00 UTC with the Companion's.
+- **Trust per family.** Agreement with the cloud reviewer is counted per `<model>:<family>` as well; a model's
+  OWNER_ACTION is kept and may be posted only for a trusted family (≥ 10 compared at ≥ 80 %); otherwise it becomes
+  ESCALATE. A new model id starts from zero. The lane-wide check (10 compared at 60 %) stays.
+- **needs_you.** Every ESCALATE and every untrusted OWNER_ACTION goes on the `needs_you` list: one owner line in the
+  morning summary ("Needs you (N): …") and one machine line `house_brain_needs_you.v1 {"keys": […]}` on the lane's
+  posts and the summary, never a review line. An item leaves when it clears, when its facts change (it is drafted
+  again) or when the owner or the cloud reviewer reviews it. The reviewer watchdog never counts it as stalled.
+- **D7 stall semantics.** `reviewer:stalled` fires when a queued problem is neither reviewed (owner, cloud, rule or
+  internal model) nor on needs_you after 26 h (0.9.29 counted cloud reviews only), or when the internal reviewer has
+  not succeeded for 6 h while problems waited ("Internal reviewer: rules only since … (N waiting)"). Owner and cloud
+  reviews are still read and always win.
+- `house_brain_free_reviewer.v1` gains fields only: `tiers`, `needs_you`, `rules_only`, `rules`.
+
 ## 0.9.49
 
 The re-login playbook (the AI reviewer chat's spec of 2026-11-02 after the Tuya re-login; owner "how can I avoid this

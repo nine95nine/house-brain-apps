@@ -601,7 +601,8 @@ class Watcher:
             if waits is not None and ai is not None and ai.enabled:
                 if ai.readable():
                     queued = (self.j.load_doc(PR.WATCH_DOC, {}) or {}).get("queued") or {}
-                    waits = waits + PR.problem_waits(st["open"], queued, ai)
+                    needs_you = self.free_lane.needs_you_keys() if self.free_lane is not None else set()   # 0.9.50 B4
+                    waits = waits + PR.problem_waits(st["open"], queued, ai, needs_you)
                 else:
                     waits = None
         except Exception:  # noqa: BLE001 - not known this time
@@ -609,7 +610,17 @@ class Watcher:
         if waits is None:
             failed.append(PR.STALL_SOURCE)
             return []
-        return PR.stalled(waits, now)
+        out = PR.stalled(waits, now)
+        if not out and self.free_lane is not None:                           # 0.9.50 D7: the internal reviewer itself
+            try:
+                since = self.free_lane.internal_stalled(st["open"], now)
+            except Exception:  # noqa: BLE001 - not known: nothing new
+                since = None
+            if since is not None:
+                waiting = len([k for k, r in st["open"].items() if isinstance(r, dict) and r.get("alerted") and not r.get("parent")
+                               and self.problem_ai.get(k) is None and k not in self.free_lane.needs_you_keys()])
+                out = PR.internal_stalled(since, now, waiting)
+        return out
 
     def _systems_ai_findings(self, findings: list[I.Finding], now: float, failed: list[str]) -> list[I.Finding]:
         """0.9.30: Systems AI's proposals as problems with the normal Fix button, and its digest for the family
@@ -1107,11 +1118,16 @@ class Watcher:
         extra = ([silent] if silent else []) + ([f"Fixed for you overnight ({len(overnight)}): " + "; ".join(overnight)[:600]]
                                                  if overnight else [])
         extra += RA.repeat_lines(RA.load(self.j.load_doc(RA.DOC, {})), now)[:5]      # 0.9.49: re-logins that keep coming back
+        needs_line, needs_machine = self.free_lane.needs_you_summary() if self.free_lane is not None else ("", "")   # 0.9.50 B4
+        if needs_line:
+            extra.append(needs_line)
         if not items and not cleared:
             if extra:
                 text = self._markdown("morning summary", [], [])
                 for line in extra:
                     text = text.replace("\n\n_Posted by", f"\n- {line}\n\n_Posted by", 1)
+                if needs_machine:
+                    text += "\n" + needs_machine
                 self._post(text)
                 self.j.audit("issues", "PROBLEM_SUMMARY", items=0, cleared=0, reviewer_silent=bool(silent),
                              auto_fixed=len(overnight))
@@ -1126,6 +1142,8 @@ class Watcher:
         text = self._markdown("morning summary", items, cleared)
         for line in extra:
             text = text.replace("\n\n_Posted by", f"\n- {line}\n\n_Posted by", 1)
+        if needs_machine:
+            text += "\n" + needs_machine                                     # 0.9.50 B4: never a review line
         url = self._post(text)                                               # 0.9.23: first, for the link
         self._say("summary", title, happened="\n".join(lines)[:600],
                   done="Nothing new: each item is in your Messages list with its own steps.",
