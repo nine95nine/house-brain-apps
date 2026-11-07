@@ -121,6 +121,7 @@ class AiReviews:
         self.owner = gh.repo.split("/", 1)[0] if gh is not None else ""
         self.failed = False           # 0.9.12: the last read did not complete (then "no review" is not known)
         self.lockout = None           # 0.9.39: () -> bool, the cloud reviewer has been silent for a day (free lane)
+        self.internal_pending = None  # 0.9.51: (item) -> bool, the internal reviewer may still read its notes
 
     def _doc(self) -> dict:
         doc = self.j.load_doc(self.DOC, {})
@@ -157,7 +158,8 @@ class AiReviews:
                 newest = max(newest, at)
             for r in self._parse(c, self.owner):
                 old = reviews.get(r["item"])
-                if old is None or r["at"] >= float(old.get("at") or 0):     # the newest review of an item wins
+                if old is None or old.get("internal") or r["at"] >= float(old.get("at") or 0):
+                    # the newest review of an item wins; 0.9.51: the owner's always replaces an internal one
                     reviews[r["item"]] = {k: r[k] for k in ("verdict", "summary", "at", "url", "steps", "free", "source")
                                           if k in r}                                           # 0.9.42: source
                 if not r.get("free"):                                          # 0.9.29: the cloud reviewer's clock
@@ -176,6 +178,20 @@ class AiReviews:
     def get(self, item: str) -> dict | None:
         return self._doc()["reviews"].get(item)
 
+    def set_internal(self, item: str, verdict: str, summary: str, steps: list, model: str, at: float) -> None:
+        """0.9.51 (D4): store the free model's verdict for an update that has no review yet. It never replaces a
+        review by the owner, and the owner's next review replaces it (refresh)."""
+        if verdict not in VERDICTS or not isinstance(item, str) or not RE_ITEM.fullmatch(item):
+            return
+        doc = self._doc()
+        old = doc["reviews"].get(item)
+        if old is not None and not old.get("internal"):
+            return
+        doc["reviews"][item] = {"verdict": verdict, "summary": _plain(summary, 160), "at": float(at), "url": "",
+                                "steps": [str(x)[:120] for x in (steps or [])][:3], "internal": True,
+                                "model": re.sub(r"[^a-z0-9.-]", "", str(model or ""))[:40]}
+        self.j.save_doc(self.DOC, doc)
+
     def readable(self) -> bool:
         """0.9.12: "no review" is known: a read completed, and the last one did not fail (the reviewer watchdog)."""
         return not self.failed and float(self._doc()["read_at"] or 0) > 0
@@ -188,10 +204,16 @@ class AiReviews:
         if r is not None:
             words = {"APPROVE": "approve", "HOLD": "hold it for now", "DECLINE": "decline"}[r["verdict"]]
             summary = f": {r['summary']}" if r.get("summary") else ""
+            if r.get("internal"):                      # 0.9.51 (D5): advice only; never an automatic install
+                return Gate("ok", r["verdict"], f"Internal review (free model, from the release notes): {words}"
+                                                 f"{summary}"[:200], False)
             return Gate("ok", r["verdict"], f"AI review: {words}{summary}"[:200], r["verdict"] == "APPROVE")
         waited = (self.clock() - float(first_seen)) / 3600 if first_seen else 0.0
         if waited < AI_WAIT_HOURS and not self._locked():
             return Gate("wait", None, "AI review: requested on the tracking issue", False)
+        if waited < AI_WAIT_HOURS and self._pending(item):       # 0.9.51: the internal reviewer gets its turn first
+            return Gate("wait", None, "AI review: the cloud reviewer is silent; the internal reviewer reads the "
+                                      "release notes first (never installs by itself)", False)
         if waited < AI_WAIT_HOURS:                     # 0.9.39: the cloud reviewer is silent: no point waiting 48 h
             return Gate("missing", None, "AI review: none, and the cloud reviewer has been silent for a day (asked "
                                          "anyway; never installs by itself)", False)
@@ -202,6 +224,12 @@ class AiReviews:
         try:
             return bool(self.lockout()) if self.lockout is not None else False
         except Exception:  # noqa: BLE001 - an unreadable lane state means "not silent"
+            return False
+
+    def _pending(self, item: str) -> bool:
+        try:
+            return bool(self.internal_pending(item)) if self.internal_pending is not None else False
+        except Exception:  # noqa: BLE001 - an unreadable lane state means "not pending"
             return False
 
     def ask_anyway_at(self, first_seen: float | None) -> str:

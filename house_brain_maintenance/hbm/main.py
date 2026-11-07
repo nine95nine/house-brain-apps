@@ -391,6 +391,7 @@ class Service:
         self.cf_relay: CfRelay | None = None                # 0.8.2: Cloudflare approvals to the phone
         self.pifirmware: PiFirmware | None = None          # 0.8.6: Pi firmware updates
         self.ai: AiReviews | None = None                   # 0.8.9: AI reviews read from the tracking issue
+        self.update_lane = None                              # 0.9.51: internal update reviews (D4/D5)
         self.update_queue: UpdateQueue | None = None       # 0.8.9: the "updates waiting" list
         self.rate_noted: set[str] = set()                  # 0.8.9: requests waiting for the ask limit (audited once)
         self.free_lane = None                                   # 0.9.29: the free reviewer lane
@@ -582,6 +583,7 @@ class Service:
                 for engine in (self.updater, self.system, self.entities):
                     engine.ai = self.ai
                 self.update_queue = UpdateQueue(self.j, self.report_text, self._update_note)
+                self.wire_update_lane()                                                 # 0.9.51 (D4/D5)
                 self.watcher.review_waits = self.review_waits          # 0.9.12: reviewer watchdog
             for engine in (self.updater, self.system):
                 engine.on_done = self.after.start
@@ -602,6 +604,18 @@ class Service:
             self.watcher.key_findings = self.keys.findings
             self.watcher.os_findings = self.system.findings    # 0.8.3: an OS update waiting for a restart
         return self.engine
+
+    def wire_update_lane(self) -> None:
+        """0.9.51 (D4/D5): the internal update reviews ride the free lane (its Companion address, key and everyday
+        budget) and the AI review gate; without either there is none."""
+        if self.free_lane is None or self.ai is None:
+            self.update_lane = None
+            return
+        from .updatelane import UpdateLane
+        self.update_lane = UpdateLane(self.j, self.free_lane, self.ai, self.ha, self.system.upgrade_info,
+                                      self.report_text, self.ai.lockout or (lambda: False))
+        self.free_lane.update_lane = self.update_lane
+        self.ai.internal_pending = self.update_lane.pending
 
     def _safe_broker_base(self) -> str:
         """0.9.29: the Broker address, or "" when it is not known yet (the free lane then stays off)."""
@@ -987,7 +1001,8 @@ class Service:
                 if (ledger.get(self.key(rid)) or {}).get("outcome") == "DONE":
                     continue                            # installed since the last update check
                 review = self.ai.get(item) if self.ai is not None else None
-                ai = (f"AI review: {review['verdict']}" + (f": {review['summary']}" if review.get("summary") else "")
+                ai = ((("Internal review (free model): " if review.get("internal") else "AI review: ") + review["verdict"]
+                       + (f": {review['summary']}" if review.get("summary") else ""))
                       if review else ("AI review: not posted yet" if self.ai is not None else ""))
                 rows.append({"key": f"{stage}:{rid}|*", "stage": stage,
                              "title": f"{row.get('name')} {row.get('from')} → {to}",
@@ -1150,6 +1165,12 @@ class Service:
                 self.ai.refresh()
             except net.NetError as err:
                 LOG.warning("AI review read waits (the last reviews read stand): %s", net.redact(str(err))[:200])
+        if self.update_lane is not None:                # 0.9.51: the free model reads the notes of what still waits
+            try:
+                rows = rows_from(*(e.queue for e in (self.system, self.updater, self.entities)))
+                self.update_lane.cycle(rows, VERSION, self.o.dry_run)
+            except Exception as err:  # noqa: BLE001 - advice only; the update check itself stands
+                LOG.warning("internal update review waits: %s", net.redact(str(err))[:200])
         out = self.updater.cycle()
         if out is None:
             # 0.6.6: the Deployer switch-over, only when no App update ran in this cycle.

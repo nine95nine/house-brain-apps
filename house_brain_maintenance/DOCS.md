@@ -857,6 +857,22 @@ Who can decide: only your Home Assistant user, only through Home Assistant (ingr
 buttons and a single-use confirm step (10 minutes). The **Ask me again** button below is replaced by this list; its
 route stays for old pages.
 
+## Internal update reviews — from 0.9.51
+
+When the cloud AI reviewer has been silent for a day (or in `free_reviewer: primary`), the free model reads a
+waiting update's release notes through the House Brain Companion and gives advice: **approve**, **hold it for now** or
+**decline**. It reads only closed, public sources: the App's changelog as the Supervisor serves it, and for Core the
+release notes for your integrations and the known-issues feed. Updates without notes (OS, firmware, an App without a
+changelog) are not guessed and keep the 48-hour path.
+
+- **Advice only.** Your phone shows "Internal review (free model, from the release notes): …" and is always asked; an
+  internal approve **never installs anything by itself**, even a low-risk update with `auto_low_risk`. This App's own
+  review, the hold list and your standing rules still run first.
+- **Your review wins.** A review you (or the cloud reviewer) post replaces the internal one at once.
+- **$0.** At most 10 internal update reviews and 30 source reads a day inside the free model's everyday share;
+  the counts are in the `updates` field of the status line. Each run posts one "internal update review" comment on the
+  tracking issue with the verdicts and the sources read.
+
 ## Update review queue — from 0.8.9
 
 - **Updates waiting list.** On the tracking issue, one table of every waiting App, Core, OS, HACS and firmware

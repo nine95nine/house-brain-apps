@@ -436,6 +436,7 @@ class FreeLane:
         self.j, self.reviews, self.mode, self.url, self.key_of, self.report = journal, reviews, mode, url, key_of, report
         self.clock, self.request = clock, request
         self.last_error = ""
+        self.update_lane = None                 # 0.9.51: the internal update reviews (status only)
 
     def _load(self) -> dict:
         return _doc(self.j.load_doc(DOC, {}))
@@ -454,6 +455,8 @@ class FreeLane:
                 "tiers": {"everyday": doc["neurons_easy"], "hard": doc["neurons_hard"]},
                 "needs_you": len(doc["needs_you"]), "rules_only": bool(doc["rules_only_since"]),
                 "rules": len(doc["posted_rules"]),
+                # 0.9.51 (D4/D5): the internal update reviews' counts
+                **({"updates": self.update_lane.status()} if self.update_lane is not None else {}),
                 "last_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(doc["last_at"])) if doc["last_at"] else None,
                 "cloud_at": (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.reviews.cloud_at()))
                              if self.reviews is not None and self.reviews.cloud_at() else None)}
@@ -473,13 +476,15 @@ class FreeLane:
                 f"(agreement {rate}), {posted} posted in lockout mode.")
 
     # -- one call --------------------------------------------------------------------------------------------------
-    def ask(self, key: str, rec: dict, earlier: dict | None, tier: str = "everyday", repeats: int = 0) -> dict:
+    def call(self, payload: dict) -> tuple[int, dict | None]:
+        """0.9.51: one POST to the Companion's review route with the App's Broker key; (status, answer or None).
+        Status 0 means no key."""
         token = self.key_of()
         if not token:
-            return {"error": "no_rotation_key"}
+            return 0, None
         try:
             status, body = self.request("POST", f"{self.url}/v1/review", {"Authorization": f"Bearer {token}"},
-                                        request_body(key, rec, earlier, tier, repeats), timeout=TIMEOUT)
+                                        payload, timeout=TIMEOUT)
         except net.NetError as err:
             status, body = err.status, None
             try:
@@ -487,7 +492,15 @@ class FreeLane:
             except ValueError:
                 body = None
             if not isinstance(body, dict):
-                return {"error": f"http_{status}"}
+                return status, None
+        return status, body if isinstance(body, dict) else None
+
+    def ask(self, key: str, rec: dict, earlier: dict | None, tier: str = "everyday", repeats: int = 0) -> dict:
+        status, body = self.call(request_body(key, rec, earlier, tier, repeats))
+        if status == 0 and body is None:
+            return {"error": "no_rotation_key"}
+        if body is None:
+            return {"error": f"http_{status}"}
         return parse_result(status, body)
 
     # -- the tick --------------------------------------------------------------------------------------------------

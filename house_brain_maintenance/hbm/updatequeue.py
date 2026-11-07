@@ -44,6 +44,8 @@ def ai_cell(ai, item: str) -> tuple[str, bool]:
     if r is None:
         return "requested", True
     link = f" ([review]({r['url']}))" if r.get("url") else ""
+    if r.get("internal"):                                   # 0.9.51: the free model's verdict, advice only
+        return f"{r['verdict']} (internal, free model; your phone is asked)", False
     return f"{r['verdict']}{link}", False
 
 

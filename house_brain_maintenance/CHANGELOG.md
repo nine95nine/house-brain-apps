@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.9.51
+
+Internal update reviews (owner decisions D4 and D5, 2026-11-01; pop-up 2026-11-07 "Yes, build 0.9.51 as proposed";
+the reviewer chat's spec R1 part B3). Contains 0.9.50 unchanged otherwise.
+
+- **The free model reads the release notes when the cloud reviewer is silent.** A waiting App or Core update with no
+  AI review is reviewed through the Companion's `kind: update` route (0.2.0) once the cloud reviewer has been silent
+  for a day (`free_reviewer: lockout`), or at once in `primary` mode. The notes come only from closed, public sources:
+  the App's changelog as the Supervisor serves it (cut to the part newer than the installed version), Core's release
+  notes for the integrations this Home Assistant runs and the known-issues feed (both already read by 0.8.4, cached).
+  OS, Pi firmware and device firmware have no allowlisted source and keep the 48-hour path. An update without notes
+  is skipped (`INTERNAL_UPDATE_REVIEW_SKIPPED`), never guessed.
+- **Advice only (D5).** The verdict (APPROVE, HOLD or DECLINE) is stored like a review and shown on the phone as
+  "Internal review (free model, from the release notes): …", in the updates-waiting table as "(internal, free model;
+  your phone is asked)" and on the Maintenance page. **An internal APPROVE never installs anything by itself**; the
+  phone is always asked. This App's own review (held versions, risky bumps), the hold list and the standing rules (no
+  `.0` Core release) run before any review, as before. A review by the owner replaces an internal one whenever it
+  arrives, even one dated earlier; an internal verdict never replaces the owner's.
+- **Its turn first.** With the cloud reviewer silent, 0.9.39 asked the phone at once with "AI review: none". Now the
+  internal reviewer gets one update check to read the notes first ("the internal reviewer reads the release notes
+  first"); after it answered, skipped or failed, the ask proceeds as before.
+- **$0 counts.** At most 10 internal update reviews and 30 source reads a day, at most 2 an update check, inside the
+  free lane's everyday tier (Gemma, 1,200 Neurons; counted in `tiers.everyday`). A Companion refusal or a spent share
+  stops the lane for that check; the 48-hour path stays. The status line `house_brain_free_reviewer.v1` gains
+  `updates` {reviews_today, reads_today, done, active, last_reason}.
+- **The record.** One comment per check on the tracking issue, "### House Brain Maintenance: internal update review",
+  with one machine line per update: `house_brain_internal_update_review.v1 {item, verdict, summary, model, neurons,
+  sources}`. It is never `house_brain_ai_update_review.v1` (the owner's line), and the reader counts only the owner's.
+- `FreeLane.call` carries any review request (problems and updates) with the App's Broker key.
+
 ## 0.9.50
 
 The internal reviewer's second half (the reviewer chat's spec R1 B2/B4/B5/B6 and D7; owner D1/D7 2026-10-31/11-01,
