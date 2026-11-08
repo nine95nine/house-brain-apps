@@ -22,6 +22,7 @@ from .investigations import Investigations
 from .learn import trend, days_until, freeze, score, hourly
 from .logs import LogLearner
 from . import playbooks
+from . import link
 from .radar import Radar
 from .store import Store
 from .transport import TransportError, ESPHOME_SLUGS
@@ -158,6 +159,7 @@ class Runtime:
         self.incidents = Incidents(self.store)
         self.cases = Cases(self.store)
         self.investigations = Investigations(self.store)        # 0.3.0 (agentic design step A1)
+        self.inbox = link.Inbox()                                # 0.3.5 House link: research answers in
         # 0.2.1: the World Change Radar; without a public client it reads nothing ("not checked yet").
         self.public = public
         self.radar = Radar(self.store, public)
@@ -519,6 +521,9 @@ class Runtime:
                                 apps=self.view.get('apps'), states=None if held else self.states,
                                 problems=problems.keys())
         matched = playbooks.match(sig)
+        research = self.inbox.take()          # 0.3.5: applied on this thread only; dropped while held
+        if research and not held:
+            self.investigations.add_research(research, now)
         investigations = self.investigations.update(self.cases.state['cases'], self.incidents.state['incidents'], now,
                                                     held, matched)
         forecasts = {}

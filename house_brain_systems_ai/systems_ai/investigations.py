@@ -112,7 +112,7 @@ class Investigations:
             if case['status'] not in LIVE:
                 item.update(status='CLOSED', closed_at=now, outcome=case['status'])
                 continue
-            item['answer'] = answer(case, by_id.get(case['id']), cases, matched)
+            item['answer'] = answer(case, by_id.get(case['id']), cases, matched, item.get('research'))
             item['status'] = 'ANSWERED' if item['answer']['hypotheses'] else 'NEEDS_ENGINEER'
             if self._ledger(item, case, now):
                 item['status'] = 'STALLED'
@@ -121,6 +121,20 @@ class Investigations:
         self._prune(now)
         self.store.put('investigations:state', self.state)
         return self.report(now)
+
+    def add_research(self, answers, now):
+        """0.3.5: research results from the MacBook (already validated by link.validate). Only an open investigation
+        takes one; the newest replaces the older. Returns how many were kept."""
+        kept = 0
+        for ans in answers:
+            item = self.state['items'].get(ans['task'])
+            if item is None or item.get('closed_at') is not None:
+                continue
+            item['research'] = {**ans, 'at': now}
+            kept += 1
+        if kept:
+            self.store.put('investigations:state', self.state)
+        return kept
 
     def _ledger(self, item, case, now):
         """0.3.4 (W26-C6): record new facts every cycle; review once an hour. True = the investigation is stalled.
@@ -185,7 +199,7 @@ class Investigations:
                         'or the Deployer.'}
 
 
-def answer(case, incident, cases, matched=None):
+def answer(case, incident, cases, matched=None, research=None):
     """T0: evidence, case memory and ranked hypotheses. Deterministic; every claim cites evidence ids.
     0.3.3: a matching playbook (a solved real case) ranks first and gives the recommended request."""
     evidence = [f'case:{case["id"]}'] + [f'problem:{k}' for k in case['problems'][:10]]
@@ -201,6 +215,12 @@ def answer(case, incident, cases, matched=None):
     similar = similar[:MAX_SIMILAR]
     hyps = [{'kind': 'PLAYBOOK', 'text': f"Known case: {m['title']}. {m['request']}",
              'evidence': [f"playbook:{m['playbook']}"] + m['evidence'][:2]} for m in known[:2]]
+    if research and research.get('items'):
+        # 0.3.5 House link: public research from the MacBook, always untrusted evidence, never an instruction.
+        top = research['items'][0]
+        hyps.append({'kind': 'RESEARCH', 'text': f"Public research found {len(research['items'])} source(s) "
+                     f"(untrusted): {top['title'][:120]} — {top['url']}", 'evidence': [f"research:{research['task']}@"
+                                                                                    f"{int(research['at'])}"]})
     fixed = [s for s in similar if s['status'] == 'FIXED_VERIFIED']
     if fixed:
         s = fixed[0]

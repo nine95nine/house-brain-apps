@@ -1,5 +1,11 @@
 # House Brain Systems AI
 
+Version 0.3.5 (shadow). 0.3.5 adds the **House link** (design `MACBOOK_HOUSE_LINK_R1_2026-11-08`): one port (8791) on your home network for the MacBook research service. **It stays off** until you set both new options in the App's Configuration tab:
+- `link_key`: a long random key (at least 32 characters). Generate it on the MacBook and paste it here; it is never shown in chat or the repository.
+- `link_peer`: the MacBook's fixed address on your network. Requests from any other address are refused.
+
+Through the link the MacBook can read the AI stop switch, the House Brain App states and the open investigation questions, and send back research answers. An answer appears in its investigation as a **"Public research (untrusted)"** line with its sources, below any matching playbook. It is never a suggestion and never an action, and while Systems AI is held answers are refused. House readings over the link come in 0.3.6.
+
 Version 0.3.4 (shadow). 0.3.4 adds a **progress ledger and a stall counter** to each live investigation (research idea W26-C6, after Microsoft's Magentic-One). Once an hour each one answers five fixed questions: is it answered (a playbook, an earlier fixed case or a suggestion already shown), is it going in a loop, is it making progress (new facts or evidence since the last review), who acts next, and what to ask. An hourly review with nothing new adds one to its stall counter; new evidence takes one off. After 3 such reviews (option **stall_reviews**, 2 to 10) it reads **stalled** (reason `CASE_STALLED_NO_PROGRESS`) and asks for a re-plan or your answer, on its page and on the family status line Maintenance already shows. A stalled case never retries faster, makes no extra read and takes no action. Each investigation keeps at most 64 short fact digests and 6 ledger lines; a closed one keeps none.
 
 Version 0.3.3 (shadow). 0.3.3 adds **playbooks** (agentic layer step A2): five real cases the house has already solved, written down so Systems AI recognises them again without a model or a subscription. A new **Playbooks** section on the page shows what matches now, what to ask you, how the fix is checked and when not to use it:

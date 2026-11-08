@@ -17,6 +17,8 @@ from .runtime import Runtime
 from . import __version__
 from .transport import Client, PublicClient
 from .web import Server
+from . import link
+from .interlock import ENTITY as KILL_ENTITY
 
 
 def gate(states, now):
@@ -52,12 +54,25 @@ def main():
                     archive_json=lambda day: day_json(runtime.store.path, day))
     thread = Thread(target=server.run, daemon=True)
     thread.start()
+    # 0.3.5 House link: only when the owner set both link_key and link_peer (design MACBOOK_HOUSE_LINK_R1).
+    linked = link.configured(options)
+    link_server = None
+    if linked:
+        link_server = link.LinkServer(
+            linked[0], linked[1],
+            state=lambda: link.state_view(runtime.status, runtime.states, KILL_ENTITY),
+            questions=lambda: link.questions_view(runtime.status, runtime.cases.state['cases']),
+            health=lambda: build(runtime, time.time()), held=lambda: runtime.hold is not None,
+            inbox=runtime.inbox, day=lambda: time.strftime('%Y-%m-%d', time.gmtime()))
+        Thread(target=link_server.run, daemon=True).start()
     try:
         while not stop.is_set():
             runtime.step(time.time())
             stop.wait(1)
     finally:
         server.stop()
+        if link_server is not None:
+            link_server.stop()
         runtime.close()
 
 
