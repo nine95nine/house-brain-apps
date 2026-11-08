@@ -339,6 +339,8 @@ class Updater:
                     else:
                         self._note(key, "weekly batch: the evidence card is not clean; waits for the next batch: "
                                    + "; ".join((c or {}).get("reasons") or ["no evidence card"])[:160])
+                        if c is not None:                                    # 0.9.58: the owner sees why (once per card)
+                            self.evidence.post_once(c, VERSION_OF(), "held before the install")
                         continue
                 else:
                     self.batch.enlist(item, kind="app", name=rev.name, from_version=rev.from_version,
@@ -417,7 +419,8 @@ class Updater:
         result = self.apply(rid, rev, prior_state=app.state, automatic=automatic)
         result.facts = {**facts, **result.facts}
         if automatic and self.p.mode == TIERS and self.evidence is not None:
-            self.evidence.note_auto(rev.name, rev.from_version, rev.to_version, result.result_outcome)
+            self.evidence.note_auto(rev.name, rev.from_version, rev.to_version, result.result_outcome,
+                                    kind="app", slug=rev.slug, rid=rid, prior_state=app.state)   # 0.9.58: soak watch
         if self.p.mode == TIERS and self.batch is not None and result.result_outcome in (DONE, RESTORED, FAILED, FAILED_MANUAL, REJECTED):
             self.batch.finished(f"app:{key}", result.result_outcome) if result.result_outcome != REJECTED else self.batch.skip(f"app:{key}")
         return result

@@ -307,7 +307,8 @@ class SystemUpdater:
                     result = self.apply(rid, info, facts)
                     if result is not None:
                         result.facts = {**facts, **result.facts}
-                        self.evidence.note_auto(LABEL[info.kind], str(info.version), str(info.version_latest), result.result_outcome)
+                        self.evidence.note_auto(LABEL[info.kind], str(info.version), str(info.version_latest), result.result_outcome,
+                                                kind=info.kind, slug=info.kind, rid=rid)     # 0.9.58: soak watch
                         self.batch.finished(key, result.result_outcome)
                     return result
                 self.batch.enlist(key, kind=info.kind, name=LABEL[info.kind], from_version=str(info.version),

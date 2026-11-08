@@ -346,6 +346,8 @@ class EntityUpdater:
                     else:
                         note(key, "weekly batch: the evidence card is not clean; waits for the next batch: "
                              + "; ".join((c or {}).get("reasons") or ["no evidence card"])[:160])
+                        if c is not None:                                    # 0.9.58: the owner sees why (once per card)
+                            self.evidence.post_once(c, VERSION_OF(), "held before the install")
                         continue
                 else:
                     self.batch.enlist(item, kind=rev.kind, name=rev.name, from_version=rev.from_version,

@@ -1138,6 +1138,10 @@ class Watcher:
             updated = self.evidence.overnight()
             if updated:
                 extra.append(f"Updated by itself overnight ({len(updated)}): " + "; ".join(updated)[:600])
+            soak = getattr(self.evidence, "soak", None)                     # 0.9.58: the 72-hour soak watch
+            soaked = soak.overnight() if soak is not None else []
+            if soaked:
+                extra.append(f"Soak watch ({len(soaked)}): " + "; ".join(soaked)[:600])
         extra += RA.repeat_lines(RA.load(self.j.load_doc(RA.DOC, {})), now)[:5]      # 0.9.49: re-logins that keep coming back
         needs_line, needs_machine = self.free_lane.needs_you_summary() if self.free_lane is not None else ("", "")   # 0.9.50 B4
         if needs_line:

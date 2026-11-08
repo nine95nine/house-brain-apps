@@ -542,6 +542,7 @@ Assistant notification:
 | `pi_firmware_updates` | From 0.8.6: Pi firmware (bootloader) updates in the approval flow (default `true`; never automatic). |
 | `ai_review` | From 0.8.9: the updates-waiting list and an AI review on the tracking issue before any update is asked or installed by itself (default `true`). |
 | `housekeeping` | From 0.8.7: failing automations, missing entities, error floods, database size and the monthly housekeeping report (default `true`; `false` = none of these reads). |
+| `restore_drill` | From 0.9.58: `off` (default) or `monthly`: once a month the phone asks to back up one App and restore it from that backup, proving the undo path (the App restarts once; Reject or no answer skips the month). |
 | `health_check_minutes` | How long it watches an App after updating it (default 3). |
 | `approval_timeout_minutes` | How long an ask waits for your tap: 2-60 min. From 0.9.38 the default for a new install is 60 (was 15). An existing install keeps its saved value: to wait an hour, set it to 60 in this App's Configuration tab. A missed ask is listed on the Maintenance page and asked again after `update_reask_hours`. |
 | `update_reask_hours` | From 0.6.5: an App, Core or OS update ask you did not answer is asked again after this many hours (1–48, default 6; was fixed at 24). From 0.7.2 the same wait applies to fix asks and the Deployer switch-over ask (were fixed at 24 hours). Reject is never asked again. |
@@ -642,7 +643,7 @@ running. If the local copy is running, the store one is stopped, or the backup d
 removed and you are told why (a copy the Supervisor shows as `error` after its stop counts as stopped, from 0.9.44).
 Nothing else is ever uninstalled.
 
-## Rules-first updates: tiers, the evidence card and the weekly batch — from 0.9.56
+## Rules-first updates: tiers, the evidence card, the weekly batch and the proven undo path — from 0.9.56
 
 Your decision of 2026-11-08: updates should not freeze when the paid AI chats are out of tokens. With
 `update_mode: tiers` this App decides small updates itself from **free public checks**, never from an AI's word.
@@ -666,6 +667,15 @@ Your decision of 2026-11-08: updates should not freeze when the paid AI chats ar
   tracking issue.
 - **The AI is advice now, not a gate.** A missing review never delays a tier A or B update and never sends it to your
   phone; a review can only add a hold.
+- **Proven undo path (from 0.9.58).** Each App has a *reversibility score* from this house's own records: +1 for
+  every update of it that went well or restore drill that brought it back, −3 for a failed restore, failed drill or
+  an App that stopped running within 3 days of updating itself; only the last 90 days count. A minor or major App
+  update installs by itself only at a score of 3; below that it waits on the Maintenance page for your Approve
+  (each approved update that works adds a point). Every install that ran by itself is watched for 72 hours: an App
+  that stops running is reported once, and its automatic updates are held for 90 days.
+- **Monthly restore drill (option `restore_drill: monthly`, off by default).** Once a month this App asks on your
+  phone to back up one App and restore it from that backup, proving the undo path really works (the App restarts
+  once, its version does not change). Reject or no answer skips the month. The result is on the tracking issue.
 - **More free checks from 0.9.57** (Core and OS): *held boards* (Home Assistant's stable feed per board: a version not
   handed to your board yet is a hard stop), *crowd regressions* (new GitHub issues of the last week naming the exact
   version: 5 or more is a hard stop; at most 25 searches a day, over the cap counts as unknown), and *security* (OSV,

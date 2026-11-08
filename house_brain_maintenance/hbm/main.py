@@ -22,6 +22,7 @@ from .entities import PAUSE_DOC, JOBS as ENTITY_JOBS, WATCH_DOC, EntityPolicy, E
 from .migrate import JOB as MIGRATE_JOB, MigratePolicy, Migrator
 from .scoutmove import JOB as SCOUTMOVE_JOB, ScoutMove
 from .observermove import JOB as OBSMOVE_JOB, TXN as OBSMOVE_TXN, ObserverMove, ObserverMovePolicy
+from .drill import JOB as DRILL_JOB
 from .inspectormove import JOB as INSMOVE_JOB, TXN as INSMOVE_TXN, InspectorMove
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
@@ -133,6 +134,7 @@ class Options:
     pi_firmware_updates: bool = True  # 0.8.6: Pi bootloader firmware updates in the approval flow (never automatic)
     housekeeping: bool = True         # 0.8.7: failing automations, missing entities, error flood, database size
     history_archive: bool = True      # 0.9.54: nightly compressed history archive under /share (owner 2026-11-08)
+    restore_drill: str = "off"        # 0.9.58: off | monthly (one owner-approved restore drill of an App a month)
     ai_review: bool = True            # 0.8.9: an AI review on the tracking issue before any update ask/auto install
     cf_control_issue: int = 454       # 0.8.2: Cloudflare control approvals to the phone (0 = off; owner 2026-10-11)
     cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
@@ -240,6 +242,8 @@ def load_options(path: str) -> Options:
         else _bad("housekeeping"),
         history_archive=raw.get("history_archive", True) if isinstance(raw.get("history_archive", True), bool)
         else _bad("history_archive"),
+        restore_drill=raw.get("restore_drill", "off") if raw.get("restore_drill", "off") in ("off", "monthly")
+        else _bad("restore_drill"),                                             # 0.9.58
         ai_review=raw.get("ai_review", True) if isinstance(raw.get("ai_review", True), bool) else _bad("ai_review"),
         cf_control_url=_cf_url(raw.get("cf_control_url")),
         free_reviewer=raw.get("free_reviewer", "lockout") if raw.get("free_reviewer", "lockout") in ("off", "shadow", "lockout", "primary")
@@ -397,6 +401,8 @@ class Service:
         self.update_lane = None                              # 0.9.51: internal update reviews (D4/D5)
         self.evidence = None                                 # 0.9.56: the evidence card (tiers)
         self.batch = None                                    # 0.9.57: the weekly tier B batch (tiers)
+        self.soak = None                                     # 0.9.58: soak.Soak (72 h after an automatic install)
+        self.drill = None                                    # 0.9.58: drill.Drill (monthly restore drill, option)
         self.update_queue: UpdateQueue | None = None       # 0.8.9: the "updates waiting" list
         self.rate_noted: set[str] = set()                  # 0.8.9: requests waiting for the ask limit (audited once)
         self.free_lane = None                                   # 0.9.29: the free reviewer lane
@@ -605,6 +611,12 @@ class Service:
                 self.batch = Batch(self.j, settings, self.report_text)
                 self.batch.ha = self.ha
                 self.updater.batch = self.entities.batch = self.system.batch = self.batch
+            from .drill import Drill                                             # 0.9.58
+            from .soak import Soak
+            self.soak = Soak(self.j, self.ha, self.report_text)
+            self.evidence.soak = self.soak
+            self.drill = Drill(self.ha, self.j, settings, self.o.restore_drill, health_seconds=policy.health_seconds,
+                               poll=self.poll, busy=lambda: bool(self.j.load_txn()) or bool(self.after is not None and self.after.active()))
             if self.watcher is not None:
                 self.watcher.evidence = self.evidence
                 self.watcher.update_mode = self.o.update_mode
@@ -1154,7 +1166,9 @@ class Service:
                                  **self._waiting_attrs(), **self._keys_attrs(),
                                  "needs_review": self.needs_review(),           # 0.9.26
                                  **({"free_reviewer": self.free_lane.status()} if self.free_lane is not None else {}),
-                                 **({"update_batch": self.batch.status()} if self.batch is not None else {})})    # 0.9.57
+                                 **({"update_batch": self.batch.status()} if self.batch is not None else {}),    # 0.9.57
+                                 **({"soak": self.soak.status()} if self.soak is not None else {}),              # 0.9.58
+                                 **({"restore_drill": self.drill.status()} if self.drill is not None else {})})
 
     def _publish_family(self) -> None:
         """0.9.30: relay Systems AI's digest into the one family sensor (owner pop-up "Maintenance relays it")."""
@@ -1221,6 +1235,11 @@ class Service:
                 self.batch.cycle()
             except Exception as err:  # noqa: BLE001 - the batch is a schedule; the engines still run
                 LOG.warning("weekly batch waits: %s", net.redact(str(err))[:200])
+        if self.soak is not None:                       # 0.9.58: the 72-hour watch of installs that ran by themselves
+            try:
+                self.soak.cycle()
+            except Exception as err:  # noqa: BLE001 - read-only; the update check itself stands
+                LOG.warning("soak watch waits: %s", net.redact(str(err))[:200])
         if self.update_lane is not None:                # 0.9.51: the free model reads the notes of what still waits
             try:
                 rows = rows_from(*(e.queue for e in (self.system, self.updater, self.entities)))
@@ -1249,6 +1268,11 @@ class Service:
             if im is not None:                          # 0.9.9: Engineering Inspector from the store
                 self.finish(im.request_id, INSMOVE_JOB, f"insmove:{im.facts.get('new')}",
                             self.o.report_issue or None, Result(im.result_outcome, im.reasons, im.facts))
+                return
+            dr = self.drill.cycle() if self.drill is not None else None
+            if dr is not None:                          # 0.9.58: the monthly restore drill (owner option, phone-approved)
+                self.finish(dr.request_id, DRILL_JOB, f"drill:{dr.facts.get('slug')}",
+                            self.o.report_issue or None, Result(dr.result_outcome, dr.reasons, dr.facts))
                 return
             # 0.6.0: Core/OS only when no App update ran in this cycle (never in the same run).
             sys_out = self.system.cycle()

@@ -33,6 +33,7 @@ import time
 from . import feeds as FD
 from . import issues as I
 from . import upgradeinfo as UI
+from . import reversibility as RV
 from .autofix import physical, radio_app
 
 TIERS_MODE = "tiers"
@@ -41,7 +42,7 @@ DOC = "evidence"
 SCHEMA = "house_brain_update_evidence.v1"
 MIN_AGE_DAYS = {"patch": 3.0, "minor": 5.0}
 HISTORY_DAYS = 90.0
-BAD_OUTCOMES = ("RESTORED", "FAILED", "FAILED_MANUAL")
+BAD_OUTCOMES = ("RESTORED", "FAILED", "FAILED_MANUAL", RV.DRILL_FAILED, RV.SOAK_FAILED)   # 0.9.58: drills, soak
 AI_HOLDS = ("HOLD", "DECLINE")
 CLEAN, WAIT, HOLD = "clean", "wait", "hold"
 RE_PRERELEASE = re.compile(r"(?:^|[.\-+])(?:beta|rc|dev|alpha|pre)[.\-]?\d*$|\d(?:b|rc|a)\d+$", re.I)
@@ -111,8 +112,9 @@ def _ts(value) -> float | None:
     return float(calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))) if m else None
 
 
-def history_check(ledger: dict, prefix: str, now: float) -> tuple[str, str]:
-    """This house's own history: an earlier restore or failure of the same item (``upd-<slug>-*``) within 90 days."""
+def history_check(ledger: dict, prefix, now: float) -> tuple[str, str]:
+    """This house's own history: an earlier restore or failure of the same item (``upd-<slug>-*``) within 90 days.
+    0.9.58: ``prefix`` may be a tuple (an App's updates and its restore drills; a soak failure is ``<rid>-soak``)."""
     for rid, row in (ledger or {}).items():
         if not isinstance(row, dict) or not str(rid).startswith(prefix):
             continue
@@ -212,6 +214,7 @@ class Evidence:
         self.j, self.ha, self.upgrade_info, self.ai, self.report, self.clock = journal, ha, upgrade_info, ai, report, clock
         self.feeds = feeds                      # 0.9.57: feeds.Feeds (stable boards, crowd, security); None = unknown
         self.board = ""                         # 0.9.57: the OS board (set by the Service from /os/info)
+        self.soak = None                        # 0.9.58: soak.Soak (watches automatic installs 72 h)
 
     def _doc(self) -> dict:
         doc = self.j.load_doc(DOC, {})
@@ -253,7 +256,8 @@ class Evidence:
         checks = {"release age": age_check(bump, first_seen, now, 0.0 if urgent else min_days) if urgent and bump in MIN_AGE_DAYS
                   else age_check(bump, first_seen, now, min_days),
                   "Home Assistant alerts": alerts_check(self._alerts() if domains else [], set(domains or ()), self._core_version()),
-                  "this house's history": history_check(self.j.ledger(), ledger_prefix, now),
+                  "this house's history": history_check(self.j.ledger(), (ledger_prefix, RV.prefixes(slug)[1]) if kind == "app" and slug
+                                                        else ledger_prefix, now),
                   "AI review": ai_check(self.ai.get(item) if self.ai is not None else None)}
         if urgent and bump in MIN_AGE_DAYS:
             checks["release age"] = (CLEAN, "security fix: no release-age wait")
@@ -261,6 +265,8 @@ class Evidence:
             checks["held boards"] = boards_check(self.feeds.stable() if self.feeds is not None else None, kind, self.board, to_version)
         if crowd_repo:
             checks["crowd regressions"] = crowd_check(self.feeds.crowd_count(crowd_repo, to_version) if self.feeds is not None else None)
+        if kind == "app" and slug:                                  # 0.9.58: proven undo path for minor/major Apps
+            checks["reversibility"] = RV.check(self.j.ledger(), slug, bump, now)
         checks.update(extra)
         return card(item=item, name=name, kind=kind, bump=bump, verdict=verdict, from_version=from_version,
                     to_version=to_version, tier=tier, checks=checks, now=now)
@@ -282,7 +288,14 @@ class Evidence:
             self.j.audit("evidence", "EVIDENCE_POST_FAILED", reason=str(err)[:120])
         return True
 
-    def note_auto(self, name: str, from_version: str, to_version: str, outcome: str) -> None:
+    def note_auto(self, name: str, from_version: str, to_version: str, outcome: str, *, kind: str = "",
+                  slug: str = "", rid: str = "", prior_state: str = "started") -> None:
+        """0.9.58: a DONE automatic install of an App, Core or the OS also starts the 72-hour soak watch."""
+        if outcome == "DONE" and self.soak is not None and kind in ("app", "core", "os") and rid:
+            try:
+                self.soak.start(kind=kind, slug=slug or kind, name=name, rid=rid, to_version=to_version, prior_state=prior_state)
+            except Exception:  # noqa: BLE001 - the watch is extra; the install result stands
+                pass
         doc = self._doc()
         doc["overnight"] = (doc["overnight"] + [{"name": I.scrub(str(name), 60), "from": str(from_version)[:40],
                                                   "to": str(to_version)[:40], "outcome": str(outcome)[:20],

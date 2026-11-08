@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.9.58
+
+Rules-first updates, part 3 (the same owner decision 2026-11-08 **"Tiers A + B"** and pop-up "Yes, build 0.9.56 →
+0.9.59 as sliced"). The house proves its own undo path before and after an update installs by itself. Contains
+0.9.57 unchanged otherwise.
+
+- **Reversibility score** (`hbm/reversibility.py`), per App, from this App's own ledger, no AI: +1 for every update
+  of the App that finished DONE, +1 for every restore drill that brought it back, −3 for a failed restore
+  (`FAILED_MANUAL`), a failed drill or a soak failure; only the last 90 days count. **Minor and major App updates
+  (tier B) install by themselves only at a score of 3 or more**; below it the evidence card says *wait* (never
+  hold): the update stays on the Maintenance page for your Approve, and every approved update that works adds a
+  point. Patch updates (tier A) are not gated by the score. A held tier B App card is now posted once, like Core's.
+- **Soak watch** (`hbm/soak.py`): every install that ran by itself (tier A, the weekly batch, Core/OS) is watched for
+  72 hours with one read every 10 minutes at most. An App that ran before and is stopped or in error on two reads
+  in a row = `SOAK_FAILED`: one ledger row (`<request>-soak`, so the 90-day history check holds every further
+  automatic update of that App and the score drops by 3), one post on the tracking issue and one line in the next
+  morning summary. Nothing is changed by the watch itself; the problem watch and self-healing keep their paths.
+  A version change by you ends the watch quietly; 72 clean hours give one morning line "ran fine for 3 days".
+- **Monthly restore drill** (`hbm/drill.py`, option **`restore_drill: off | monthly`**, default `off`): once every
+  30 days this App picks one App that updated through it before (never this App, never a radio App or one that
+  controls equipment; lowest score first), **asks on the phone** ("Maintenance: monthly restore drill"; Reject or no
+  answer = skip this month), then takes a partial backup of that App and restores it from that backup inside the
+  same guard the update path uses. `DRILL_OK` (+1) or `DRILL_FAILED` (−3 and the 90-day hold) is one ledger row
+  `drill-<slug>-<yyyy-mm>` and one result post. Never while an update or after-update check is open; dry run reviews
+  only. The App restarts once during a drill.
+- Status: `soak` (what is being watched) and `restore_drill` (mode, last, next). `ask` / `auto_low_risk` unchanged
+  (the drill asks whatever the mode; the score and the soak only act in tiers mode because only tiers mode installs by
+  itself). No new network reads; $0.
+
 ## 0.9.57
 
 Rules-first updates, part 2 (the same owner decision 2026-11-08 **"Tiers A + B"** and pop-up "Yes, build 0.9.56 →
