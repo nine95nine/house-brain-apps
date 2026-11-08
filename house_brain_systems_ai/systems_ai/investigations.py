@@ -32,7 +32,7 @@ changes authority. Facts are kept as short digests, at most 64 per investigation
 import hashlib
 import json
 
-from . import playbooks
+from . import link, playbooks
 
 OPEN_AFTER_WARNING_S = 3600
 EXPIRE_S = 7 * 86400
@@ -217,10 +217,14 @@ def answer(case, incident, cases, matched=None, research=None):
              'evidence': [f"playbook:{m['playbook']}"] + m['evidence'][:2]} for m in known[:2]]
     if research and research.get('items'):
         # 0.3.5 House link: public research from the MacBook, always untrusted evidence, never an instruction.
+        # 0.3.8 (idea register X2): sources are counted once per page, and one site alone is never corroboration.
         top = research['items'][0]
-        hyps.append({'kind': 'RESEARCH', 'text': f"Public research found {len(research['items'])} source(s) "
-                     f"(untrusted): {top['title'][:120]} — {top['url']}", 'evidence': [f"research:{research['task']}@"
-                                                                                    f"{int(research['at'])}"]})
+        sources, sites, dupes = link.independence(research['items'])
+        note = ', one site only, not corroborated' if sites == 1 else ''
+        dup = f", {dupes} repeat(s) counted once" if dupes else ''
+        hyps.append({'kind': 'RESEARCH', 'text': f"Public research found {sources} source(s) on {sites} site(s)"
+                     f"{note}{dup} (untrusted): {top['title'][:120]} — {top['url']}",
+                     'evidence': [f"research:{research['task']}@{int(research['at'])}"]})
     fixed = [s for s in similar if s['status'] == 'FIXED_VERIFIED']
     if fixed:
         s = fixed[0]

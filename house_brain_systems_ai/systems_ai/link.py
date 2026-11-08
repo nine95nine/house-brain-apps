@@ -26,6 +26,7 @@ import ipaddress
 import json
 import re
 import threading
+import urllib.parse
 
 PORT = 8791
 MAX_BODY = 64 * 1024
@@ -47,6 +48,28 @@ RESULT_KEYS = frozenset({'schema', 'task', 'role', 'question', 'status', 'items'
 RESULT_REQUIRED = frozenset({'schema', 'task', 'status', 'items', 'permission', 'authority'})
 ITEM_KEYS = frozenset({'title', 'url', 'source', 'date', 'untrusted'})
 SOURCE_KEYS = frozenset({'source', 'status', 'code'})
+
+
+def canonical_url(url):
+    """0.3.8 (idea register X2): one page, one source. Lower-case host without 'www.', no fragment, no utm_*
+    tracking parameters, no trailing slash. Used only to count sources; the stored URL is unchanged."""
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or '').lower().rstrip('.')
+    host = host[4:] if host.startswith('www.') else host
+    query = urllib.parse.urlencode([(k, v) for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+                                    if not k.lower().startswith('utm_')])
+    return host, f"{host}{parts.path.rstrip('/') or '/'}" + (f'?{query}' if query else '')
+
+
+def independence(items):
+    """(distinct sources, distinct sites, duplicates collapsed) for validated items. A site is the host: two pages
+    on one site corroborate each other less than two sites, and a repeated page is one source, never two."""
+    pages, sites = set(), set()
+    for it in items:
+        host, page = canonical_url(it['url'])
+        pages.add(page)
+        sites.add(host)
+    return len(pages), len(sites), len(items) - len(pages)
 
 
 class LinkError(ValueError):
@@ -120,7 +143,13 @@ def validate(doc):
                             'status': row['status'], 'code': code})
     if len(not_checked) > MAX_ITEMS:
         raise LinkError('ANSWER_SOURCES_INVALID')
-    return {'task': task, 'status': doc['status'], 'items': kept[:10], 'not_checked': not_checked,
+    unique, seen = [], set()
+    for it in kept:                                      # 0.3.8: a repeated page never crowds out another source
+        page = canonical_url(it['url'])[1]
+        if page not in seen:
+            seen.add(page)
+            unique.append(it)
+    return {'task': task, 'status': doc['status'], 'items': unique[:10], 'not_checked': not_checked,
             'untrusted': True, 'authority': 'NO_EXECUTION_AUTHORITY'}
 
 
