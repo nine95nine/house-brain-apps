@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.9.56
+
+Rules-first updates, part 1 (owner decision 2026-11-08 **"Tiers A + B"**, relayed by the AI reviewer chat with its
+spec; owner pop-ups 2026-11-08 "Yes, build 0.9.56 → 0.9.59 as sliced" and "New option value `update_mode: tiers`").
+This supersedes D5 (an internal APPROVE is advice only) for tiers A and B: an update installs by itself on
+deterministic, free public checks, never on an AI's word. Contains 0.9.55 unchanged otherwise.
+
+- **`update_mode: tiers`** (new value; `ask` and `auto_low_risk` keep their meaning). Tier **A**: App and HACS card/
+  theme *patch* updates this App's own review calls low risk install by themselves in the night window, after the
+  same track record as before (3 approved updates), when the **evidence card** is clean. Tier **B** (minor and major
+  Apps, HACS integrations, Core x.y.1+, OS) asks as today; the weekly batch comes with 0.9.57. Tier **C** (device
+  firmware, radio Apps, physical-control Apps, Core `.0`, any pre-release) is always your tap and never automatic.
+- **The evidence card** (`hbm/evidence.py`, no AI): release age per bump (patch 3 days, minor 5; a missing first-seen
+  date counts as too new), the Home Assistant alerts feed as a hard veto for an integration this house runs, this
+  house's own history (an earlier restore or failure of the same item within 90 days), and the owner's, cloud or
+  internal AI review when it says HOLD or DECLINE. A feed that cannot be read is *unknown*, and an unknown check never
+  installs. The card is computed again right before the install; a changed card refuses the install
+  (`re-check before the install`). Every decided card is posted once on the tracking issue
+  (`house_brain_update_evidence.v1`).
+- **The AI is no longer a gate** in tiers mode: a missing AI review never delays tier A or B and never routes an
+  update to the phone (the 48-hour "asked anyway" path is gone there); an AI review can only *add* a hold.
+- **Pre-releases never ring.** In tiers mode a beta (the ESPHome Device Builder beta rang the phone weekly) waits on
+  the Maintenance page under *Needs your decision*; it is never asked on the phone and never installed by itself.
+- **Morning summary:** "Updated by itself overnight (N): …" lists tier A installs; while `update_mode` is still
+  `ask`, one reminder line rides the next morning summary, once.
+- Options: `update_mode: tiers`. `auto_wait_days` still applies (the longer of it and the tier table wins).
+
 ## 0.9.55
 
 AI heartbeat stall (2026-11-08; owner pop-ups "Do a full issue review, figure out what happened, and then fix" and

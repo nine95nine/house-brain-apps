@@ -30,6 +30,7 @@ from .ha import ForbiddenCall, HAError, HomeAssistant, InstalledApp
 from .journal import Journal
 from .manifest import RE_APP_SLUG, RE_UPDATE_VERSION
 from .review import BLOCKED, LOW, Review, dependents_of, review
+from . import evidence as EV
 from .writer import WriterError, is_deployer
 
 DONE = "DONE"
@@ -43,6 +44,7 @@ JOB = "UPDATE_APP"
 
 ASK = "ask"
 AUTO_LOW_RISK = "auto_low_risk"
+TIERS = EV.TIERS_MODE                 # 0.9.56: rules-first tiers (owner 2026-11-08 "Tiers A + B")
 TRACK_RECORD_NEEDED = 3
 
 
@@ -80,6 +82,11 @@ def missed_note(ha: HomeAssistant, notify_service: str, what: str, next_at: floa
                     f"at {lt.tm_hour:02d}:{lt.tm_min:02d} (local).", tag="hbm-missed", url=url)
 
 
+def VERSION_OF() -> str:
+    from . import VERSION
+    return VERSION
+
+
 def request_id_for(slug: str, version: str) -> str:
     rid = re.sub(r"[^a-z0-9-]+", "-", f"upd-{slug[:36]}-{version[:20]}".lower()).strip("-")
     return rid[:64]
@@ -98,6 +105,7 @@ class Updater:
         self.snapshot = None     # 0.7.3: () -> integrations running now (afterupdate.loaded_snapshot)
         self.offered: dict[str, str] = {}    # 0.7.2: slug -> offered version, as the last check read them
         self.asking = ""                     # 0.7.2: the update whose ask is on the phone right now
+        self.evidence = None                 # 0.9.56: evidence.Evidence (tiers mode)
 
     # -- memory ------------------------------------------------------------------
     def _mem(self) -> dict:
@@ -221,7 +229,35 @@ class Updater:
         first = mem["first_seen"].get(f"{rev.slug}@{rev.to_version}")
         return (time.time() - float(first)) / 86400 if first else 0.0
 
+    def tier(self, rev: Review) -> str:
+        """0.9.56: the closed tier table for an App update."""
+        return EV.tier_of("app", bump=rev.bump, verdict=rev.verdict, slug=rev.slug, name=rev.name, version=rev.to_version)
+
+    def card(self, rev: Review, mem: dict) -> dict | None:
+        """0.9.56: the evidence card for this App update (None when the engine has no evidence source)."""
+        if self.evidence is None:
+            return None
+        key = f"{rev.slug}@{rev.to_version}"
+        return self.evidence.for_item(item=f"app:{key}", name=rev.name, kind="app", bump=rev.bump, verdict=rev.verdict,
+                                      from_version=rev.from_version, to_version=rev.to_version, slug=rev.slug,
+                                      first_seen=mem["first_seen"].get(key), min_days=self.p.wait_days,
+                                      ledger_prefix=request_id_for(rev.slug, "") + "-")
+
     def auto_allowed(self, rev: Review, mem: dict) -> tuple[bool, str]:
+        if self.p.mode == TIERS:                                  # 0.9.56: tier A on a clean evidence card
+            tier = self.tier(rev)
+            if tier != EV.TIER_A:
+                return False, f"tier {tier}: asks you" if tier == EV.TIER_B else f"tier {tier}: your tap only"
+            if int(mem["successes"]) < TRACK_RECORD_NEEDED:
+                return False, f"needs {TRACK_RECORD_NEEDED} approved updates first ({mem['successes']} so far)"
+            c = self.card(rev, mem)
+            if c is None:
+                return False, "no evidence card (fail closed)"
+            if c["verdict"] != EV.CLEAN:
+                return False, f"evidence card {c['verdict']}: " + "; ".join(c["reasons"])[:200]
+            if not self._in_window():
+                return False, "outside the night window"
+            return True, "tier A: patch update on a clean evidence card, in the night window"
         if self.p.mode != AUTO_LOW_RISK:
             return False, "update_mode is ask"
         if not rev.auto_eligible:
@@ -237,6 +273,11 @@ class Updater:
 
     def waits_for_auto(self, rev: Review, mem: dict) -> bool:
         """True when this update will install automatically later, so it must not be asked now."""
+        if self.p.mode == TIERS:                                  # 0.9.56: tier A waits (age, window); a hold asks
+            if self.tier(rev) != EV.TIER_A or not self._window_open_ever() or int(mem["successes"]) < TRACK_RECORD_NEEDED:
+                return False
+            c = self.card(rev, mem)
+            return c is not None and c["verdict"] in (EV.CLEAN, EV.WAIT)
         return (self.p.mode == AUTO_LOW_RISK and rev.auto_eligible and self._window_open_ever()
                 and int(mem["successes"]) >= TRACK_RECORD_NEEDED)
 
@@ -275,15 +316,22 @@ class Updater:
                 return Outcome(rid, REFUSED, [f"update held: {r}" for r in rev.reasons], facts)
             decided = self.page_decided(app.slug, rev.to_version)
             gate = self.ai.gate(f"app:{key}", mem["first_seen"].get(key)) if self.ai is not None else None
-            if gate is not None and not gate.proceed and not decided:
+            tiers = self.p.mode == TIERS
+            if gate is not None and not gate.proceed and not decided and not tiers:
                 self._note(key, "waiting for the AI review (then asked, or installed at night if low risk; asked "
                            f"anyway from {self.ai.ask_anyway_at(mem['first_seen'].get(key))})")
-                continue
+                continue                              # 0.9.56 tiers: a missing AI review never delays or routes
+            if tiers and not decided and EV.prerelease(rev.to_version):
+                self._note(key, "pre-release: waits on the Maintenance page (Needs your decision); never asked on "
+                           "the phone and never installed by itself")
+                continue                              # 0.9.56 (owner: the ESPHome beta rang the phone weekly)
             auto, why = self.auto_allowed(rev, mem)
-            if auto and gate is not None and not gate.auto_ok:
-                auto, why = False, gate.line
+            if auto and gate is not None and not gate.auto_ok and not tiers:
+                auto, why = False, gate.line          # tiers: the AI's hold is inside the evidence card
             facts["automatic"] = auto
             facts["automatic_reason"] = why
+            if tiers:
+                facts["tier"] = self.tier(rev)
             if gate is not None and gate.state != "off":
                 facts["ai_review"] = gate.verdict or gate.state
             if self.s.dry_run:
@@ -293,7 +341,7 @@ class Updater:
             if decided:
                 auto, why = False, "decided by you on the Maintenance page"
                 facts["automatic"], facts["automatic_reason"] = auto, why
-            if not auto and not decided and (gate is None or gate.auto_ok) and self.waits_for_auto(rev, mem):
+            if not auto and not decided and (gate is None or gate.auto_ok or tiers) and self.waits_for_auto(rev, mem):
                 self._note(key, f"low risk: installs by itself in the {self.p.window[0]:02d}-{self.p.window[1]:02d} h "
                            f"window once it is {self.p.wait_days:g} days old, with a backup, health watch and "
                            "automatic restore")
@@ -339,8 +387,20 @@ class Updater:
                                 asked + reasks.wait_seconds(self.p.reask_hours, int(mem["timeouts"][key])),
                                 url=getattr(self.s, "open_url", None))
                 return Outcome(rid, REJECTED, [f"owner decision: {decision}"], facts)
+        if automatic and self.p.mode == TIERS:                  # 0.9.56: the card again, right before the install
+            c = self.card(rev, self._mem())
+            if c is None or c["verdict"] != EV.CLEAN:
+                reasons = c["reasons"] if c else ["no evidence card"]
+                if c is not None:
+                    self.evidence.post_once(c, VERSION_OF(), "held before the install")
+                return Outcome(rid, REFUSED, ["re-check before the install: " + "; ".join(reasons)[:200]],
+                               {**facts, "evidence": (c or {}).get("checks")})
+            self.evidence.post_once(c, VERSION_OF(), "installing by itself")
+            facts["evidence"] = c["checks"]
         result = self.apply(rid, rev, prior_state=app.state, automatic=automatic)
         result.facts = {**facts, **result.facts}
+        if automatic and self.p.mode == TIERS and self.evidence is not None:
+            self.evidence.note_auto(rev.name, rev.from_version, rev.to_version, result.result_outcome)
         return result
 
     def ask_now(self, slug: str, version: str) -> Outcome:

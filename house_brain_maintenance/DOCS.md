@@ -521,7 +521,7 @@ Assistant notification:
 | `notify_service` | Your phone, for example `mobile_app_my_iphone`. |
 | `owner_username` | Your Home Assistant user name. Only this user can approve. |
 | `dry_run` | Starts as `true`: updates are reviewed and reported, nothing is asked or changed. |
-| `update_mode` | `ask` (default): every update asks you. `auto_low_risk`: bug-fix updates reviewed as low risk install at night without asking, but only after 3 updates you approved went well. Everything else still asks. |
+| `update_mode` | `ask` (default): every update asks you. `auto_low_risk`: bug-fix updates reviewed as low risk install at night without asking, but only after 3 updates you approved went well. Everything else still asks. `tiers` (from 0.9.56): patch updates of Apps and HACS cards/themes install by themselves on a clean evidence card (see *Rules-first updates*); everything else asks or waits for your tap. |
 | `auto_window_start_hour`, `auto_window_end_hour` | The night window for automatic installs (local time, default 2 to 5). |
 | `auto_wait_days` | Waiting period for automatic installs (default 3 days, 0 to 30): a low-risk update installs by itself only after this App first saw it offered this long ago, so other people find a bad release first. While it waits, it is not asked. Updates you approve install when you approve them. |
 | `update_check_minutes` | How often it looks for App, Core, OS, HACS and firmware updates (default 60). |
@@ -641,6 +641,28 @@ alone (its settings and data), checks the backup lists it, uninstalls it, and ch
 running. If the local copy is running, the store one is stopped, or the backup does not hold the App, nothing is
 removed and you are told why (a copy the Supervisor shows as `error` after its stop counts as stopped, from 0.9.44).
 Nothing else is ever uninstalled.
+
+## Rules-first updates: tiers and the evidence card — from 0.9.56
+
+Your decision of 2026-11-08: updates should not freeze when the paid AI chats are out of tokens. With
+`update_mode: tiers` this App decides small updates itself from **free public checks**, never from an AI's word.
+
+- **Tier A, installs by itself:** patch updates of Apps and HACS cards/themes that this App's own review calls low
+  risk, in the night window, after 3 approved updates went well, when the evidence card is clean. One line in the
+  morning summary: "Updated by itself overnight".
+- **Tier B, asks you:** minor and major App updates, HACS integrations, Core x.y.1+ and the OS (the weekly "installs
+  Saturday unless you tap Hold" batch comes in a later release).
+- **Tier C, your tap only, never automatic:** device firmware, radio Apps (Z-Wave, Zigbee, Matter, Thread, Bluetooth,
+  ESPHome), Apps that control equipment, Core `.0` releases and every beta or pre-release. A pre-release never rings
+  the phone: it waits on the Maintenance page under *Needs your decision*.
+- **The evidence card** checks, without any AI: how long the version has been offered (patch 3 days, minor 5; an
+  unknown date counts as too new), the Home Assistant alerts feed (an open alert for an integration you run is a
+  hard stop), this house's own history (a restore or failure of the same App in the last 90 days is a hard stop), and
+  any HOLD or DECLINE from your AI reviewers. A feed that cannot be read counts as unknown, and nothing installs on
+  an unknown check. The card is checked again right before the install, and each decided card is posted on the
+  tracking issue.
+- **The AI is advice now, not a gate.** A missing review never delays a tier A or B update and never sends it to your
+  phone; a review can only add a hold.
 
 ## Rules first, then the free model — from 0.9.42
 

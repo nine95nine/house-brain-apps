@@ -16,7 +16,7 @@ from . import VERSION, approval, ghauth, ghpage, net
 from .github import REQUESTS_DIR, RE_REPO, GitHub
 from .ha import RE_SLUG, RE_UPDATE_ENTITY, HAError, HomeAssistant, RE_SWITCH, ForbiddenCall
 from .jobs import DONE, FAILED, FAILED_MANUAL, REFUSED, REJECTED, Engine, Result, Settings
-from .updates import ASK, AUTO_LOW_RISK, JOB as UPDATE_JOB, RESTORED, Policy, Updater
+from .updates import ASK, AUTO_LOW_RISK, TIERS, JOB as UPDATE_JOB, RESTORED, Policy, Updater
 from .system import JOBS as SYSTEM_JOBS, ROLLED_BACK, SystemPolicy, SystemUpdater
 from .entities import PAUSE_DOC, JOBS as ENTITY_JOBS, WATCH_DOC, EntityPolicy, EntityUpdater
 from .migrate import JOB as MIGRATE_JOB, MigratePolicy, Migrator
@@ -196,8 +196,8 @@ def load_options(path: str) -> Options:
         scout_slug=s("scout_slug", RE_SLUG),
         observer_slug=s("observer_slug", RE_SLUG),
         clear_freeze_for=clear,
-        update_mode=raw.get("update_mode", ASK) if raw.get("update_mode", ASK) in (ASK, AUTO_LOW_RISK)
-        else _bad("update_mode"),
+        update_mode=raw.get("update_mode", ASK) if raw.get("update_mode", ASK) in (ASK, AUTO_LOW_RISK, TIERS)
+        else _bad("update_mode"),                                               # 0.9.56: tiers
         update_check_minutes=i("update_check_minutes", 15, 1440) if "update_check_minutes" in raw else 60,
         auto_window_start_hour=i("auto_window_start_hour", 0, 23) if "auto_window_start_hour" in raw else 2,
         auto_window_end_hour=i("auto_window_end_hour", 0, 23) if "auto_window_end_hour" in raw else 5,
@@ -395,6 +395,7 @@ class Service:
         self.pifirmware: PiFirmware | None = None          # 0.8.6: Pi firmware updates
         self.ai: AiReviews | None = None                   # 0.8.9: AI reviews read from the tracking issue
         self.update_lane = None                              # 0.9.51: internal update reviews (D4/D5)
+        self.evidence = None                                 # 0.9.56: the evidence card (tiers)
         self.update_queue: UpdateQueue | None = None       # 0.8.9: the "updates waiting" list
         self.rate_noted: set[str] = set()                  # 0.8.9: requests waiting for the ask limit (audited once)
         self.free_lane = None                                   # 0.9.29: the free reviewer lane
@@ -587,6 +588,13 @@ class Service:
                     engine.ai = self.ai
                 self.update_queue = UpdateQueue(self.j, self.report_text, self._update_note)
                 self.wire_update_lane()                                                 # 0.9.51 (D4/D5)
+            # 0.9.56 (owner 2026-11-08 "Tiers A + B"): the evidence card for the tiers; the AI reader (when on) may add a hold
+            from .evidence import Evidence
+            self.evidence = Evidence(self.j, self.ha, self.system.upgrade_info, self.ai, self.report_text)
+            self.updater.evidence = self.entities.evidence = self.evidence
+            if self.watcher is not None:
+                self.watcher.evidence = self.evidence
+                self.watcher.update_mode = self.o.update_mode
                 self.watcher.review_waits = self.review_waits          # 0.9.12: reviewer watchdog
             for engine in (self.updater, self.system):
                 engine.on_done = self.after.start

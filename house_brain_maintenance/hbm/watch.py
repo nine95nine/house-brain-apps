@@ -144,6 +144,8 @@ class Watcher:
         self.relay_fetch: Callable[[str], object] = lambda url: net.request("GET", url, timeout=15)[1]
         self.problem_ai: PR.ProblemReviews | None = None     # 0.9.6: AI problem reviews (set by the Service)
         self.free_lane = None                                 # 0.9.29: the free reviewer lane (set by the Service)
+        self.evidence = None                                  # 0.9.56: evidence.Evidence (automatic installs overnight)
+        self.update_mode = "ask"                              # 0.9.56: for the one-time tiers reminder
         # 0.9.12 reviewer watchdog: (name, first offered) of waiting updates without an AI review, None when not known
         self.review_waits: Callable[[], list | None] | None = None
         self.queued: list[str] = []                           # 0.9.12: problem keys in the queue line being posted
@@ -1132,10 +1134,18 @@ class Watcher:
             self.j.save_doc(AF.DOC, af)
         extra = ([silent] if silent else []) + ([f"Fixed for you overnight ({len(overnight)}): " + "; ".join(overnight)[:600]]
                                                  if overnight else [])
+        if self.evidence is not None:                                   # 0.9.56: tier A installs overnight
+            updated = self.evidence.overnight()
+            if updated:
+                extra.append(f"Updated by itself overnight ({len(updated)}): " + "; ".join(updated)[:600])
         extra += RA.repeat_lines(RA.load(self.j.load_doc(RA.DOC, {})), now)[:5]      # 0.9.49: re-logins that keep coming back
         needs_line, needs_machine = self.free_lane.needs_you_summary() if self.free_lane is not None else ("", "")   # 0.9.50 B4
         if needs_line:
             extra.append(needs_line)
+        if self.evidence is not None and (items or cleared or extra):   # 0.9.56: the one-time tiers reminder rides a
+            reminder = self.evidence.reminder_line(self.update_mode)     # morning summary that goes out anyway
+            if reminder:
+                extra.append(reminder)
         if not items and not cleared:
             if extra:
                 text = self._markdown("morning summary", [], [])

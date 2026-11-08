@@ -32,9 +32,11 @@ from dataclasses import dataclass
 from . import approval, issues as I, net, reasks
 from .ha import HACS_LIST_UNAVAILABLE, HACS_PLATFORMS, ForbiddenCall, HAError, HomeAssistant, UpdateEntity
 from .journal import Journal
-from .review import BLOCKED, LOW, UPDATE_PLATFORM_UNKNOWN, EntityReview, entity_kind, platform_known, review_entity
-from .updates import (AUTO_LOW_RISK, DONE, DRY_RUN_OK, FAILED, FAILED_MANUAL, REFUSED, REJECTED, RESTORED,
-                      TRACK_RECORD_NEEDED, Outcome)
+from .review import (BLOCKED, HACS_DISPLAY as HACS_DISPLAY_KINDS, LOW, UPDATE_PLATFORM_UNKNOWN, EntityReview, entity_kind,
+                     platform_known, review_entity)
+from .updates import (AUTO_LOW_RISK, DONE, DRY_RUN_OK, FAILED, FAILED_MANUAL, REFUSED, REJECTED, RESTORED, TIERS,
+                      TRACK_RECORD_NEEDED, VERSION_OF, Outcome)
+from . import evidence as EV
 
 DOC = "entity_updates"
 WATCH_DOC = "firmware_watch"      # 0.9.36: one firmware install whose device has not reported back yet
@@ -77,6 +79,7 @@ class EntityUpdater:
         self.holds = None                   # 0.7.3: the hold list (holds.Holds); its update.* items hold too
         self.ai = None                      # 0.8.9: aireview.AiReviews (no ask/automatic install before the review)
         self.queue: dict[str, dict] = {}    # 0.8.9: HACS/firmware updates offered and why they are (not) asked yet
+        self.evidence = None                # 0.9.56: evidence.Evidence (tiers mode)
 
     # -- memory ------------------------------------------------------------------------
     def _mem(self) -> dict:
@@ -205,7 +208,35 @@ class EntityUpdater:
     def _track_record(self, mem: dict) -> int:
         return int(mem["successes"]) + int(self.app_successes() or 0)
 
+    def tier(self, rev: EntityReview) -> str:
+        return EV.tier_of(rev.kind, bump=rev.bump, verdict=rev.verdict, slug=rev.entity_id, name=rev.name,
+                          version=rev.to_version, category=rev.category)
+
+    def card(self, rev: EntityReview, key: str, mem: dict) -> dict | None:
+        if self.evidence is None:
+            return None
+        domain = rev.entity_id.split(".", 1)[-1].rsplit("_update", 1)[0] if rev.kind == "hacs_integration" else ""
+        return self.evidence.for_item(item=f"entity:{key}", name=rev.name, kind=rev.kind, bump=rev.bump,
+                                      verdict=rev.verdict, from_version=rev.from_version, to_version=rev.to_version,
+                                      slug=rev.entity_id, first_seen=mem["first_seen"].get(key), min_days=self.p.wait_days,
+                                      ledger_prefix=request_id_for(rev.kind, rev.entity_id, "") + "-",
+                                      domains={domain} if domain else None, category=rev.category)
+
     def auto_allowed(self, rev: EntityReview, key: str, mem: dict) -> tuple[bool, str]:
+        if self.p.mode == TIERS:                                  # 0.9.56: tier A (card or theme patch) on a clean card
+            tier = self.tier(rev)
+            if tier != EV.TIER_A or rev.kind != "hacs" or rev.category not in HACS_DISPLAY_KINDS:
+                return False, f"tier {tier}: asks you" if tier == EV.TIER_B else f"tier {tier}: your tap only"
+            if self._track_record(mem) < TRACK_RECORD_NEEDED:
+                return False, f"needs {TRACK_RECORD_NEEDED} approved updates first"
+            c = self.card(rev, key, mem)
+            if c is None:
+                return False, "no evidence card (fail closed)"
+            if c["verdict"] != EV.CLEAN:
+                return False, f"evidence card {c['verdict']}: " + "; ".join(c["reasons"])[:200]
+            if not self._in_window():
+                return False, "outside the night window"
+            return True, "tier A: patch update of a card or theme on a clean evidence card, in the night window"
         if self.p.mode != AUTO_LOW_RISK:
             return False, "update_mode is ask"
         if not rev.auto_eligible:
@@ -219,8 +250,14 @@ class EntityUpdater:
             return False, "outside the night window"
         return True, "low-risk bug-fix update of a card or theme in the night window"
 
-    def waits_for_auto(self, rev: EntityReview, mem: dict) -> bool:
+    def waits_for_auto(self, rev: EntityReview, mem: dict, key: str = "") -> bool:
         start, end = self.p.window
+        if self.p.mode == TIERS:                                  # 0.9.56
+            if (self.tier(rev) != EV.TIER_A or rev.kind != "hacs" or rev.category not in HACS_DISPLAY_KINDS
+                    or start == end or self._track_record(mem) < TRACK_RECORD_NEEDED):
+                return False
+            c = self.card(rev, key, mem)
+            return c is not None and c["verdict"] in (EV.CLEAN, EV.WAIT)
         return (self.p.mode == AUTO_LOW_RISK and rev.auto_eligible and start != end
                 and self._track_record(mem) >= TRACK_RECORD_NEEDED)
 
@@ -287,15 +324,22 @@ class EntityUpdater:
                 self._save(mem)
                 return Outcome(rid, REFUSED, [f"update held: {r}" for r in rev.reasons], facts)
             gate = self.ai.gate(f"entity:{key}", mem["first_seen"].get(key)) if self.ai is not None else None
-            if gate is not None and not gate.proceed and not decided:
+            tiers = self.p.mode == TIERS
+            if gate is not None and not gate.proceed and not decided and not tiers:
                 note(key, "waiting for the AI review (then asked, or installed at night if low risk; asked anyway "
                      f"from {self.ai.ask_anyway_at(mem['first_seen'].get(key))})")
+                continue                              # 0.9.56 tiers: a missing AI review never delays or routes
+            if tiers and not decided and EV.prerelease(rev.to_version):
+                note(key, "pre-release: waits on the Maintenance page (Needs your decision); never asked on the "
+                     "phone and never installed by itself")
                 continue
             auto, why = self.auto_allowed(rev, key, mem)
-            if auto and gate is not None and not gate.auto_ok:
+            if auto and gate is not None and not gate.auto_ok and not tiers:
                 auto, why = False, gate.line
             facts["automatic"] = auto
             facts["automatic_reason"] = why
+            if tiers:
+                facts["tier"] = self.tier(rev)
             if gate is not None and gate.state != "off":
                 facts["ai_review"] = gate.verdict or gate.state
             if self.s.dry_run:
@@ -305,7 +349,7 @@ class EntityUpdater:
             if decided:
                 auto, why = False, "decided by you on the Maintenance page"
                 facts["automatic"], facts["automatic_reason"] = auto, why
-            if not auto and not decided and (gate is None or gate.auto_ok) and self.waits_for_auto(rev, mem):
+            if not auto and not decided and (gate is None or gate.auto_ok or tiers) and self.waits_for_auto(rev, mem, key):
                 note(key, "low risk: installs by itself in the night window, with a configuration backup first")
                 continue
             if not auto and not decided:
@@ -335,8 +379,18 @@ class EntityUpdater:
             self._save(mem)
             if decision != approval.APPROVE:
                 return Outcome(rid, REJECTED, [f"owner decision: {decision}"], facts)
+        if automatic and self.p.mode == TIERS:                  # 0.9.56: the card again, right before the install
+            c = self.card(rev, key, self._mem())
+            if c is None or c["verdict"] != EV.CLEAN:
+                if c is not None:
+                    self.evidence.post_once(c, VERSION_OF(), "held before the install")
+                return Outcome(rid, REFUSED, ["re-check before the install: " + "; ".join((c or {}).get("reasons") or ["no evidence card"])[:200]], facts)
+            self.evidence.post_once(c, VERSION_OF(), "installing by itself")
+            facts["evidence"] = c["checks"]
         result = self.apply(rid, ent, rev, automatic=automatic)
         result.facts = {**facts, **result.facts}
+        if automatic and self.p.mode == TIERS and self.evidence is not None:
+            self.evidence.note_auto(rev.name, rev.from_version, rev.to_version, result.result_outcome)
         return result
 
     def _lines(self, rev: EntityReview) -> list[str]:
