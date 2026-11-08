@@ -8,5 +8,7 @@
 !SOURCE_MANIFEST.sha256
 !systems_ai/
 !systems_ai/**
+!embedded/
+!embedded/**
 **/__pycache__/
 **/*.pyc

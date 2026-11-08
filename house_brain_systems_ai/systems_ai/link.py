@@ -12,6 +12,8 @@ Routes:
 - ``POST /link/v1/answers``: one ``house_brain_research_result.v1`` per request. It is validated strictly and queued;
   the runtime applies it on its own thread as untrusted evidence. It is never a proposal and never an action.
 - ``GET /link/v1/health``: Systems AI's own house_brain_app_health.v1 block.
+- ``GET /link/v1/readings[?ids=a,b]`` (0.3.6): the privacy-filtered entity snapshot (readings.py), ids only without a query,
+  at most 50 entities with one.
 
 While Systems AI is held, questions are empty and answers are refused (409). Nothing here can call a Home Assistant
 service, write a state or start, stop or change anything. Control authority stays NONE.
@@ -172,7 +174,8 @@ def questions_view(status, cases):
 class LinkServer:
     """state(), questions(), health() return dicts; held() says whether Systems AI is held; inbox takes answers."""
 
-    def __init__(self, key, peer, state, questions, health, held, inbox, day, port=PORT, host='0.0.0.0'):
+    def __init__(self, key, peer, state, questions, health, held, inbox, day, port=PORT, host='0.0.0.0',
+                 readings=None, parse_ids=None):
         token = ('Bearer ' + key).encode()
         owner = self
 
@@ -209,6 +212,11 @@ class LinkServer:
                     return self.respond(200, owner.questions())
                 if self.path == '/link/v1/health':
                     return self.respond(200, owner.health())
+                if self.path.split('?', 1)[0] == '/link/v1/readings' and owner.readings is not None:
+                    ids, bad = owner.parse_ids(self.path.split('?', 1)[1] if '?' in self.path else '')
+                    if bad:
+                        return self.respond(400, {'error': bad})
+                    return self.respond(200, owner.readings(ids))
                 return self.respond(404, {'error': 'NOT_FOUND'})
 
             def do_POST(self):
@@ -240,6 +248,7 @@ class LinkServer:
             do_PUT = do_PATCH = do_DELETE = refuse
 
         self.state, self.questions, self.health, self.held = state, questions, health, held
+        self.readings, self.parse_ids = readings, parse_ids         # 0.3.6 GET /link/v1/readings
         self.server = ThreadingHTTPServer((host, port), Handler)
         self.server.daemon_threads = True
         self.server.timeout = 2

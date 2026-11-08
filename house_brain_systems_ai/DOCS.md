@@ -1,5 +1,7 @@
 # House Brain Systems AI
 
+Version 0.3.6 (shadow). 0.3.6 adds **house readings** to the House link (your pop-up "Also include house readings"). The MacBook can now read the same privacy-filtered sensor readings that Claude and ChatGPT already get. Systems AI runs the exact same privacy filter (embedded, and checked at start against its fingerprints) on the states it already reads, plus Home Assistant's entity list, which it reads once an hour. People, locks, cameras, trackers and anything on a lock or camera device are never included, and neither are names. Without a filter-approved snapshot the link serves no readings at all, only a reason. It rebuilds at most every 5 minutes and never while held. Like the rest of the link, it stays off until `link_key` and `link_peer` are set.
+
 Version 0.3.5 (shadow). 0.3.5 adds the **House link** (design `MACBOOK_HOUSE_LINK_R1_2026-11-08`): one port (8791) on your home network for the MacBook research service. **It stays off** until you set both new options in the App's Configuration tab:
 - `link_key`: a long random key (at least 32 characters). Generate it on the MacBook and paste it here; it is never shown in chat or the repository.
 - `link_peer`: the MacBook's fixed address on your network. Requests from any other address are refused.

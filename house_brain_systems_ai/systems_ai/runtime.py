@@ -23,6 +23,7 @@ from .learn import trend, days_until, freeze, score, hourly
 from .logs import LogLearner
 from . import playbooks
 from . import link
+from . import readings as readings_mod
 from .radar import Radar
 from .store import Store
 from .transport import TransportError, ESPHOME_SLUGS
@@ -160,6 +161,8 @@ class Runtime:
         self.cases = Cases(self.store)
         self.investigations = Investigations(self.store)        # 0.3.0 (agentic design step A1)
         self.inbox = link.Inbox()                                # 0.3.5 House link: research answers in
+        self.readings = readings_mod.Readings()                   # 0.3.6 House link: privacy-filtered readings
+        self.registry_rows = None
         # 0.2.1: the World Change Radar; without a public client it reads nothing ("not checked yet").
         self.public = public
         self.radar = Radar(self.store, public)
@@ -394,6 +397,12 @@ class Runtime:
         return problems
 
     def hourly(self, now):
+        # 0.3.6 House link readings: the entity registry the privacy builder needs, read-only, once an hour.
+        try:
+            rows = self.client.ws({'type': 'config/entity_registry/list'})
+            self.registry_rows = rows if isinstance(rows, list) else None
+        except (OSError, ValueError, TransportError):
+            self.registry_rows = None
         try:
             size = mib(self.client.ws({'type': 'system_health/info'}).get('estimated_db_size'))
         except (OSError, ValueError, TransportError, AttributeError):
@@ -455,6 +464,8 @@ class Runtime:
                 if self.hold is None and now - self.last['hourly'] >= HOURLY_S:
                     self.hourly(now)
                     self.last['hourly'] = now
+                if self.hold is None:
+                    self.readings.update(self.states, self.registry_rows, now)     # 0.3.6: at most every 5 min
                 if self.hold is None and now - self.last['daily'] >= DAY_S:
                     self.daily(now)
                     self.last['daily'] = now

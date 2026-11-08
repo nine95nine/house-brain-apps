@@ -18,6 +18,7 @@ from . import __version__
 from .transport import Client, PublicClient
 from .web import Server
 from . import link
+from .readings import parse_ids as readings_parse_ids
 from .interlock import ENTITY as KILL_ENTITY
 
 
@@ -63,7 +64,8 @@ def main():
             state=lambda: link.state_view(runtime.status, runtime.states, KILL_ENTITY),
             questions=lambda: link.questions_view(runtime.status, runtime.cases.state['cases']),
             health=lambda: build(runtime, time.time()), held=lambda: runtime.hold is not None,
-            inbox=runtime.inbox, day=lambda: time.strftime('%Y-%m-%d', time.gmtime()))
+            inbox=runtime.inbox, day=lambda: time.strftime('%Y-%m-%d', time.gmtime()),
+            readings=lambda ids: runtime.readings.view(time.time(), ids), parse_ids=readings_parse_ids)
         Thread(target=link_server.run, daemon=True).start()
     try:
         while not stop.is_set():

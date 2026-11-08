@@ -32,7 +32,8 @@ ESPHOME_INFO = frozenset(f'/addons/{s}/info' for s in ESPHOME_SLUGS)
 RE_HOSTNAME = re.compile(r'[a-z0-9][a-z0-9-]{0,62}')
 # Read-only Core WebSocket commands, each with exactly these keys.
 WS_ALLOW = {'system_log/list': {'type'}, 'repairs/list_issues': {'type'},
-            'system_health/info': {'type'}, 'recorder/list_statistic_ids': {'type'}}
+            'system_health/info': {'type'}, 'recorder/list_statistic_ids': {'type'},
+            'config/entity_registry/list': {'type'}}   # 0.3.6: the privacy builder's registry input, read-only
 # Fields kept from a sibling App's info; everything else (its options among them) is dropped at once.
 ADDON_FIELDS = ('slug', 'name', 'version', 'version_latest', 'update_available', 'state', 'boot',
                 'hostname', 'ingress_port', 'watchdog', 'boot_config')

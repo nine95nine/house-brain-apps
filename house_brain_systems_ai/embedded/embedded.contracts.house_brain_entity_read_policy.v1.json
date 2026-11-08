@@ -1,0 +1,593 @@
+{
+  "schema_version": "house_brain_entity_read_policy.v1",
+  "contract_version": "1.12.0",
+  "status": "REPOSITORY_CANDIDATE_NOT_COMMISSIONED",
+  "initiative": "#212 G0 (with #60, #56)",
+  "owner_decisions": "Owner popups 2026-09-30 (recorded in PR #541, docs/governance/OWNER_DECISIONS_2026-09-30.md): 'Allowlisted snapshot (Recommended)'; 'Broad (non-sensitive)'; owner review of the first live dry run 2026-10-02 (Inspector 0.2.0, 1491 ids; docs/governance/OWNER_DECISIONS_2026-10-01.md): street-name and car-status sensors 'Keep them'; personal names 'Share with neutral labels' (owner_name_aliases); rest 'Approve the rest (Recommended)'; health-bridge prefix 'Reserve and block it now (Recommended)' (2026-10-02; owner_deny_prefixes sensor.hb_health_ and binary_sensor.hb_health_); Owner pop-up 2026-10-13 'Both (Recommended)' (Cooling chat): history_list adds house RH, outdoor temperature, outdoor dew point and Vent Start OK; Owner pop-up 2026-10-13 'Exact exception in Inspector' (AI Access chat, Work Board #942 row 56): registry_exempt_entities names the two App-written sensors sensor.house_brain_ai_connectors (AI connector heads-up, AI Access 0.1.5-dev) and sensor.house_brain_ai_kill_switch_effective (kill-switch bridge, AI Access 0.1.3-dev) as exportable without an entity-registry entry; state only (default attributes), every other rule still applies Owner pop-up 2026-10-18 'Build all 4 parts (Recommended)' (Work Board #942 row 72; policy 1.5.0, Inspector 0.2.11): sensor.house_brain_ai_activity (AI Access 0.1.6-dev, state-only, no registry entry) joins registry_exempt_entities, with the scalar attributes total_requests, from and to (counts and dates only; the nested per-AI counts stay unexported). Owner pop-up 2026-10-18 'Both of the above' (Work Board #942 row 74; policy 1.6.0, Inspector 0.2.12): the flat scalar attributes that AI Access 0.1.7-dev adds to sensor.house_brain_ai_activity join its attribute allowlist (flag_summary, which names the AI and flag such as claude:MANY_REFUSED, and per AI the counts <ai>_requests, <ai>_refused, <ai>_rate_limited for claude, chatgpt and grok); counts and flag names only, the nested providers and flags stay unexported. Owner pop-up 2026-10-18 'Show the reasons (Recommended)' (Work Board #942 row 74; policy 1.7.0, Inspector 0.2.13): claude_top_refused, chatgpt_top_refused and grok_top_refused (AI Access 0.1.8-dev; up to three perimeter reason codes with counts, such as KS_EDGE_STALE:12) join the same allowlist; reason codes and counts only. Owner pop-ups 2026-10-24 'I want you to access the boards and be able to read them', 'Take it over here', 'Status sensor counts as advice (Recommended)' and 'As lol of the above' (all four board options; Work Board #942; policy 1.8.0, Inspector 0.2.16): the App-written status sensors of Energy AI 0.1.3, Maintenance and Deployer join registry_exempt_entities with only their single-value attributes allowlisted (never the Deployer txn_marker, never a list or object); the board sensors the export missed join token_exemptions (status and check states only, including the family First Aid and Phone Safety review states, which carry VERIFIED/STALE/UNKNOWN/NEEDS_ACTION and no medical or phone data); the board cards' single-value details join attribute_allowlist; history_list adds the six cooling ids requested by Cooling row 7, the twelve Sense on/off ids requested by the Sense lane and the Energy AI status. Ids that embed the home coordinates are not named here (owner pop-up 2026-10-24 'Leave as is'). Owner pop-ups 2026-10-25 'all of the above, and any other ...' and 'all the above' (Energy AI 0.1.5; policy 1.9.0, Inspector 0.2.18): sensor.house_brain_energy_ai_status adds two single-value lines, credit_plan (true-up countdown and the weekday on-peak credit-burn window) and advice (cooling cost hint, night load above Sense always-on, load-template review count); 21 attributes, within the 24 cap with the 3 defaults. Owner pop-ups 2026-10-25 'Yes, after 0.1.5' and 'Take it over here' (Part B; policy 1.10.0, Inspector 0.2.19, perimeter 0.4.10): extension_entities lists the exact ids in the climate, weather, switch, light, helper (input_boolean, input_number, input_select, input_datetime), timer, counter and number domains that the owner's boards show; the domains are fixed in the builder, every other rule (blocked domains and devices, registry, restricted words, name aliases, the content detector, bounds) still applies, free text (input_text), buttons, scripts and ids with a restricted word are not listed, and a snapshot too large with them drops them first (EXTENSION_DROPPED_SIZE_BOUND). Deploy order: perimeter 0.4.10 before Inspector 0.2.19. Owner pop-up 2026-11-07 'Prepare the PR' (policy 1.12.0, Inspector 0.2.25; ChatGPT-recovery chat, Work Board #942 6709126602): two pool season helpers join extension_entities so a read-only reader can prove the pool chose its season by Auto, not an override (input_select.pool_season_mode, input_select.pool_season_auto_state); the kitchen SHT31 temperature joins history_list for its natural soak (sensor.kitchen_weather_ble_proxy_b3cc64_kitchen_temperature). Read only; no new domain; every other rule unchanged.",
+  "authority": "READ_POLICY_ONLY_NO_EXECUTION",
+  "domains": [
+    "sensor",
+    "binary_sensor"
+  ],
+  "excluded_device_classes": [
+    "occupancy",
+    "presence",
+    "motion"
+  ],
+  "excluded_platforms": [
+    "mobile_app"
+  ],
+  "restricted_categories_source": "contracts/house_brain_privacy_data_classes.v1.json#restricted_categories",
+  "blocked_domains_source": "contracts/house_brain_ai_inspection_plane.v1.json#privacy/blocked_entity_domains",
+  "owner_deny_entities": [],
+  "owner_deny_prefixes": [
+    "sensor.hb_health_",
+    "binary_sensor.hb_health_"
+  ],
+  "owner_name_aliases": [
+    {
+      "label": "bedroom_1",
+      "id_forms": [
+        "maris_bedroom_1",
+        "maris_room",
+        "maris"
+      ],
+      "text_words": [
+        "maris"
+      ]
+    },
+    {
+      "label": "bedroom_2",
+      "id_forms": [
+        "lakes_bedroom_2",
+        "lakes_room",
+        "lakes"
+      ],
+      "text_words": [
+        "lakes"
+      ]
+    },
+    {
+      "label": "bedroom_3",
+      "id_forms": [
+        "ledgers_bedroom3",
+        "ledgers_room",
+        "ledgers"
+      ],
+      "text_words": [
+        "ledgers"
+      ]
+    }
+  ],
+  "token_exemptions": [
+    "binary_sensor.cooling_arbiter_v2_pump_pulse_advised",
+    "sensor.cooling_arbiter_v2_pump_pulse_advised",
+    "sensor.cooling_insight_evap_health",
+    "sensor.environment_hottest_location",
+    "sensor.evap_controller_health_score",
+    "sensor.evap_data_health",
+    "sensor.house_brain_apocalypse_data_health",
+    "sensor.house_brain_energy_configuration_health",
+    "sensor.house_brain_energy_logic_health",
+    "sensor.house_brain_family_medical_check",
+    "sensor.house_brain_family_r2_phone_safety_check",
+    "sensor.house_brain_irrigation_accounting_health",
+    "sensor.house_brain_irrigation_active_zone_count",
+    "sensor.house_brain_irrigation_configuration_health",
+    "sensor.house_brain_irrigation_data_health"
+  ],
+  "registry_exempt_entities": [
+    "sensor.house_brain_ai_activity",
+    "sensor.house_brain_ai_connectors",
+    "sensor.house_brain_ai_kill_switch_effective",
+    "sensor.house_brain_deployer_status",
+    "sensor.house_brain_energy_ai_status",
+    "sensor.house_brain_maintenance_status"
+  ],
+  "default_attributes": [
+    "unit_of_measurement",
+    "device_class",
+    "state_class"
+  ],
+  "attribute_allowlist": {
+    "binary_sensor.house_brain_apocalypse_mobile_delivery_ready": [
+      "commissioning_status"
+    ],
+    "binary_sensor.spa_automation_ready": [
+      "all_off_match_count",
+      "readiness_revision"
+    ],
+    "binary_sensor.tesla_left_open": [
+      "what_is_open"
+    ],
+    "climate.ecobee_thermostat": [
+      "current_temperature",
+      "temperature",
+      "target_temp_high",
+      "target_temp_low",
+      "current_humidity",
+      "hvac_action",
+      "fan_mode",
+      "preset_mode"
+    ],
+    "climate.pool_set_point": [
+      "current_temperature",
+      "temperature",
+      "hvac_action"
+    ],
+    "climate.spa_set_point": [
+      "current_temperature",
+      "temperature",
+      "hvac_action"
+    ],
+    "sensor.aquarite_chlorinator_advice": [
+      "manual_fc_minimum",
+      "manual_test_logged"
+    ],
+    "sensor.aquarite_link": [
+      "reason"
+    ],
+    "sensor.cooling_arbiter_v2_status": [
+      "phase",
+      "owner",
+      "kind",
+      "reason",
+      "next_decision",
+      "evap_eligibility",
+      "ecobee_action",
+      "hold_setpoint",
+      "charge_target",
+      "vent_floor",
+      "cooling_floor",
+      "vent_speed",
+      "indoor_dew_point",
+      "evap_actual_operation",
+      "interlock_class"
+    ],
+    "sensor.evap_comfort_verdict": [
+      "plain_english"
+    ],
+    "sensor.garden_plant_stress": [
+      "detail"
+    ],
+    "sensor.house_brain_ai_activity": [
+      "total_requests",
+      "from",
+      "to",
+      "flag_summary",
+      "claude_requests",
+      "claude_refused",
+      "claude_rate_limited",
+      "chatgpt_requests",
+      "chatgpt_refused",
+      "chatgpt_rate_limited",
+      "grok_requests",
+      "grok_refused",
+      "grok_rate_limited",
+      "claude_top_refused",
+      "chatgpt_top_refused",
+      "grok_top_refused"
+    ],
+    "sensor.house_brain_apocalypse_corroboration_count": [
+      "threshold"
+    ],
+    "sensor.house_brain_apocalypse_data_health": [
+      "business_jet_as_of",
+      "business_jet_mode",
+      "business_jet_source_state",
+      "cohort_tracked_count",
+      "latest_slot_key",
+      "live_last_error",
+      "live_last_success_at",
+      "military_as_of",
+      "military_mode",
+      "military_source_state",
+      "source_warning",
+      "stale_after_minutes",
+      "untracked_as_of",
+      "untracked_mode",
+      "untracked_source_state"
+    ],
+    "sensor.house_brain_apocalypse_level": [
+      "as_of",
+      "excess_count",
+      "holiday_label",
+      "holiday_ratio",
+      "upstream_alert_level",
+      "concurrent_count",
+      "expected_count",
+      "z_score"
+    ],
+    "sensor.house_brain_apocalypse_military_level": [
+      "concurrent_count",
+      "expected_count",
+      "z_score"
+    ],
+    "sensor.house_brain_apocalypse_software": [
+      "alert_interface",
+      "build",
+      "control_authority",
+      "physical_control",
+      "schema",
+      "source_contract",
+      "source_contract_revision",
+      "version"
+    ],
+    "sensor.house_brain_apocalypse_untracked_level": [
+      "concurrent_count",
+      "expected_count",
+      "z_score"
+    ],
+    "sensor.house_brain_deployer_status": [
+      "version",
+      "request_id",
+      "reason"
+    ],
+    "sensor.house_brain_energy_ai_status": [
+      "version",
+      "mode",
+      "physical_actions",
+      "summary",
+      "data_status",
+      "plan",
+      "always_on",
+      "this_month",
+      "bank_runway",
+      "credit_headroom",
+      "stay_put",
+      "heat_and_use",
+      "panels",
+      "outage_planning",
+      "solar_used_at_home",
+      "forecast_trust",
+      "energy_counters",
+      "scorecard",
+      "credit_plan",
+      "advice",
+      "updated"
+    ],
+    "sensor.house_brain_family_r2_next_milestone": [
+      "date"
+    ],
+    "sensor.house_brain_irrigation_back_yard_by_pool": [
+      "battery_percent",
+      "effective_next_watering",
+      "last_consumption_gallons",
+      "last_estimated_flow_gpm",
+      "last_runtime_minutes",
+      "last_watering",
+      "schedule_source",
+      "smart_watering",
+      "valve"
+    ],
+    "sensor.house_brain_irrigation_front_yard": [
+      "battery_percent",
+      "effective_next_watering",
+      "last_consumption_gallons",
+      "last_estimated_flow_gpm",
+      "last_runtime_minutes",
+      "last_watering",
+      "schedule_source",
+      "smart_watering",
+      "valve"
+    ],
+    "sensor.house_brain_irrigation_package_status": [
+      "build_revision",
+      "package_version",
+      "schema",
+      "source_contract_revision"
+    ],
+    "sensor.house_brain_irrigation_pool_equipment": [
+      "battery_percent",
+      "effective_next_watering",
+      "last_consumption_gallons",
+      "last_estimated_flow_gpm",
+      "last_runtime_minutes",
+      "last_watering",
+      "schedule_source",
+      "smart_watering",
+      "valve",
+      "device_mode",
+      "hardware",
+      "rain_delay",
+      "rain_delay_ends_at",
+      "rain_delay_remaining_days",
+      "source_device"
+    ],
+    "sensor.house_brain_maintenance_status": [
+      "version",
+      "dry_run",
+      "open_problems",
+      "pending_updates",
+      "job",
+      "request_id"
+    ],
+    "sensor.house_solar_opportunity": [
+      "recommendation"
+    ],
+    "sensor.largest_sense_load_now": [
+      "watts"
+    ],
+    "sensor.nursery_plant_stress": [
+      "detail"
+    ],
+    "sensor.pool_water_verdict": [
+      "plain_english"
+    ],
+    "sensor.spa_status": [
+      "plain_english"
+    ],
+    "timer.evap_minimum_off": [
+      "duration",
+      "remaining",
+      "finishes_at"
+    ],
+    "timer.evap_minimum_run": [
+      "duration",
+      "remaining",
+      "finishes_at"
+    ],
+    "timer.evap_speed_change": [
+      "duration",
+      "remaining",
+      "finishes_at"
+    ],
+    "weather.forecast_home": [
+      "temperature",
+      "apparent_temperature",
+      "dew_point",
+      "humidity",
+      "pressure",
+      "wind_speed",
+      "wind_gust_speed",
+      "wind_bearing",
+      "cloud_coverage",
+      "uv_index",
+      "visibility"
+    ],
+    "weather.gov": [
+      "temperature",
+      "apparent_temperature",
+      "dew_point",
+      "humidity",
+      "pressure",
+      "wind_speed",
+      "wind_gust_speed",
+      "wind_bearing",
+      "cloud_coverage",
+      "uv_index",
+      "visibility"
+    ]
+  },
+  "history_list": [
+    "binary_sensor.air_conditioning_power",
+    "binary_sensor.cooling_arbiter_v2_ac_block_verified",
+    "binary_sensor.cooling_arbiter_v2_vent_start_ok",
+    "binary_sensor.cooling_humid_boost_would_start",
+    "binary_sensor.cooling_stale_air_advisory",
+    "binary_sensor.cooling_vent_humid_allowance_spent",
+    "binary_sensor.cooling_vent_humid_recovering",
+    "binary_sensor.dishwasher_power",
+    "binary_sensor.dryer_power",
+    "binary_sensor.electric_vehicle_2_power",
+    "binary_sensor.evap_power",
+    "binary_sensor.freezer_power",
+    "binary_sensor.fridge_2_power",
+    "binary_sensor.heat_pump_power",
+    "binary_sensor.microwave_2_power",
+    "binary_sensor.motor_2_power",
+    "binary_sensor.slow_cooker_power",
+    "binary_sensor.window_ac_power_2",
+    "sensor.cooling_arbiter_ecobee_target",
+    "sensor.cooling_arbiter_v2_decision",
+    "sensor.cooling_arbiter_v2_indoor_dew_point",
+    "sensor.cooling_arbiter_v2_indoor_house_humidity",
+    "sensor.cooling_arbiter_v2_status",
+    "sensor.evap_actual_relay_mode",
+    "sensor.evap_local_dew_point_consensus",
+    "sensor.evap_local_outdoor_temperature",
+    "sensor.evap_robust_indoor_temperature",
+    "sensor.evap_v24_eligibility_code",
+    "sensor.house_brain_energy_ai_status",
+    "sensor.kitchen_weather_ble_proxy_b3cc64_kitchen_temperature"
+  ],
+  "bounds": {
+    "max_entities": 3000,
+    "max_snapshot_bytes": 524288,
+    "max_state_chars": 255,
+    "max_attribute_chars": 255,
+    "max_attributes_per_entity": 24
+  },
+  "preconditions_for_real_export": {
+    "health_bridge_prefix_in_owner_deny_prefixes": true,
+    "owner_reviewed_dry_run_report": true
+  },
+  "notes": [
+    "friendly_name is never exported: person or place names in names cannot be detected reliably.",
+    "Excluded entity ids are never reported; the dry-run report carries only per-reason counts and the ids that would be exported.",
+    "Every change to this file is an owner-reviewed repository change; owner_deny_* always wins.",
+    "owner_name_aliases: personal names are replaced by neutral labels in the exported copy only (entity ids, state and attribute text, history); an exported id that still contains a name word is excluded (NAME_ALIAS_INCOMPLETE). 'ledger' alone is not a name form (sensor.house_brain_learning_memory_ledger).",
+    "owner_deny_prefixes: sensor.hb_health_ and binary_sensor.hb_health_ are reserved for the future #56 health bridge and never exported, whatever their content (owner decision 2026-10-02). The builder refuses a policy that claims health_bridge_prefix_in_owner_deny_prefixes without both prefixes (POLICY_HEALTH_PREFIX_NOT_DENIED).",
+    "registry_exempt_entities (1.4.0): exact ids only, never a pattern; at most 8; each must be in an exported domain. These House Brain sensors are written by an App through the Core API, so Home Assistant's entity registry never lists them; without this they fail the NOT_IN_REGISTRY rule. Deny lists, blocked domains/devices, device-class and name-category rules, the attribute allowlist and the content detectors still apply."
+  ],
+  "token_exemptions_rationale": "Cooling Arbiter evap pump pulse advice: 'pulse' is a #60 HEALTH token, but these are pump-control advisories, not human health data. Owner-reviewable. Policy 1.8.0 (owner pop-up 2026-10-24 'As lol of the above'): 'health' here is equipment or data health, 'location' and 'zone' are a room name (aliased like every text) and irrigation zones, 'medical' and 'phone' are the family preparedness review states (VERIFIED, STALE, UNKNOWN, NEEDS_ACTION); the content detector and name aliases still apply. Policy 1.11.0 (owner pop-ups 2026-11-01 'I build Inspector 0.2.22', renumbered 'Rebuild mine as 0.2.23'): sensor.cooling_insight_evap_health is the evap cooler's equipment health trend (cooling per °F of wet-bulb gap; pads, water, belt), not human health data.",
+  "extension_entities": [
+    "climate.ecobee_thermostat",
+    "climate.pool_set_point",
+    "climate.spa_set_point",
+    "counter.aquarite_auto_recovery_attempts",
+    "input_boolean.aquarite_auto_recovery_paused",
+    "input_boolean.cooling_arbiter_v2_armed",
+    "input_boolean.cooling_arbiter_v2_charge_anytime",
+    "input_boolean.cooling_arbiter_v2_charge_enabled",
+    "input_boolean.cooling_arbiter_v2_dryout_enabled",
+    "input_boolean.cooling_arbiter_v2_hold_active",
+    "input_boolean.cooling_arbiter_v2_peak_weekdays_only",
+    "input_boolean.cooling_arbiter_v2_vent_enabled",
+    "input_boolean.evap_auto_enabled",
+    "input_boolean.evap_hvac_safety_shutdown",
+    "input_boolean.evap_lockout",
+    "input_boolean.evap_maintenance_mode",
+    "input_boolean.evap_precooling_active",
+    "input_boolean.evap_safe_mode",
+    "input_boolean.evap_simulation_mode",
+    "input_boolean.house_brain_apocalypse_alerting_enabled",
+    "input_boolean.house_brain_apocalypse_auxiliary_alerts_enabled",
+    "input_boolean.house_brain_apocalypse_level4_alerts_enabled",
+    "input_boolean.house_brain_apocalypse_mobile_alerts_enabled",
+    "input_boolean.house_brain_energy_decisions_enabled",
+    "input_boolean.house_brain_energy_opportunity_notifications",
+    "input_boolean.pool_ondilo_calibration_complete",
+    "input_boolean.pool_salt_system_operational",
+    "input_boolean.spa_heat_with_schedule",
+    "input_boolean.spa_schedule_paused",
+    "input_boolean.spa_session_active",
+    "input_datetime.ac_filter_last_reset",
+    "input_datetime.aquarite_cell_last_cleaned",
+    "input_datetime.cooling_arbiter_v2_charge_started",
+    "input_datetime.cooling_arbiter_v2_peak_start",
+    "input_datetime.house_brain_apocalypse_last_auxiliary_alert",
+    "input_datetime.house_brain_apocalypse_last_level4_alert",
+    "input_datetime.house_brain_apocalypse_last_level5_alert",
+    "input_datetime.house_brain_family_communications_verified_on",
+    "input_datetime.house_brain_family_evacuation_verified_on",
+    "input_datetime.house_brain_family_food_verified_on",
+    "input_datetime.house_brain_family_go_bags_verified_on",
+    "input_datetime.house_brain_family_household_verified_on",
+    "input_datetime.house_brain_family_infant_verified_on",
+    "input_datetime.house_brain_family_network_verified_on",
+    "input_datetime.house_brain_family_r2_water_heater_verified_on",
+    "input_datetime.house_brain_family_r2_water_rotated_on",
+    "input_datetime.house_brain_family_water_verified_on",
+    "input_datetime.house_brain_last_energy_decision_change",
+    "input_datetime.house_brain_last_energy_opportunity_notification",
+    "input_datetime.pool_probe_last_calibrated",
+    "input_datetime.spa_last_all_off",
+    "input_datetime.spa_last_start_command",
+    "input_datetime.spa_last_start_trigger",
+    "input_datetime.spa_last_started",
+    "input_datetime.spa_weekend_preflight_time",
+    "input_datetime.spa_weekend_pump_time",
+    "input_datetime.spa_weekend_route_time",
+    "input_datetime.spa_weekend_stop_time",
+    "input_number.ac_filter_hours_limit",
+    "input_number.ac_stratification_spread",
+    "input_number.attic_condensation_margin",
+    "input_number.cooling_arbiter_v2_ac_min_run_minutes",
+    "input_number.cooling_arbiter_v2_block_deadline_minutes",
+    "input_number.cooling_arbiter_v2_charge_max_minutes",
+    "input_number.cooling_arbiter_v2_cooling_floor",
+    "input_number.cooling_arbiter_v2_dryout_minutes",
+    "input_number.cooling_arbiter_v2_fail_delta",
+    "input_number.cooling_arbiter_v2_guard_seconds",
+    "input_number.cooling_arbiter_v2_hold_margin",
+    "input_number.cooling_arbiter_v2_human_override_minutes",
+    "input_number.cooling_arbiter_v2_precool_lead_minutes",
+    "input_number.cooling_arbiter_v2_reassert_minutes",
+    "input_number.cooling_arbiter_v2_retry_minutes",
+    "input_number.cooling_arbiter_v2_stall_minutes",
+    "input_number.cooling_arbiter_v2_start_offset",
+    "input_number.cooling_arbiter_v2_transfer_persistence_minutes",
+    "input_number.cooling_arbiter_v2_vent_high_delta",
+    "input_number.cooling_arbiter_v2_vent_indoor_dp_stop",
+    "input_number.cooling_arbiter_v2_vent_indoor_rh_stop",
+    "input_number.cooling_arbiter_v2_vent_max_outdoor_dewpoint",
+    "input_number.cooling_arbiter_v2_vent_stop_delta",
+    "input_number.energy_high_always_on_watts",
+    "input_number.energy_solar_disagreement_percent",
+    "input_number.energy_voltage_imbalance_volts",
+    "input_number.evap_critical_temperature",
+    "input_number.evap_day_target",
+    "input_number.evap_dryout_minutes",
+    "input_number.evap_ecobee_stale_minutes",
+    "input_number.evap_force_ac_temperature",
+    "input_number.evap_free_cooling_advantage",
+    "input_number.evap_high_start_delta",
+    "input_number.evap_local_dewpoint_disagreement_limit",
+    "input_number.evap_max_indoor_humidity",
+    "input_number.evap_max_outdoor_dewpoint",
+    "input_number.evap_max_outdoor_humidity",
+    "input_number.evap_max_pm25",
+    "input_number.evap_min_outdoor_temperature",
+    "input_number.evap_min_supply_advantage",
+    "input_number.evap_minimum_off_minutes",
+    "input_number.evap_minimum_run_minutes",
+    "input_number.evap_minimum_speed_change_minutes",
+    "input_number.evap_monsoon_forecast_humidity",
+    "input_number.evap_night_target",
+    "input_number.evap_off_delta",
+    "input_number.evap_outdoor_stale_minutes",
+    "input_number.evap_outlier_threshold",
+    "input_number.evap_pad_efficiency",
+    "input_number.evap_vacation_target",
+    "input_number.evap_warning_temperature",
+    "input_number.evap_water_gph",
+    "input_number.garage_heat_alert",
+    "input_number.house_brain_apocalypse_corroboration_level",
+    "input_number.house_brain_apocalypse_level4_repeat_hours",
+    "input_number.house_brain_apocalypse_level5_repeat_hours",
+    "input_number.house_brain_apocalypse_stale_after_minutes",
+    "input_number.house_brain_energy_high_demand_threshold",
+    "input_number.house_brain_energy_high_grid_import_threshold",
+    "input_number.house_brain_energy_load_reserve",
+    "input_number.house_brain_energy_onpeak_import_guard",
+    "input_number.house_brain_energy_solar_surplus_threshold",
+    "input_number.house_brain_family_food_days",
+    "input_number.house_brain_family_r2_water_heater_gallons",
+    "input_number.house_brain_family_target_days",
+    "input_number.house_brain_family_water_daily_gallons",
+    "input_number.house_brain_family_water_gallons",
+    "input_number.house_brain_irrigation_back_yard_expected_flow_gpm",
+    "input_number.house_brain_irrigation_critical_battery_threshold_percent",
+    "input_number.house_brain_irrigation_flow_anomaly_tolerance_percent",
+    "input_number.house_brain_irrigation_front_yard_expected_flow_gpm",
+    "input_number.house_brain_irrigation_long_rain_delay_review_hours",
+    "input_number.house_brain_irrigation_low_battery_threshold_percent",
+    "input_number.house_brain_irrigation_max_continuous_runtime_minutes",
+    "input_number.house_brain_irrigation_monthly_budget_gallons",
+    "input_number.house_brain_irrigation_pool_equipment_expected_flow_gpm",
+    "input_number.house_brain_irrigation_water_rate_per_1000_gallons",
+    "input_number.house_brain_tesla_expected_charge_power",
+    "input_number.house_brain_tesla_freshness_limit",
+    "input_number.house_brain_tesla_ready_soc",
+    "input_number.nursery_vpd_high",
+    "input_number.nursery_vpd_low",
+    "input_number.pool_manual_cya",
+    "input_number.pool_manual_free_chlorine",
+    "input_number.pool_manual_ph",
+    "input_number.spa_max_runtime_minutes",
+    "input_select.cooling_arbiter_v2_mode",
+    "input_select.cooling_arbiter_v2_phase",
+    "input_select.evap_mode",
+    "input_select.house_brain_family_communications_review",
+    "input_select.house_brain_family_evacuation_review",
+    "input_select.house_brain_family_food_review",
+    "input_select.house_brain_family_go_bags_review",
+    "input_select.house_brain_family_household_review",
+    "input_select.house_brain_family_infant_review",
+    "input_select.house_brain_family_network_review",
+    "input_select.house_brain_family_r2_water_heater_review",
+    "input_select.house_brain_family_r2_water_rotation_review",
+    "input_select.house_brain_family_water_review",
+    "input_select.house_brain_pool_probe_service_state",
+    "input_select.pool_season_auto_state",
+    "input_select.pool_season_mode",
+    "light.pool_light",
+    "light.spa_light",
+    "number.house_brain_aquarite_chlorination_output",
+    "switch.backyard_zen_16_multirelay_1",
+    "switch.backyard_zen_16_multirelay_2",
+    "switch.backyard_zen_16_multirelay_3",
+    "switch.front_yard_tesla_charge",
+    "switch.house_brain_aquarite_owner_command_authority",
+    "switch.pool_heater",
+    "switch.pool_pump",
+    "switch.spa_heater",
+    "switch.spa_pump",
+    "timer.evap_minimum_off",
+    "timer.evap_minimum_run",
+    "timer.evap_speed_change",
+    "weather.forecast_home",
+    "weather.gov"
+  ]
+}
