@@ -1,0 +1,36 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>House Brain House Health AI</title><style>
+body{font:16px system-ui;background:#141b22;color:#ecf1f5;margin:0;padding:24px;max-width:1100px}h1{font-size:28px}h2{font-size:19px;color:#9fd8a8}section{background:#1f2b36;border-radius:12px;padding:18px;margin:15px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}.muted{color:#b0c0cc}#state{font-weight:bold}.line{white-space:pre-wrap;overflow-wrap:anywhere}
+</style><h1>House Brain House Health AI</h1><p class="muted">What the house's readings mean for the house · shadow · read-only · no alerts of its own</p>
+<section><span id="state">Connecting…</span><p id="why" class="muted"></p></section>
+<section><h2>In plain words</h2><p class="line" id="plain"></p></section>
+<section><h2>Rooms</h2><p class="line" id="rooms"></p><p class="muted">Normal temperature per room for six times of day, learned over 7 days, the way Learning 1.4 does. A drift is 2.5 °F away from normal for 30 minutes; it clears once back within 1.5 °F for 30 minutes.</p></section>
+<section><h2>Mold risk</h2><p class="line" id="mold"></p><p class="muted">A slow 30-day average for the whole house (provisional thresholds). Not a real-time alarm.</p></section>
+<section><h2>Outages</h2><p class="line" id="outage"></p><p class="muted">The main router and the internet modem are not on the UPS; the satellite, ZEN16, Pi and switch are. In a power cut, Wi-Fi from the main router and the internet are expected to go down.</p></section>
+<section><h2>UPS</h2><p class="line" id="ups"></p><p class="muted">Learned only from real power cuts, never from a pulled plug. Alarm floor 45 min, planning floor 60 min.</p></section>
+<section><h2>Replacement calendar</h2><p class="line" id="calendar"></p><p class="muted">Low-battery and offline alerts stay with Maintenance.</p></section>
+<section><h2>Scorecard (shadow)</h2><p class="line" id="score"></p><p class="muted">Counted only. Meeting a bar does not retire any YAML; each retirement is its own owner decision.</p></section>
+<section><h2>Reserved</h2><p class="line" id="reserved"></p></section>
+<section><h2>History</h2><p class="line" id="history"></p></section>
+<section><h2>Full evidence</h2><details><summary>Tap to open</summary><pre id="raw"></pre></details></section>
+<script>
+const $=x=>document.getElementById(x);let s={};
+const t=x=>x==null?'not available yet':x;const w=x=>String(x||'').toLowerCase().replaceAll('_',' ');
+const f1=x=>x==null?'—':Number(x).toFixed(1);
+const RN={living_room:'Living room',master_bedroom:'Master bedroom',ledgers_room:"Ledger's room",lakes_room:"Lake's room",maris_room:"Mari's room"};
+function render(){$('state').textContent=s.state+' · '+(s.version||'')+(s.hold_reason?' · held: '+s.hold_reason:'');$('why').textContent='Physical actions: none. Control authority: none.';
+let n=s.now||{},o=n.outage||{},rooms=s.rooms||{},m=s.mold||{},u=s.ups||{},cal=s.calendar||[];
+let drifting=Object.entries(rooms).filter(([r,v])=>(v.drift||{}).state==='DRIFT').map(([r,v])=>(RN[r]||r)+' '+w(v.drift.direction));
+$('plain').textContent=[(Object.keys(rooms).length?(drifting.length?'Drifting: '+drifting.join(', '):'No room is drifting from its normal pattern.'):'Rooms: learning.'),'Mold risk: '+w(m.level||'unknown')+'.','Outage: '+w(o.class||'unknown')+'.','UPS: '+w(u.band||'learning')+', '+t(u.runtime_min)+' min estimated now.',cal.filter(i=>i.status==='DUE'||i.status==='SOON').map(i=>w(i.item)+' '+w(i.status)).join(', ')||'Nothing due soon.'].join('\n');
+$('rooms').textContent=Object.entries(rooms).map(([r,v])=>(RN[r]||r)+': '+f1(v.temperature)+' °F now, normal '+f1(v.baseline)+' °F for '+w(v.period)+' ('+w(v.baseline_status)+')'+(v.deviation!=null?', '+(v.deviation>0?'+':'')+v.deviation+' °F':'')+' · '+w((v.drift||{}).state)+((v.drift||{}).state==='DRIFT'?' '+w(v.drift.direction):'')+' · Arbiter '+t((v.cooling_context||{}).arbiter_phase_now)+' · '+w((v.idle_vs_stale||{}).status)).join('\n')||'Learning.';
+$('mold').textContent=m.level?('Index '+w(m.level)+'. Humidity 30-day '+f1((m.rh||{}).mean_30d)+' % ('+w((m.rh||{}).level)+'), dew point 30-day '+f1((m.dew_point||{}).mean_30d)+' °F ('+w((m.dew_point||{}).level)+').'):'Learning.';
+$('outage').textContent='Now: '+w(o.class)+(o.detail&&o.detail!=='NO_OUTAGE'?' ('+w(o.detail)+')':'')+'. Live NOA 1.0 says '+w(o.live_noa_class)+'.'+((o.deltas||[]).length?'\nDifferent from NOA 1.0: '+o.deltas.map(w).join(', '):'')+((o.reasons||[]).length?'\n'+o.reasons.map(w).join('\n'):'');
+$('ups').textContent=u.band?('Band '+w(u.band)+(u.retention_pct!=null?', retention '+u.retention_pct+' % of new':'')+'. '+u.natural_events+' natural on-battery event(s), '+u.measured+' measured. Now: '+t(u.charge)+' % charge, '+t(u.load)+' % load, '+t(u.runtime_min)+' min estimate ('+w(u.floors)+').'):'Learning.';
+$('calendar').textContent=cal.map(i=>w(i.item)+': '+w(i.status)+(i.due_date?' · due '+i.due_date+(i.days_left!=null?' ('+i.days_left+' days)':''):'')+(i.life_remaining_pct!=null?' · '+i.life_remaining_pct+' % life left':'')+(i.missing?' · missing: '+w(i.missing):'')+(i.moved_earlier?' · moved earlier by measured runtime':'')).join('\n')||'Learning.';
+let sc=s.scorecard||{};$('score').textContent=['Room baselines vs Learning: '+w((sc.rooms||{}).status)+((sc.rooms||{}).median_diff_f!=null?' (median '+sc.rooms.median_diff_f+' °F over '+sc.rooms.days+' days)':''),'Outage class vs NOA 1.0: '+w((sc.outage||{}).status)+' ('+((sc.outage||{}).episodes||0)+' outage(s))','Due dates vs Predictive Maintenance 2.3: '+w((sc.due_dates||{}).status),'UPS prediction: '+w((sc.ups||{}).status)].join('\n');
+$('reserved').textContent=Object.entries(s.reserved||{}).map(([k,v])=>w(k)+': '+v).join('\n');
+let h=s.history||{};$('history').textContent=(h.status==='BACKFILLING'?'Reading the last 40 days from Home Assistant: '+h.entity_days_waiting+' series-days to go (one a minute).':'Up to date; one new day each night.')+' Kept: '+t(h.points)+' changes.';
+$('raw').textContent=JSON.stringify(s,null,2);}
+async function refresh(){try{let r=await fetch('./status',{cache:'no-store'});if(!r.ok)throw Error();s=await r.json();render();}catch(e){$('state').textContent='Not reachable; retrying.';}}
+refresh();setInterval(refresh,30000);
+</script></html>
