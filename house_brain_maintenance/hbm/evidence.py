@@ -13,6 +13,9 @@ by itself on **deterministic, free public checks**, not on an AI's word.
   own history (an earlier restore or failure of the same item within 90 days), and the owner's or cloud/internal
   AI review when it says HOLD or DECLINE (an AI review can only *add* a hold; it never approves or unblocks). The card
   is computed again right before an install (Flagger-style re-check) and posted on #454 with its result.
+* **0.9.57 adds** the held-boards check (``version.home-assistant.io/stable.json``), the crowd-regression check
+  (GitHub issue search) and the security urgency (OSV, KEV, EPSS) through ``feeds.py``, and the weekly tier B batch
+  (``batch.py``): tier B installs on a clean card in the Saturday window unless the owner taps Hold.
 * **The AI is no longer a gate** in ``update_mode: tiers``: a missing review never delays tier A or B and never
   routes an update to the phone; the 48-hour "asked anyway" path is gone for those tiers.
 
@@ -27,6 +30,7 @@ import json
 import re
 import time
 
+from . import feeds as FD
 from . import issues as I
 from . import upgradeinfo as UI
 from .autofix import physical, radio_app
@@ -118,6 +122,42 @@ def history_check(ledger: dict, prefix: str, now: float) -> tuple[str, str]:
     return CLEAN, "no restore or failure of this item in 90 days"
 
 
+def boards_check(stable, kind: str, board: str, target: str) -> tuple[str, str]:
+    """0.9.57: Home Assistant's stable feed per board. Held back for this board = hold; unknown = wait."""
+    if kind not in ("core", "os"):
+        return CLEAN, "not a Core or OS update"
+    held = FD.held_back(stable, kind, board, target)
+    if held is None:
+        return WAIT, "stable feed or board unknown" if stable is None or not board else f"stable feed lists no {kind} version for board {board}"
+    listed = FD.board_version(stable, kind, board)
+    if held:
+        return HOLD, f"Home Assistant hands board {board} {listed}, not {target} yet (held back)"
+    return CLEAN, f"stable feed hands board {board} {listed}"
+
+
+def crowd_check(count, threshold: int = FD.CROWD_THRESHOLD) -> tuple[str, str]:
+    """0.9.57: new GitHub issues naming the exact version in the last week; at the threshold = hold; unknown = wait."""
+    if count is None:
+        return WAIT, "crowd regressions unknown (search unavailable or today's cap reached)"
+    if int(count) >= threshold:
+        return HOLD, f"{int(count)} new issues name this version on GitHub in {FD.CROWD_DAYS} days (threshold {threshold})"
+    return CLEAN, f"{int(count)} new issues name this version on GitHub in {FD.CROWD_DAYS} days"
+
+
+def security_check(info) -> tuple[str, str, bool]:
+    """0.9.57: (state, text, urgent). Advisories that affect the *installed* version make the fix urgent (release age
+    0 days); security is never a hold and an unknown feed is no urgency."""
+    if not isinstance(info, dict):
+        return CLEAN, "no security advisory data (no urgency)", False
+    cves = [c for c in info.get("cves") or [] if isinstance(c, str)]
+    if not cves:
+        return CLEAN, "no open advisory affects the installed version", False
+    kev = info.get("kev")
+    epss = info.get("epss")
+    text = f"{len(cves)} advisor{'y' if len(cves) == 1 else 'ies'} affect the installed version ({', '.join(cves[:3])}"            + (f"; CISA KEV: {len(kev)}" if kev else "") + (f"; EPSS max {float(epss):.2f}" if isinstance(epss, (int, float)) else "")            + "): security fix, no release-age wait"
+    return CLEAN, text, True
+
+
 def ai_check(review) -> tuple[str, str]:
     """An owner, cloud or internal AI review may add a hold; APPROVE and a missing review change nothing."""
     if isinstance(review, dict) and review.get("verdict") in AI_HOLDS:
@@ -168,8 +208,10 @@ class Evidence:
     """Cards for the update engines: feeds through ``upgradeinfo`` (cached), the ledger for this house's history,
     the AI review reader for holds; one #454 post per decided card."""
 
-    def __init__(self, journal, ha, upgrade_info, ai, report, clock=time.time) -> None:
+    def __init__(self, journal, ha, upgrade_info, ai, report, clock=time.time, feeds=None) -> None:
         self.j, self.ha, self.upgrade_info, self.ai, self.report, self.clock = journal, ha, upgrade_info, ai, report, clock
+        self.feeds = feeds                      # 0.9.57: feeds.Feeds (stable boards, crowd, security); None = unknown
+        self.board = ""                         # 0.9.57: the OS board (set by the Service from /os/info)
 
     def _doc(self) -> dict:
         doc = self.j.load_doc(DOC, {})
@@ -195,13 +237,31 @@ class Evidence:
 
     def for_item(self, *, item: str, name: str, kind: str, bump: str, verdict: str, from_version: str,
                  to_version: str, slug: str, first_seen, domains: set[str] | None = None, min_days: float | None = None,
-                 ledger_prefix: str, stage: str = "", category: str = "") -> dict:
+                 ledger_prefix: str, stage: str = "", category: str = "", crowd_repo: str = "",
+                 security: tuple | None = None) -> dict:
+        """0.9.57: ``crowd_repo`` (GitHub ``owner/name``) adds the crowd-regression check; ``security``
+        ``(ecosystem, package, installed_version)`` adds the urgency check (release age 0 when an advisory affects the
+        installed version); Core and OS get the held-boards check."""
         now = self.clock()
         tier = tier_of(kind, bump=bump, verdict=verdict, slug=slug, name=name, version=to_version, category=category, stage=stage)
-        checks = {"release age": age_check(bump, first_seen, now, min_days),
+        urgent = False
+        extra: dict = {}
+        if security is not None:
+            info = self.feeds.security(*security) if self.feeds is not None else None
+            state, text, urgent = security_check(info)
+            extra["security"] = (state, text)
+        checks = {"release age": age_check(bump, first_seen, now, 0.0 if urgent else min_days) if urgent and bump in MIN_AGE_DAYS
+                  else age_check(bump, first_seen, now, min_days),
                   "Home Assistant alerts": alerts_check(self._alerts() if domains else [], set(domains or ()), self._core_version()),
                   "this house's history": history_check(self.j.ledger(), ledger_prefix, now),
                   "AI review": ai_check(self.ai.get(item) if self.ai is not None else None)}
+        if urgent and bump in MIN_AGE_DAYS:
+            checks["release age"] = (CLEAN, "security fix: no release-age wait")
+        if kind in ("core", "os"):
+            checks["held boards"] = boards_check(self.feeds.stable() if self.feeds is not None else None, kind, self.board, to_version)
+        if crowd_repo:
+            checks["crowd regressions"] = crowd_check(self.feeds.crowd_count(crowd_repo, to_version) if self.feeds is not None else None)
+        checks.update(extra)
         return card(item=item, name=name, kind=kind, bump=bump, verdict=verdict, from_version=from_version,
                     to_version=to_version, tier=tier, checks=checks, now=now)
 

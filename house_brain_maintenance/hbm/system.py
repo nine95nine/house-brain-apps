@@ -37,6 +37,8 @@ from dataclasses import dataclass
 from . import approval, issues as I, net, reasks, upgradeinfo
 from .ha import ForbiddenCall, HAError, HomeAssistant, OsState, SystemInfo
 from .journal import Journal
+from . import evidence as EV
+from .updates import VERSION_OF
 from .manifest import RE_UPDATE_VERSION
 from .updates import DONE, DRY_RUN_OK, FAILED, FAILED_MANUAL, REFUSED, REJECTED, Outcome, missed_note, utc_iso
 
@@ -103,6 +105,9 @@ class SystemUpdater:
         self.asking = ""                    # 0.7.2: the update whose ask is on the phone right now
         self.upgrade_info = None            # 0.8.4: upgradeinfo.UpgradeInfo (known issues, release notes); None = off
         self._intel: dict[str, dict] = {}   # 0.8.4: target -> facts of the last read (review and ask share it)
+        self.tiers = False                  # 0.9.57: update_mode tiers (Core x.y.1+ and OS join the weekly batch)
+        self.evidence = None                # 0.9.57: evidence.Evidence
+        self.batch = None                   # 0.9.57: batch.Batch
 
     # -- memory ------------------------------------------------------------------------
     def _mem(self) -> dict:
@@ -285,6 +290,30 @@ class SystemUpdater:
             if now - float(reviewed) < self.p.lead_seconds and not decided:
                 note(key, "review posted; the phone asks after the lead time")
                 return None
+            if self.tiers and not decided and self.batch is not None and self.evidence is not None:
+                # 0.9.57: tier B (Core x.y.1+, the OS): the weekly batch, never a phone ask one by one; a Core .0 is
+                # on the hold list before this point, so it never gets here
+                if self.batch.due(key):
+                    c = self.card(info, float(reviewed))
+                    if c["verdict"] != EV.CLEAN:
+                        note(key, "weekly batch: the evidence card is not clean; waits for the next batch: " + "; ".join(c["reasons"])[:160])
+                        self.evidence.post_once(c, VERSION_OF(), "held before the install")
+                        continue
+                    self.evidence.post_once(c, VERSION_OF(), "installing by itself (weekly batch)")
+                    facts.update(automatic=True, automatic_reason="tier B: weekly batch on a clean evidence card",
+                                 tier=EV.TIER_B, evidence=c["checks"])
+                    note(key, "installing by itself now (weekly batch)")
+                    self.j.audit(rid, "BATCH_INSTALL", kind=info.kind, to=info.version_latest)
+                    result = self.apply(rid, info, facts)
+                    if result is not None:
+                        result.facts = {**facts, **result.facts}
+                        self.evidence.note_auto(LABEL[info.kind], str(info.version), str(info.version_latest), result.result_outcome)
+                        self.batch.finished(key, result.result_outcome)
+                    return result
+                self.batch.enlist(key, kind=info.kind, name=LABEL[info.kind], from_version=str(info.version),
+                                  to_version=str(info.version_latest), engine="system")
+                note(key, self.batch.note_for(key))
+                continue
             if self.ai is not None and not decided and not self.ai.gate(key, float(reviewed)).proceed:
                 note(key, f"waiting for the AI review (asked after it, or from {self.ai.ask_anyway_at(float(reviewed))})")
                 continue
@@ -312,6 +341,24 @@ class SystemUpdater:
 
     def held(self, kind: str, version: str) -> str | None:
         return self.holds.why_held(kind, version) if self.holds is not None else None
+
+    def card(self, info: SystemInfo, reviewed: float) -> dict:
+        """0.9.57: the evidence card for a Core/OS update: release age from the review time, the alerts feed for the
+        loaded integrations (Core), the held-boards feed, new GitHub issues naming the version, this house's history
+        and the security urgency of the installed Core version."""
+        from . import feeds as FD
+        from .review import bump_kind
+        kind, to = info.kind, str(info.version_latest)
+        try:
+            comps = set(self.ha.loaded_components()) if kind == "core" else set()
+        except Exception:  # noqa: BLE001
+            comps = set()
+        return self.evidence.for_item(item=f"{kind}@{to}", name=LABEL[kind], kind=kind,
+                                      bump=bump_kind(str(info.version), to) if kind == "core" else "patch", verdict="low",
+                                      from_version=str(info.version), to_version=to, slug=kind, first_seen=reviewed,
+                                      domains=comps or None, ledger_prefix=request_id_for(kind, "") + "-",
+                                      crowd_repo=FD.CROWD_REPOS.get(kind, ""),
+                                      security=("PyPI", "homeassistant", str(info.version)) if kind == "core" else None)
 
     def _held_text(self, rid: str, info: SystemInfo, why: str) -> str:
         from . import VERSION

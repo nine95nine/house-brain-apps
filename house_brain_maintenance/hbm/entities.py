@@ -80,6 +80,7 @@ class EntityUpdater:
         self.ai = None                      # 0.8.9: aireview.AiReviews (no ask/automatic install before the review)
         self.queue: dict[str, dict] = {}    # 0.8.9: HACS/firmware updates offered and why they are (not) asked yet
         self.evidence = None                # 0.9.56: evidence.Evidence (tiers mode)
+        self.batch = None                   # 0.9.57: batch.Batch (tier B weekly batch, tiers mode)
 
     # -- memory ------------------------------------------------------------------------
     def _mem(self) -> dict:
@@ -336,6 +337,21 @@ class EntityUpdater:
             auto, why = self.auto_allowed(rev, key, mem)
             if auto and gate is not None and not gate.auto_ok and not tiers:
                 auto, why = False, gate.line
+            if tiers and not decided and self.batch is not None and self.tier(rev) == EV.TIER_B:
+                item = f"entity:{key}"                 # 0.9.57: HACS integrations and other tier B entity updates
+                if self.batch.due(item):
+                    c = self.card(rev, key, mem)
+                    if c is not None and c["verdict"] == EV.CLEAN:
+                        auto, why = True, "tier B: weekly batch on a clean evidence card"
+                    else:
+                        note(key, "weekly batch: the evidence card is not clean; waits for the next batch: "
+                             + "; ".join((c or {}).get("reasons") or ["no evidence card"])[:160])
+                        continue
+                else:
+                    self.batch.enlist(item, kind=rev.kind, name=rev.name, from_version=rev.from_version,
+                                      to_version=rev.to_version, engine="entity")
+                    note(key, self.batch.note_for(item))
+                    continue
             facts["automatic"] = auto
             facts["automatic_reason"] = why
             if tiers:
@@ -391,6 +407,8 @@ class EntityUpdater:
         result.facts = {**facts, **result.facts}
         if automatic and self.p.mode == TIERS and self.evidence is not None:
             self.evidence.note_auto(rev.name, rev.from_version, rev.to_version, result.result_outcome)
+        if self.p.mode == TIERS and self.batch is not None and result.result_outcome in (DONE, RESTORED, FAILED, FAILED_MANUAL, REJECTED):
+            self.batch.finished(f"entity:{key}", result.result_outcome) if result.result_outcome != REJECTED else self.batch.skip(f"entity:{key}")
         return result
 
     def _lines(self, rev: EntityReview) -> list[str]:

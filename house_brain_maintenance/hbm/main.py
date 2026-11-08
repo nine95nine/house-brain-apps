@@ -396,6 +396,7 @@ class Service:
         self.ai: AiReviews | None = None                   # 0.8.9: AI reviews read from the tracking issue
         self.update_lane = None                              # 0.9.51: internal update reviews (D4/D5)
         self.evidence = None                                 # 0.9.56: the evidence card (tiers)
+        self.batch = None                                    # 0.9.57: the weekly tier B batch (tiers)
         self.update_queue: UpdateQueue | None = None       # 0.8.9: the "updates waiting" list
         self.rate_noted: set[str] = set()                  # 0.8.9: requests waiting for the ask limit (audited once)
         self.free_lane = None                                   # 0.9.29: the free reviewer lane
@@ -590,8 +591,20 @@ class Service:
                 self.wire_update_lane()                                                 # 0.9.51 (D4/D5)
             # 0.9.56 (owner 2026-11-08 "Tiers A + B"): the evidence card for the tiers; the AI reader (when on) may add a hold
             from .evidence import Evidence
-            self.evidence = Evidence(self.j, self.ha, self.system.upgrade_info, self.ai, self.report_text)
-            self.updater.evidence = self.entities.evidence = self.evidence
+            from .feeds import Feeds
+            from .batch import Batch
+            self.evidence = Evidence(self.j, self.ha, self.system.upgrade_info, self.ai, self.report_text,
+                                     feeds=Feeds(self.j) if self.o.upgrade_checks else None)     # 0.9.57: public feeds
+            try:
+                self.evidence.board = self.ha.os_board()
+            except Exception:  # noqa: BLE001 - no OS info: the held-boards check stays unknown
+                self.evidence.board = ""
+            self.updater.evidence = self.entities.evidence = self.system.evidence = self.evidence
+            self.system.tiers = self.o.update_mode == TIERS
+            if self.o.update_mode == TIERS:                                      # 0.9.57: the weekly tier B batch
+                self.batch = Batch(self.j, settings, self.report_text)
+                self.batch.ha = self.ha
+                self.updater.batch = self.entities.batch = self.system.batch = self.batch
             if self.watcher is not None:
                 self.watcher.evidence = self.evidence
                 self.watcher.update_mode = self.o.update_mode
@@ -1140,7 +1153,8 @@ class Service:
                                  **self._writer_attrs(), **self._skipped_attrs(),
                                  **self._waiting_attrs(), **self._keys_attrs(),
                                  "needs_review": self.needs_review(),           # 0.9.26
-                                 **({"free_reviewer": self.free_lane.status()} if self.free_lane is not None else {})})
+                                 **({"free_reviewer": self.free_lane.status()} if self.free_lane is not None else {}),
+                                 **({"update_batch": self.batch.status()} if self.batch is not None else {})})    # 0.9.57
 
     def _publish_family(self) -> None:
         """0.9.30: relay Systems AI's digest into the one family sensor (owner pop-up "Maintenance relays it")."""
@@ -1202,6 +1216,11 @@ class Service:
                 self.ai.refresh()
             except net.NetError as err:
                 LOG.warning("AI review read waits (the last reviews read stand): %s", net.redact(str(err))[:200])
+        if self.batch is not None:                      # 0.9.57: announce / remind / roll the weekly batch
+            try:
+                self.batch.cycle()
+            except Exception as err:  # noqa: BLE001 - the batch is a schedule; the engines still run
+                LOG.warning("weekly batch waits: %s", net.redact(str(err))[:200])
         if self.update_lane is not None:                # 0.9.51: the free model reads the notes of what still waits
             try:
                 rows = rows_from(*(e.queue for e in (self.system, self.updater, self.entities)))

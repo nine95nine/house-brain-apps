@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.9.57
+
+Rules-first updates, part 2 (the same owner decision 2026-11-08 **"Tiers A + B"** and pop-up "Yes, build 0.9.56 →
+0.9.59 as sliced"). Tier B now installs by itself too, in one weekly batch, on free public checks. Contains 0.9.56
+unchanged otherwise.
+
+- **Tier B weekly batch** (`hbm/batch.py`, `update_mode: tiers` only). Minor and major App updates, HACS
+  integrations, Core x.y.1+ and the OS no longer ring the phone one by one. They join one batch that **installs
+  Saturday 03:00 local unless you tap Hold**: one phone message when the batch forms ("Maintenance: weekly updates",
+  Approve = fine, Reject = Hold one week), one reminder Friday evening, and the Maintenance page lists each item
+  with its install day. On Saturday every item is installed only on a **clean evidence card** checked right then
+  (the same backup → update → health watch → restore path as an approved one); a card that is not clean waits for
+  the next batch and is posted once. A page Decline or phone Reject of a single item still skips it for good.
+  A Core `.0` release, firmware, radio Apps, physical-control Apps and pre-releases stay tier C (your tap only).
+- **Crowd regressions** (`hbm/feeds.py`): for Core and the OS the card counts new GitHub issues of the last 7 days
+  that name the exact version (`home-assistant/core`, `home-assistant/operating-system`); 5 or more = hold.
+  Unauthenticated search, at most 25 searches a day, each result cached a day; over the cap = unknown (= waits).
+- **Held boards**: Home Assistant's stable feed (`version.home-assistant.io/stable.json`, cached 6 h) per board; a
+  Core/OS version the feed does not hand this board yet is a hold; an unknown board or feed is unknown (waits).
+- **Security feeds**: OSV (`api.osv.dev`, advisories affecting the *installed* version), CISA KEV and FIRST EPSS,
+  cached a day. A known exploited or EPSS ≥ 0.5 advisory on the installed version makes the fix **urgent**: the
+  release-age wait drops to 0 days. Security is an urgency signal only, never a hold.
+- Core/OS reviews on the tracking issue, the lead time and the AI review are unchanged; in tiers mode the phone ask
+  after the lead time is replaced by the batch. `ask` and `auto_low_risk` behave exactly as before.
+- Status: `update_batch` (items, install day, held weeks). Every count stays inside the free limits: GitHub search ≤ 25
+  unauthenticated requests a day, OSV/KEV/EPSS one read a day each per item, stable feed 4 a day.
+
 ## 0.9.56
 
 Rules-first updates, part 1 (owner decision 2026-11-08 **"Tiers A + B"**, relayed by the AI reviewer chat with its

@@ -642,7 +642,7 @@ running. If the local copy is running, the store one is stopped, or the backup d
 removed and you are told why (a copy the Supervisor shows as `error` after its stop counts as stopped, from 0.9.44).
 Nothing else is ever uninstalled.
 
-## Rules-first updates: tiers and the evidence card — from 0.9.56
+## Rules-first updates: tiers, the evidence card and the weekly batch — from 0.9.56
 
 Your decision of 2026-11-08: updates should not freeze when the paid AI chats are out of tokens. With
 `update_mode: tiers` this App decides small updates itself from **free public checks**, never from an AI's word.
@@ -650,8 +650,11 @@ Your decision of 2026-11-08: updates should not freeze when the paid AI chats ar
 - **Tier A, installs by itself:** patch updates of Apps and HACS cards/themes that this App's own review calls low
   risk, in the night window, after 3 approved updates went well, when the evidence card is clean. One line in the
   morning summary: "Updated by itself overnight".
-- **Tier B, asks you:** minor and major App updates, HACS integrations, Core x.y.1+ and the OS (the weekly "installs
-  Saturday unless you tap Hold" batch comes in a later release).
+- **Tier B, the weekly batch (from 0.9.57):** minor and major App updates, HACS integrations, Core x.y.1+ and the
+  OS join one batch that **installs Saturday 03:00 unless you tap Hold**. You get one phone message when the batch
+  forms (Approve = fine, Reject = Hold one week) and one reminder Friday evening; the Maintenance page lists each
+  item with its install day, and you can still Approve or Decline any single item there. On Saturday each item is
+  installed only on a clean evidence card checked right then; one that is not clean waits for the next batch.
 - **Tier C, your tap only, never automatic:** device firmware, radio Apps (Z-Wave, Zigbee, Matter, Thread, Bluetooth,
   ESPHome), Apps that control equipment, Core `.0` releases and every beta or pre-release. A pre-release never rings
   the phone: it waits on the Maintenance page under *Needs your decision*.
@@ -663,6 +666,11 @@ Your decision of 2026-11-08: updates should not freeze when the paid AI chats ar
   tracking issue.
 - **The AI is advice now, not a gate.** A missing review never delays a tier A or B update and never sends it to your
   phone; a review can only add a hold.
+- **More free checks from 0.9.57** (Core and OS): *held boards* (Home Assistant's stable feed per board: a version not
+  handed to your board yet is a hard stop), *crowd regressions* (new GitHub issues of the last week naming the exact
+  version: 5 or more is a hard stop; at most 25 searches a day, over the cap counts as unknown), and *security* (OSV,
+  CISA KEV and EPSS: a known exploited or high-probability advisory on the version you run makes the fix urgent, so
+  the release-age wait drops to zero; security never holds an update).
 
 ## Rules first, then the free model — from 0.9.42
 

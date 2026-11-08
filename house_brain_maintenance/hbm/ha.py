@@ -1842,6 +1842,15 @@ class HomeAssistant:
         return SystemInfo(kind=kind, version=ver("version"), version_latest=ver("version_latest"),
                           update_available=isinstance(data, dict) and data.get("update_available") is True)
 
+    def os_board(self) -> str:
+        """0.9.57: the board id from ``/os/info`` (``rpi4-64``, ``yellow``, ...), bounded; "" when unknown."""
+        try:
+            data = self._supervisor("GET", "/os/info")
+        except (HAError, net.NetError):
+            return ""
+        board = data.get("board") if isinstance(data, dict) else None
+        return board if isinstance(board, str) and re.fullmatch(r"[a-z0-9_-]{1,40}", board) else ""
+
     def os_state(self) -> OsState:
         """0.8.3: ``/os/info`` projected to running/pending versions and the A/B slots (bounded identifiers)."""
         data = self._supervisor("GET", "/os/info")
