@@ -87,6 +87,14 @@ Supervisor does not own (Apps, Core and OS keep their own paths above) and handl
 | HACS card or theme | Mushroom | Reviewed like an App. With `update_mode: auto_low_risk` a low-risk bug-fix update installs by itself in the night window after `auto_wait_days`; anything bigger asks. |
 | HACS integration (and other HACS code) | B-hyve, HACS itself | **Always asks.** One Approve covers the Home Assistant restart it needs and, if the check fails, the rollback restart. |
 | Device firmware | Z-Wave relays, the Z-Wave stick, a router | **Always asks, never automatic**, and only after the version has been offered for `firmware_wait_days` (default 30), so other people find a bad firmware first. |
+| Unknown kind (from 0.9.52) | an update from an integration this App does not know | **Never installed.** It shows as a problem ("An update from … is waiting, and this App does not know that kind of update", `UPDATE_PLATFORM_UNKNOWN`). Update it yourself, or a later release learns it. |
+
+From 0.9.52 (Home Assistant 2026.11 folds HACS into core as the built-in "Marketplace"): an item from the
+`marketplace` platform is handled exactly like a HACS item, and the repository list is read with
+`hacs/repositories/list`, then `marketplace/repositories/list`. If HACS items are waiting but neither list answers,
+none of them is installed and it shows as a problem (`HACS_LIST_UNAVAILABLE`); a list that cannot be read is never
+taken as "nothing to update". Device firmware is recognised by a closed list of integrations (Z-Wave JS, ZHA, Matter,
+ESPHome, MQTT, Shelly, B-hyve and other known firmware sources); anything else is the unknown kind above.
 
 1. **Review.** The release notes Home Assistant shows for that item, the version jump and, for HACS, the minimum
    Home Assistant version it declares: **held** (needs a newer Home Assistant, failed here before, already

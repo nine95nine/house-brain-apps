@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.52
+
+Ready for HACS becoming Home Assistant's built-in "Marketplace" (Home Assistant 2026.11, released 2026-11-04; W26-C9
+in the 2026-11-07 recovery assessment; Work Board #942, owner pop-up "Claude builds it here"). Whether the update
+platform `hacs` and the list command `hacs/repositories/list` change is unconfirmed, so this release fails closed.
+Contains 0.9.51 unchanged otherwise (renumbered from 0.9.51: the Maintenance chat's internal update reviews took that number first, #1521).
+
+- **Marketplace = HACS.** An update item from the platform `marketplace` takes exactly the HACS path (cards and themes,
+  integrations with their backup, restart and rollback). The repository list is read with `hacs/repositories/list`
+  and, only if Core does not know it, with `marketplace/repositories/list` (read-only, added to the WebSocket
+  allowlist with the same exact-message check).
+- **A blind list is never "nothing to update".** HACS items waiting while neither list command answers: none is
+  installed, and the problem `HACS_LIST_UNAVAILABLE` ("HACS (Marketplace) updates are waiting, but their repository
+  list cannot be read") reaches the owner like every other problem. At install time the same case refuses with
+  nothing changed. Before 0.9.52 an unknown list command read as "HACS not installed".
+- **Unknown update kinds are not guessed.** Before 0.9.52 every platform other than Supervisor and HACS was taken as
+  device firmware. Firmware is now a closed list (`review.FIRMWARE_PLATFORMS`: Z-Wave JS, ZHA, Matter, ESPHome, MQTT,
+  Shelly, FRITZ!, devolo, Synology, UniFi, TP-Link, Omada, WLED, Reolink, Netgear, EZVIZ, Fully Kiosk, AirGradient,
+  SMLIGHT, Tesla Fleet, Teslemetry, Tessie, La Marzocco, IronOS, Tailwind, B-hyve (owner pop-up 2026-11-07 "Add B-hyve, keep the rest") and the Home Assistant hardware
+  integrations); an update from any other platform is not installed and is the problem `UPDATE_PLATFORM_UNKNOWN`
+  naming that platform. Each reason code is audited once when it first appears.
+
 ## 0.9.51
 
 Internal update reviews (owner decisions D4 and D5, 2026-11-01; pop-up 2026-11-07 "Yes, build 0.9.51 as proposed";

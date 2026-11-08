@@ -11,6 +11,7 @@ import time
 from .archive import day_csv, day_json
 from .health import build, digest, proposals
 from .interlock import safety_interlock
+from .investigations import stall_threshold
 from . import radar  # noqa: F401 - 0.2.1: the World Change Radar runs only inside Runtime.step, behind gate()
 from .runtime import Runtime
 from . import __version__
@@ -40,6 +41,8 @@ def main():
     except ValueError:
         raise SystemExit('HA_API_TOKEN_REQUIRED: Supervisor did not provide the API token')
     runtime = Runtime(args.data, client, gate, PublicClient(__version__))
+    # 0.3.4 (W26-C6): reviews without progress before an investigation reads STALLED; 2..10, anything else is 3.
+    runtime.investigations.stall_reviews = stall_threshold(options.get('stall_reviews'))
     stop = Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())

@@ -101,6 +101,10 @@ def digest(runtime, now):
         parts.append(f"AI Access is {word}, so every House Brain AI is held; start it in Settings, Add-ons")
     if state in ('OK', 'WATCH', 'PROBLEMS'):
         parts.append(f"{len(open_)} open" + (f" (top: {open_[0]['reason'].lower().replace('_', ' ')})" if open_ else ''))
+        # 0.3.4 (W26-C6): a stalled investigation asks for a re-plan or your answer on the line Maintenance relays.
+        stalled = ((status.get('investigations') or {}).get('counts') or {}).get('STALLED')
+        if isinstance(stalled, int) and stalled > 0:
+            parts.append(f"{stalled} case(s) stalled, no new evidence: re-plan or your answer needed")
         db = view.get('db_mib')
         if isinstance(db, (int, float)):
             parts.append(f"database {db / 1024:.1f} GB")

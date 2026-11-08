@@ -18,7 +18,20 @@ This release answers with tier T0 only (deterministic, on the Pi, no model and n
 investigator and models (A6-A8) add tiers later. Each case
 also gets an empty repair record owned by O&M (design §11 C1). Systems AI creates it and never fills it in.
 Nothing here acts.
+
+0.3.4 adds a progress ledger and a stall counter (W26-C6, after Magentic-One: Fourney et al., arXiv 2411.04468).
+Every hour each live investigation answers five fixed questions: is the request satisfied (a playbook, a fixed
+earlier case or an existing suggestion answers it, so the next step is the owner's), are we in a loop (the answer
+went back to one seen before), is progress being made (new facts or evidence since the last review), who acts next,
+and what to ask. A review with no new fact adds one to the stall counter; progress takes one off (leaky, as in the
+Agent Framework port). At the threshold (option stall_reviews, default 3, 2..10) the investigation reads STALLED with
+reason CASE_STALLED_NO_PROGRESS and asks for a re-plan or the owner's answer, through the page and the family
+digest Maintenance already relays. It never retries faster, adds no read and no request, takes no action and never
+changes authority. Facts are kept as short digests, at most 64 per investigation; a closed one keeps none.
 """
+import hashlib
+import json
+
 from . import playbooks
 
 OPEN_AFTER_WARNING_S = 3600
@@ -31,7 +44,19 @@ MAX_HYPOTHESES = 5
 MAX_SIMILAR = 5
 SEVERE = ('ERROR', 'CRITICAL')
 LIVE = ('OPEN', 'ACTION_SUGGESTED', 'WATCHING')
-STATUSES = ('WORKING', 'ANSWERED', 'NEEDS_ENGINEER', 'EXPIRED', 'CLOSED')
+STATUSES = ('WORKING', 'ANSWERED', 'NEEDS_ENGINEER', 'STALLED', 'EXPIRED', 'CLOSED')
+# 0.3.4 progress ledger (W26-C6).
+STALL_DEFAULT, STALL_MIN, STALL_MAX = 3, 2, 10
+REVIEW_S = 3600            # one ledger review an hour: never faster than the evidence can change
+KNOWN_FACTS = 64           # fact digests kept per live investigation
+LEDGER_KEEP = 6            # ledger entries and answer fingerprints kept per investigation
+STALLED_REASON = 'CASE_STALLED_NO_PROGRESS'
+SATISFIED_KINDS = ('PLAYBOOK', 'SIMILAR_CASE')
+
+
+def stall_threshold(value):
+    """The stall_reviews option: an int 2..10. Anything else is the default 3, never "no limit"."""
+    return value if type(value) is int and STALL_MIN <= value <= STALL_MAX else STALL_DEFAULT
 
 
 ACTIVE = ('OPEN', 'ACTION_SUGGESTED')
@@ -54,8 +79,9 @@ def question(case):
 
 
 class Investigations:
-    def __init__(self, store):
+    def __init__(self, store, stall_reviews=STALL_DEFAULT):
         self.store = store
+        self.stall_reviews = stall_threshold(stall_reviews)
         self.state = store.get('investigations:state', {'items': {}})
         if self.state.get('rule', 1) < 2:
             # 0.3.1, once: drop what the 0.3.0 rule opened for cases already cleared; they never investigated
@@ -88,14 +114,58 @@ class Investigations:
                 continue
             item['answer'] = answer(case, by_id.get(case['id']), cases, matched)
             item['status'] = 'ANSWERED' if item['answer']['hypotheses'] else 'NEEDS_ENGINEER'
+            if self._ledger(item, case, now):
+                item['status'] = 'STALLED'
             if now >= item['expires_at']:
                 item.update(status='EXPIRED', closed_at=now, outcome=case['status'])
         self._prune(now)
         self.store.put('investigations:state', self.state)
         return self.report(now)
 
+    def _ledger(self, item, case, now):
+        """0.3.4 (W26-C6): record new facts every cycle; review once an hour. True = the investigation is stalled.
+        Local computation over what this cycle already has: no read, no request, no action."""
+        led = item.get('ledger')
+        if led is None:            # new, or opened before 0.3.4: the first review is now
+            led = item['ledger'] = {'stall_count': 0, 'reviews': 0, 'known': [], 'new_since_review': 0,
+                                    'next_review_at': now, 'fingerprints': [], 'entries': [], 'reason': None,
+                                    'stalled_at': None}
+        known = set(led['known'])
+        new = [f for f in dict.fromkeys(digest(f) for f in facts(item['answer'], case)) if f not in known]
+        led['known'].extend(new)
+        del led['known'][:-KNOWN_FACTS]
+        led['new_since_review'] += len(new)
+        satisfied = is_satisfied(item['answer'])
+        if now >= led['next_review_at']:
+            fp = fingerprint(item['answer'])
+            looping = fp in led['fingerprints'][:-1] and fp != led['fingerprints'][-1]
+            progress = led['new_since_review'] > 0 and not looping
+            if satisfied:
+                led['stall_count'] = 0
+            elif progress:
+                led['stall_count'] = max(0, led['stall_count'] - 1)        # leaky
+            else:
+                led['stall_count'] = min(self.stall_reviews, led['stall_count'] + 1)
+            led['fingerprints'] = (led['fingerprints'] + [fp])[-LEDGER_KEEP:]
+            led['reviews'] += 1
+            stalled = not satisfied and led['stall_count'] >= self.stall_reviews
+            led['entries'] = (led['entries'] + [{
+                'at': now, 'facts_learned': led['new_since_review'], 'satisfied': satisfied, 'looping': looping,
+                'progress': progress, 'stall_count': led['stall_count'],
+                **next_step(stalled, satisfied)}])[-LEDGER_KEEP:]
+            led['new_since_review'] = 0
+            led['next_review_at'] = now + REVIEW_S
+        led['stall_count'] = min(led['stall_count'], self.stall_reviews)       # a lowered threshold applies at once
+        stalled = not satisfied and led['stall_count'] >= self.stall_reviews
+        led['reason'] = STALLED_REASON if stalled else None
+        led['stalled_at'] = (led['stalled_at'] or now) if stalled else None
+        return stalled
+
     def _prune(self, now):
         items = self.state['items']
+        for item in items.values():
+            if item['closed_at'] is not None and (item.get('ledger') or {}).get('known'):
+                item['ledger']['known'] = []           # a closed investigation learns nothing more
         for iid in [i['id'] for i in items.values() if i['closed_at'] is not None
                     and now - i['closed_at'] > KEEP_DAYS * 86400]:
             items.pop(iid)
@@ -106,8 +176,11 @@ class Investigations:
 
     def report(self, now):
         rows = sorted(self.state['items'].values(), key=lambda i: (i['closed_at'] is not None, -i['opened_at']))
-        return {'counts': {s: sum(i['status'] == s for i in rows) for s in STATUSES}, 'items': rows[:SHOW],
+        shown = [{**i, 'ledger': {k: v for k, v in i['ledger'].items() if k != 'known'}} if i.get('ledger') else i
+                 for i in rows[:SHOW]]
+        return {'counts': {s: sum(i['status'] == s for i in rows) for s in STATUSES}, 'items': shown,
                 'kept': len(rows), 'held': False, 'tier_now': 'T0',
+                'stall_reviews': self.stall_reviews, 'review_every_s': REVIEW_S,
                 'note': 'Investigations explain and recommend; they never act. Any fix is your tap in Maintenance '
                         'or the Deployer.'}
 
@@ -161,3 +234,44 @@ def answer(case, incident, cases, matched=None):
             'recommended': recommended, 'playbooks': list(dict.fromkeys(m['playbook'] for m in known)),
             'confidence': hyps[0]['kind'] if hyps else 'NEEDS_ENGINEER',
             'abstained': not hyps}
+
+
+# -- 0.3.4 progress ledger helpers (W26-C6) ----------------------------------------------------------------------
+def facts(ans, case):
+    """What the investigation knows now, as stable fact ids: evidence, earlier cases, playbooks, hypotheses, the
+    case's status and the suggestion. A new id since the last review is progress."""
+    out = list(ans['evidence']) + [f"similar:{s['case']}:{s['status']}" for s in ans['similar']]
+    out += [f'playbook:{p}' for p in ans['playbooks']]
+    out += [f"hypothesis:{h['kind']}:{h['text']}" for h in ans['hypotheses']]
+    out.append(f"case_status:{case['status']}")
+    if ans['recommended']:
+        out.append(f"recommended:{ans['recommended'].get('kind')}:{ans['recommended'].get('target')}")
+    return out
+
+
+def digest(fact):
+    return hashlib.sha256(str(fact).encode()).hexdigest()[:12]
+
+
+def fingerprint(ans):
+    """The answer itself (hypotheses and suggestion), so an answer that comes back to an earlier one is a loop."""
+    raw = json.dumps([[h['kind'], h['text']] for h in ans['hypotheses']] + [ans['recommended']], sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
+def is_satisfied(ans):
+    """Answered well enough that the next step is the owner's: a playbook, a fixed earlier case, or a suggestion
+    Systems AI already holds. A guess from a change alone is not."""
+    return bool(ans['recommended']) or any(h['kind'] in SATISFIED_KINDS for h in ans['hypotheses'])
+
+
+def next_step(stalled, satisfied):
+    """Who acts next and what to ask: fixed codes and fixed text, never words from the inputs."""
+    if satisfied:
+        return {'who_next': 'OWNER', 'next': 'OWNER_DECIDES_SUGGESTION', 'reason': None,
+                'ask': 'A known answer is shown; any fix stays your tap in Maintenance or the Deployer.'}
+    if stalled:
+        return {'who_next': 'OWNER', 'next': 'RE_PLAN_OR_ASK_OWNER', 'reason': STALLED_REASON,
+                'ask': 'No new evidence for several hourly reviews. Re-plan this case (an engineer or a later '
+                       'research step), or tell Systems AI what you know.'}
+    return {'who_next': 'SYSTEMS_AI', 'next': 'WAIT_FOR_EVIDENCE', 'reason': None, 'ask': None}

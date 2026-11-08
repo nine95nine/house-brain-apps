@@ -603,6 +603,7 @@ class Service:
                 ask_hours=(min(self.o.digest_hour, 20), 21)), self._key_broker_base)
             self.watcher.key_findings = self.keys.findings
             self.watcher.os_findings = self.system.findings    # 0.8.3: an OS update waiting for a restart
+            self.watcher.update_findings = self.entities.findings   # 0.9.52: UPDATE_PLATFORM_UNKNOWN / HACS_LIST_UNAVAILABLE
         return self.engine
 
     def wire_update_lane(self) -> None:

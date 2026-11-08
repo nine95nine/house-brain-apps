@@ -134,6 +134,8 @@ class Watcher:
         self.relay_url = ""
         self.key_findings: Callable[[], list] | None = None   # 0.8.0: automatic Broker keys (failures only)
         self.os_findings: Callable[[], list] | None = None    # 0.8.3: an OS update waiting for a restart
+        # 0.9.52 (W26-C9): updates waiting that the HACS/firmware engine cannot handle (unknown platform, blind list)
+        self.update_findings: Callable[[], list] | None = None
         self.sysfs = P.SysReader()                            # 0.8.6: Pi health reads (tests point it elsewhere)
         self.pi_now: dict = {}                                # 0.8.6: this check's temperature/throttle/write rate
         self.log_now: list | None = None                      # 0.8.7: this check's system-log rows
@@ -395,6 +397,11 @@ class Watcher:
                 findings += self.os_findings()
             except Exception:  # noqa: BLE001 - never a false clear: keep what is open
                 failed.append("os_pending")
+        if self.update_findings is not None:
+            try:
+                findings += self.update_findings()
+            except Exception:  # noqa: BLE001 - never a false clear: keep what is open
+                failed.append("updates")
         if self.p.housekeeping:
             try:
                 findings += self._hk_findings(now)

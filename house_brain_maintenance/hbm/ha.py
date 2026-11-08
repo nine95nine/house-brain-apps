@@ -161,6 +161,9 @@ _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "config/auth/li
                        "config_entries/flow/progress",
                        # 0.7.0: HACS repository list and one update entity's release notes (both read-only).
                        "hacs/repositories/list", "update/release_notes",
+                       # 0.9.52 (W26-C9): Home Assistant 2026.11 folds HACS into core as the "Marketplace"; if the
+                       # list command is renamed, this read-only name is tried only after the HACS one is unknown.
+                       "marketplace/repositories/list",
                        # 0.8.7 Housekeeping (read-only): automation run traces, what an automation refers to, and the
                        # system-health subscription (only the recorder's database size is kept).
                        "trace/list", "search/related", "system_health/info",
@@ -237,6 +240,12 @@ RE_HACS_ID = re.compile(r"^[0-9]{1,20}$")
 RE_FULL_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}$")
 SUPERVISOR_PLATFORM = "hassio"            # Apps, Core, OS and Supervisor: handled by the App/Core/OS engines only
 HACS_PLATFORM = "hacs"
+# 0.9.52 (W26-C9): the update-entity platforms that are the HACS engine. Home Assistant 2026.11 folds HACS into core
+# as the built-in "Marketplace"; whether the platform name changes is unconfirmed, so both mean exactly the same.
+HACS_PLATFORMS = frozenset({HACS_PLATFORM, "marketplace"})
+# The repository list commands, tried in this order; both unknown = HACS_LIST_UNAVAILABLE (never "nothing to update").
+HACS_LIST_COMMANDS = ("hacs/repositories/list", "marketplace/repositories/list")
+HACS_LIST_UNAVAILABLE = "HACS_LIST_UNAVAILABLE"
 HACS_CATEGORIES = ("integration", "plugin", "theme", "python_script", "appdaemon", "netdaemon", "template")
 ENTITY_KINDS = ("hacs", "hacs_integration", "firmware")
 FEATURE_SPECIFIC_VERSION = 2              # homeassistant.components.update.UpdateEntityFeature.SPECIFIC_VERSION
@@ -1610,7 +1619,7 @@ class HomeAssistant:
         if kind == "update/release_notes" and (set(msg) != {"type", "entity_id"} or not isinstance(
                 msg.get("entity_id"), str) or not RE_UPDATE_ENTITY.fullmatch(msg["entity_id"])):
             raise ForbiddenCall("ws release notes")
-        if kind == "hacs/repositories/list" and set(msg) != {"type"}:
+        if kind in HACS_LIST_COMMANDS and set(msg) != {"type"}:
             raise ForbiddenCall("ws hacs list")
         if kind == "trace/list" and msg != {"type": "trace/list", "domain": "automation"}:
             raise ForbiddenCall("ws trace list")
@@ -2268,16 +2277,23 @@ class HomeAssistant:
                                                       "unique_id": unique_id})
 
     def hacs_repos(self) -> dict[str, HacsRepo]:
-        """HACS repositories by id (projected); empty when HACS is not installed."""
-        sock = self.shared_ws()
-        try:
-            rows = sock.command({"type": "hacs/repositories/list"}, timeout=60)
-        except HAError as err:
-            if err.code == "WS_COMMAND":
-                return {}
-            raise
-        finally:
-            sock.close()
+        """HACS repositories by id (projected). Called only when a HACS/Marketplace update entity exists, so an
+        unknown list command is not "HACS not installed": 0.9.52 (W26-C9) tries ``hacs/repositories/list`` and then
+        ``marketplace/repositories/list``; when Core knows neither it raises ``HAError(HACS_LIST_UNAVAILABLE)``,
+        so a blind list is never read as "nothing to update"."""
+        rows = None
+        for command in HACS_LIST_COMMANDS:
+            sock = self.shared_ws()
+            try:
+                rows = sock.command({"type": command}, timeout=60)
+                break
+            except HAError as err:
+                if err.code != "WS_COMMAND":
+                    raise
+            finally:
+                sock.close()
+        else:
+            raise HAError(HACS_LIST_UNAVAILABLE, "no repository list command answered")
         out = {}
         for row in (rows if isinstance(rows, list) else [])[:5000]:
             repo = project_hacs_repo(row)

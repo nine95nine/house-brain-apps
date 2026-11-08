@@ -16,6 +16,12 @@ Transaction (journal ``txn.json``, kind ``entity``), one entity at a time:
   HACS:     BACKING_UP -> BACKED_UP -> INSTALLING -> (RESTARTING) -> DONE | ROLLING_BACK -> RESTORED
   firmware: INSTALLING -> DONE | FAILED | FAILED_MANUAL
 After a restart of this App ``recover`` reads the entity's real version and continues from the facts.
+
+0.9.52 (W26-C9, Home Assistant 2026.11 folds HACS into core as the "Marketplace"; fail closed): the platform
+``marketplace`` is exactly ``hacs``; an update whose platform is not known (review.FIRMWARE_PLATFORMS) is not handled
+and is the visible finding ``UPDATE_PLATFORM_UNKNOWN``; HACS updates waiting while neither repository list command
+answers are the visible finding ``HACS_LIST_UNAVAILABLE`` (never "nothing to update"). Both reach the owner through
+the Watcher like every other problem (``findings``; morning summary, Messages list, #454).
 """
 from __future__ import annotations
 
@@ -23,10 +29,10 @@ import re
 import time
 from dataclasses import dataclass
 
-from . import approval, net, reasks
-from .ha import ForbiddenCall, HAError, HomeAssistant, UpdateEntity
+from . import approval, issues as I, net, reasks
+from .ha import HACS_LIST_UNAVAILABLE, HACS_PLATFORMS, ForbiddenCall, HAError, HomeAssistant, UpdateEntity
 from .journal import Journal
-from .review import BLOCKED, LOW, EntityReview, entity_kind, review_entity
+from .review import BLOCKED, LOW, UPDATE_PLATFORM_UNKNOWN, EntityReview, entity_kind, platform_known, review_entity
 from .updates import (AUTO_LOW_RISK, DONE, DRY_RUN_OK, FAILED, FAILED_MANUAL, REFUSED, REJECTED, RESTORED,
                       TRACK_RECORD_NEEDED, Outcome)
 
@@ -34,6 +40,7 @@ DOC = "entity_updates"
 WATCH_DOC = "firmware_watch"      # 0.9.36: one firmware install whose device has not reported back yet
 PAUSE_DOC = "firmware_pause"      # 0.9.37: the device baseline behind a firmware pause (for the self-clear)
 JOBS = {"hacs": "UPDATE_HACS", "hacs_integration": "UPDATE_HACS", "firmware": "UPDATE_FIRMWARE"}
+NOTES_KEY = "platform_notes"      # 0.9.52: what the last discovery could not handle (kept for the Watcher's findings)
 
 
 @dataclass
@@ -86,19 +93,72 @@ class EntityUpdater:
     def candidates(self) -> list[tuple[UpdateEntity, str, object]]:
         """(entity, kind, HACS repository or None) for each update waiting that this engine handles."""
         if not self.p.enabled:
+            self._note_platforms([], False)
             return []
         held = self.p.hold | (self.holds.entity_ids() if self.holds is not None else frozenset())
         ents = [e for e in self.ha.update_entities()
                 if e.state == "on" and e.installed and e.latest and e.installed != e.latest
                 and e.skipped != e.latest and not e.auto_update and e.entity_id not in held
                 and e.platform not in ("", "hassio")]
-        repos = self.ha.hacs_repos() if any(e.platform == "hacs" for e in ents) else {}
+        unknown = sorted({e.platform for e in ents if not platform_known(e.platform)})
+        repos: dict = {}
+        blind = False
+        if any(e.platform in HACS_PLATFORMS for e in ents):
+            try:
+                repos = self.ha.hacs_repos()
+            except HAError as err:
+                if err.code != HACS_LIST_UNAVAILABLE:
+                    raise
+                blind = True                    # 0.9.52: every HACS item stays unhandled (category None), and visible
+        self._note_platforms(unknown, blind)
         out = []
         for ent in ents:
-            repo = repos.get(ent.unique_id or "") if ent.platform == "hacs" else None
+            repo = repos.get(ent.unique_id or "") if ent.platform in HACS_PLATFORMS else None
             kind = entity_kind(ent.platform, getattr(repo, "category", None))
             if kind is not None:
                 out.append((ent, kind, repo))
+        return out
+
+    def _note_platforms(self, unknown: list[str], blind: bool) -> None:
+        """0.9.52: remember what this discovery could not handle; audit each new reason code once."""
+        mem = self._mem()
+        old = mem.get(NOTES_KEY) or {}
+        notes = {"unknown": list(unknown)[:20], "hacs_list_unavailable": bool(blind)}
+        if notes == {"unknown": list(old.get("unknown") or []),
+                     "hacs_list_unavailable": bool(old.get("hacs_list_unavailable"))}:
+            return
+        for plat in notes["unknown"]:
+            if plat not in (old.get("unknown") or []):
+                self.j.audit("entity-platforms", UPDATE_PLATFORM_UNKNOWN, platform=plat)
+        if blind and not old.get("hacs_list_unavailable"):
+            self.j.audit("entity-platforms", HACS_LIST_UNAVAILABLE)
+        mem[NOTES_KEY] = notes
+        self._save(mem)
+
+    def findings(self) -> list[I.Finding]:
+        """0.9.52: the updates this engine saw waiting but cannot handle, as owner-visible problems (Watcher)."""
+        notes = self._mem().get(NOTES_KEY) or {}
+        out = []
+        for plat in (notes.get("unknown") or [])[:20]:
+            out.append(I.Finding(
+                f"updates:platform_unknown:{plat}", "updates", I.WARNING,
+                f"An update from {plat} is waiting, and this App does not know that kind of update",
+                detail=(f"reason: {UPDATE_PLATFORM_UNKNOWN}", f"platform: {plat}"),
+                steps=("Update it yourself in Settings > System > Updates if you want it now.",
+                       "Or ask for a Maintenance release that knows this kind of update."),
+                done="Nothing: I do not install a kind of update I do not know.",
+                if_ignored="The update stays waiting; nothing is installed.",
+                facts={"reason": UPDATE_PLATFORM_UNKNOWN, "platform": plat}))
+        if notes.get("hacs_list_unavailable"):
+            out.append(I.Finding(
+                "updates:hacs_list_unavailable", "updates", I.WARNING,
+                "HACS (Marketplace) updates are waiting, but their repository list cannot be read",
+                detail=(f"reason: {HACS_LIST_UNAVAILABLE}",),
+                steps=("Update them yourself in Settings > System > Updates if you want them now.",
+                       "Home Assistant may have renamed the list; a Maintenance release has to learn the new name."),
+                done="Nothing: without the list I cannot tell a card from an integration, so I install none of them.",
+                if_ignored="Those updates stay waiting; nothing is installed.",
+                facts={"reason": HACS_LIST_UNAVAILABLE}))
         return out
 
     def _key(self, ent: UpdateEntity) -> str:
@@ -323,7 +383,13 @@ class EntityUpdater:
             return Outcome(rid, REFUSED, ["Home Assistant Core is not answering; nothing changed"])
         domain = None
         if kind == "hacs_integration":
-            repo = self.ha.hacs_repos().get(ent.unique_id or "")
+            try:
+                repo = self.ha.hacs_repos().get(ent.unique_id or "")
+            except HAError as err:
+                if err.code != HACS_LIST_UNAVAILABLE:
+                    raise
+                return Outcome(rid, REFUSED, ["the HACS repository list cannot be read now "
+                                              f"({HACS_LIST_UNAVAILABLE}); nothing changed"])
             domain = getattr(repo, "domain", None)
         base_unhealthy, _ = self.ha.health_flags()
         config_failed = ""

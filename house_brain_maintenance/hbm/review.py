@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .ha import AppDetail
+from .ha import HACS_PLATFORMS, AppDetail
 
 BLOCKED = "blocked"
 RISKY = "risky"
@@ -193,15 +193,38 @@ class EntityReview:
         return self.kind == "hacs" and self.category in HACS_DISPLAY and self.verdict == LOW and self.bump == "patch"
 
 
+# 0.9.52 (W26-C9, fail closed): the update-entity platforms known to offer *device firmware*. Before 0.9.52 every
+# platform that was not "", "hassio" or "hacs" was taken as firmware, so a renamed HACS platform (Home Assistant
+# 2026.11's built-in "Marketplace") would have been installed down the firmware path (no backup, no restart, no
+# version pin). Now a platform outside this closed list is not handled and becomes the visible finding
+# UPDATE_PLATFORM_UNKNOWN (entities.EntityUpdater.findings); adding a platform here is a reviewed release change.
+FIRMWARE_PLATFORMS = frozenset({
+    "zwave_js", "zha", "matter", "esphome", "mqtt", "shelly", "fritz", "devolo_home_network", "synology_dsm",
+    "unifi", "tplink", "tplink_omada", "wled", "reolink", "netgear", "ezviz", "fully_kiosk", "airgradient", "smlight",
+    "tesla_fleet", "teslemetry", "tessie", "lamarzocco", "iron_os", "tailwind", "homeassistant_hardware",
+    "homeassistant_sky_connect", "homeassistant_yellow",
+    # Owner pop-up 2026-11-07 "Add B-hyve, keep the rest": the irrigation hubs' own firmware stays offered.
+    "bhyve", "orbit_bhyve"})
+UPDATE_PLATFORM_UNKNOWN = "UPDATE_PLATFORM_UNKNOWN"
+
+
+def platform_known(platform: str) -> bool:
+    """0.9.52: a platform this engine (or the Supervisor's engines) knows; anything else is UPDATE_PLATFORM_UNKNOWN."""
+    return platform in ("", "hassio") or platform in HACS_PLATFORMS or platform in FIRMWARE_PLATFORMS
+
+
 def entity_kind(platform: str, category: str | None) -> str | None:
-    """Which engine path an update entity takes; None: not this engine's (Supervisor-owned or unknown)."""
+    """Which engine path an update entity takes; None: not this engine's (Supervisor-owned, an unknown HACS item, or
+    since 0.9.52 an unknown platform). HACS and the 2026.11 "Marketplace" platform are the same path."""
     if platform in ("", "hassio"):
         return None
-    if platform == "hacs":
+    if platform in HACS_PLATFORMS:
         if category is None:
             return None
         return "hacs_integration" if category == "integration" else "hacs"
-    return "firmware"
+    if platform in FIRMWARE_PLATFORMS:
+        return "firmware"
+    return None
 
 
 def review_entity(*, entity_id: str, name: str, kind: str, category: str, from_version: str, to_version: str,

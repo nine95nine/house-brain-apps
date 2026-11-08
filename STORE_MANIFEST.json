@@ -32,8 +32,8 @@
     },
     "house_brain_maintenance": {
       "files": 65,
-      "source_manifest_sha256": "ecbdf2ab483020df968f2773112392d101ff17901e32c488bcaa1dd034c09add",
-      "version": "0.9.51"
+      "source_manifest_sha256": "31d4d4ff26d3be2ccdc8bca630055e1c5b9e9e0207137cda19e9d2f8bd377aa4",
+      "version": "0.9.52"
     },
     "house_brain_maintenance_inventory_scout": {
       "files": 7,
@@ -42,8 +42,8 @@
     },
     "house_brain_systems_ai": {
       "files": 25,
-      "source_manifest_sha256": "cfe0fe993bb27673c742009f75811c206744657db643ecebf38a8a243cf89ed3",
-      "version": "0.3.3"
+      "source_manifest_sha256": "fb45e9196db9c68f0c464ab9270890adeea580ee57e8215eeb8f70fa19bd10e4",
+      "version": "0.3.4"
     },
     "house_brain_water_ai": {
       "files": 22,
@@ -52,6 +52,6 @@
     }
   },
   "schema_version": "house_brain_apps_store_manifest.v1",
-  "source_commit": "83859834b216488f3223ae4a5411e6c62f6f1858",
+  "source_commit": "612b30b5db6d9f2a151a418902f3f00b8d74fb27",
   "source_repository": "private engineering repository"
 }
