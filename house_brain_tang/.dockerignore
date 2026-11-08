@@ -1,0 +1,11 @@
+**
+!Dockerfile
+!.dockerignore
+!DOCS.md
+!README.md
+!config.yaml
+!SOURCE_MANIFEST.sha256
+!tang_app/
+!tang_app/**
+**/__pycache__/
+**/*.pyc

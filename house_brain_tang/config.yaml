@@ -1,0 +1,29 @@
+name: House Brain Tang
+version: "0.1.0"
+slug: house_brain_tang
+description: Debian's Tang key server for the MacBook's network-bound disk unlock (Clevis); keys stay out of
+  backups; no Home Assistant or Supervisor access.
+arch:
+- aarch64
+homeassistant: 2026.10.0
+startup: services
+boot: auto
+stage: experimental
+init: true
+homeassistant_api: false
+hassio_api: false
+docker_api: false
+host_network: false
+full_access: false
+ingress: false
+# Home Assistant restarts the App if Tang's port stops answering, so a crash never waits for someone to notice.
+watchdog: tcp://[HOST]:[PORT:7500]
+ports:
+  7500/tcp: 7500
+ports_description:
+  7500/tcp: Tang (home network only; never forward it on the router)
+backup_exclude:
+- tang
+- "*/tang/*"
+options: {}
+schema: {}
