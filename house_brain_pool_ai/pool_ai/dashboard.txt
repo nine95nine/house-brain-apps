@@ -1,0 +1,36 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>House Brain Pool AI</title><style>
+body{font:16px system-ui;background:#141b22;color:#ecf1f5;margin:0;padding:24px;max-width:1100px}h1{font-size:28px}h2{font-size:19px;color:#8fd3f0}section{background:#1f2b36;border-radius:12px;padding:18px;margin:15px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}.muted{color:#b0c0cc}#state{font-weight:bold}.line{white-space:pre-wrap;overflow-wrap:anywhere}
+</style><h1>House Brain Pool AI</h1><p class="muted">Learns the pool from its own history · shadow · read-only · never changes the chlorinator or the pump</p>
+<section><span id="state">Connecting…</span><p id="why" class="muted"></p></section>
+<section><h2>In plain words</h2><p class="line" id="plain"></p></section>
+<section><h2>Chlorine demand</h2><p class="line" id="demand"></p><p class="muted">Learned from pairs of the water tests you log with "Log Pool Water Test", minus what the cell made in between. Until 8 paired tests it is still learning, and a forecast is never advice: the Advisor and your test strip stay in charge.</p></section>
+<section><h2>Next test</h2><p class="line" id="next"></p><p class="muted">Only a hint, shown here and in the digest. No reminders.</p></section>
+<section><h2>Salt cell</h2><p class="line" id="cell"></p><p class="muted">Dates from Insight's own hours at the rate the cell is really running. Insight keeps the cleaning reminder.</p></section>
+<section><h2>Salt</h2><p class="line" id="salt"></p><p class="muted">Days until salt falls below 3,200 ppm, from the pool-mode salt trend. Rain dilution steps are marked and restart the trend. Hidden water loss stays with the salt balance package.</p></section>
+<section><h2>Pump</h2><p class="line" id="pump"></p><p class="muted">Energy per run only when Sense shows the pump's step at both ends; otherwise "not corroborated". Prices are APS base energy prices (no adjustors or taxes).</p></section>
+<section><h2>Water temperature</h2><p class="line" id="temp"></p></section>
+<section><h2>Scorecard (shadow)</h2><p class="line" id="score"></p><p class="muted">Counted only. Meeting a bar does not change anything; each next step is its own owner decision.</p></section>
+<section><h2>Reserved</h2><p class="line" id="reserved"></p></section>
+<section><h2>History</h2><p class="line" id="history"></p></section>
+<section><h2>Full evidence</h2><details><summary>Tap to open</summary><pre id="raw"></pre></details></section>
+<script>
+const $=x=>document.getElementById(x);let s={};
+const t=x=>x==null?'not available yet':x;const w=x=>String(x||'').toLowerCase().replaceAll('_',' ');
+const day=x=>x==null?'—':new Date(x*1000).toLocaleString();
+function render(){$('state').textContent=s.state+' · '+(s.version||'')+(s.hold_reason?' · held: '+s.hold_reason:'');$('why').textContent='Physical actions: none. Control authority: none.';
+let d=s.demand||{},m=d.model||{},c=s.cell||{},cd=c.dates||{},cf=c.factor||{},sa=s.salt||{},p=s.pump||{},n=s.now||{},tp=n.temperature||{},nx=s.next_test||{};
+$('plain').textContent=[(d.label?'Chlorine demand: '+d.label+'.':(m.demand_ppm_day!=null?'Chlorine demand: about '+m.demand_ppm_day+' ppm a day.':'Chlorine demand: '+w(d.status||'learning')+'.')),(nx.text?nx.text[0].toUpperCase()+nx.text.slice(1)+'.':''),'Salt: '+w(sa.status||'learning')+(sa.status==='FALLING'?', below 3,200 around '+sa.below_on:'')+'.',(p.runs!=null?p.runs+' pump runs kept, '+p.corroborated+' with an energy figure.':'Pump: learning.'),'Water temperature: missing (not trusted yet).'].filter(Boolean).join('\n');
+let f=d.forecast||{};$('demand').textContent=(d.tests!=null?d.tests+' test(s) logged, '+d.paired+' usable pair(s). ':'Learning. ')+(m.kind==='FULL'?'Demand '+m.demand_ppm_day+' ppm/day; cell '+m.cell_rate+' ppm per generation hour.':m.kind==='NET'?'Net change '+m.net_ppm_day+' ppm/day ('+w(m.reason)+').':'')+(f.fc_now!=null?'\nShadow forecast now: FC '+f.fc_now+' ppm (minimum '+t(f.fc_minimum)+'), from the test at '+day(f.from_test_at)+'. Not advice.':'')+(Object.keys(d.skipped||{}).length?'\nPairs not used: '+Object.entries(d.skipped).map(([k,v])=>w(k)+' '+v).join(', '):'')+(Object.keys(d.by_month||{}).length?'\nBy month: '+Object.entries(d.by_month).map(([k,v])=>k+' '+v+' ppm/day').join(', '):'');
+$('next').textContent=nx.text?nx.text[0].toUpperCase()+nx.text.slice(1)+' ('+w(nx.reason)+').':'Learning.';
+$('cell').textContent=(cd.status==='OK'?'10,000 h around '+cd.wear_10000h_around+'. Next cleaning around '+cd.next_cleaning_date+' (by '+w(cd.next_cleaning_by)+').':'Dates '+w(cd.status||'learning')+(cd.missing?': '+w(cd.missing):'')+'.')+' Generation hours '+t(cd.generation_hours)+', since cleaning '+t(cd.hours_since_cleaning)+', running '+t(cd.run_rate_h_per_day)+' h a day.\nEfficiency: '+w(cf.status||'learning')+(cf.factor!=null?' (factor '+cf.factor+' of when first learned)':'')+'.';
+$('salt').textContent='Now '+t(sa.current_ppm)+' ppm. '+w(sa.status||'learning')+(sa.status==='FALLING'?': about '+sa.runway_days+' days, below 3,200 around '+sa.below_on:'')+'.'+(sa.trend?' Trend '+sa.trend.slope_ppm_day+' ppm/day over '+sa.trend.days+' days.':'')+((sa.events||[]).length?'\nSteps: '+sa.events.map(e=>e.start+' '+w(e.kind)+' −'+e.drop_ppm+' ppm').join('; '):'');
+$('pump').textContent=(p.runs!=null?p.runs+' runs, '+p.short_runs+' short, '+p.rapid_restarts+' rapid restarts, '+p.on_peak_minutes+' on-peak minutes.\n'+(p.last_runs||[]).map(r=>day(r.start)+' · '+Math.round((r.seconds||0)/60)+' min · '+(r.kwh!=null?r.kwh+' kWh':'not corroborated')+(r.usd!=null?' · $'+r.usd:'')+(r.flags.length?' · '+r.flags.map(w).join(', '):'')).join('\n'):'Learning.');
+$('temp').textContent='Missing: '+(tp.reasons||[]).map(w).join('; ')+'. Jandy now: '+w(tp.jandy_now)+'.\n'+Object.entries(tp.blocked||{}).map(([k,v])=>w(k)+': '+v).join('\n');
+let sc=s.scorecard||{},a=sc.fc_forecast||{},b=sc.salt_trend||{},q=sc.pump_kwh||{};$('score').textContent=['FC forecast vs your next test: '+w(a.status)+' ('+(a.scored||0)+' scored'+(a.median_abs_ppm!=null?', median '+a.median_abs_ppm+' ppm, '+Math.round(100*a.share_within_1)+' % within 1 ppm':'')+', false-safe '+(a.false_safe||0)+')','Salt trend 28 days ahead: '+w(b.status)+' ('+(b.scored||0)+' scored)','Pump kWh per run: '+w(q.status)+' ('+(q.scored||0)+' scored; figures without corroboration '+(q.claims_without_corroboration||0)+')'].join('\n');
+$('reserved').textContent=Object.entries(s.reserved||{}).map(([k,v])=>w(k)+': '+v).join('\n');
+let h=s.history||{};$('history').textContent=(h.status==='BACKFILLING'?'Reading the last 40 days from Home Assistant: '+h.entity_days_waiting+' series-days to go (one a minute).':'Up to date; one new day each night.')+' Kept: '+t(h.points)+' changes.';
+$('raw').textContent=JSON.stringify(s,null,2);}
+async function refresh(){try{let r=await fetch('./status',{cache:'no-store'});if(!r.ok)throw Error();s=await r.json();render();}catch(e){$('state').textContent='Not reachable; retrying.';}}
+refresh();setInterval(refresh,30000);
+</script></html>
