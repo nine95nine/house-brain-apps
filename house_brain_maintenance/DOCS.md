@@ -1066,3 +1066,13 @@ Deployer to the store?". After **Approve** it:
 Any problem puts the old Deployer back automatically. It never runs while the Deployer reports `DEPLOYING`. Seven
 days later it asks separately whether to remove the stopped old Deployer. From 0.8.1 it keeps the old Deployer and does not ask while `keep_old_deployer` is on (the default; owner decision 2026-10-11). Then connect the store Deployer to GitHub
 on its page (3 taps).
+
+## History archive — from 0.9.54
+
+Home Assistant keeps detailed history for 40 days. From 0.9.54 this App saves every day before it is deleted, compressed,
+under `/share/house_brain_history_archive/` (one `.jsonl.xz` file per UTC day, a `.meta.json` next to it and
+`index.json`). It runs once a night between 02:00 and 05:00, archives the oldest missing day first and needs no tap.
+It reads Home Assistant read-only and never reads people, trackers, cameras, locks, alarm panels, zones, free-text
+helpers or health sensors. A day is written whole or not at all, and never rewritten. Nothing is written while less
+than 20 GB is free. Turn it off with the option `history_archive: false`. About 4–10 MB a day (estimate, to be
+measured by the first run).

@@ -59,6 +59,9 @@ profile house_brain_maintenance flags=(attach_disconnected,mediate_deleted) {
   # 0.9.5 (#985 Pi test plan M3): the legacy Deployer's staged history; this App creates and writes it, the Deployer
   # only reads it. Nothing else under /share.
   /share/house_brain_legacy_stage_v1/ rw,
+  # 0.9.54 history archive (owner 2026-11-08): compressed day files, their meta and index; nothing else under /share.
+  /share/house_brain_history_archive/ rw,
+  /share/house_brain_history_archive/** rwk,
   /share/house_brain_legacy_stage_v1/** rw,
 
   /proc/ r,

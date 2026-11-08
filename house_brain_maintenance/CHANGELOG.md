@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.54
+
+**Compressed history archive** (history archive proposal R1, `docs/architecture/HOUSE_BRAIN_HISTORY_ARCHIVE_PROPOSAL_R1.md`;
+owner pop-ups 2026-10-24 "Design the compressed archive" and 2026-11-08 "Build only": "save it somewhere, compress it, so
+that the AIs can learn from it"). Contains 0.9.52 unchanged otherwise. 0.9.53 is reserved by another chat (AI
+heartbeat, Work Board claim) and was not on `main` when this was built.
+
+- **Every day kept, small.** Home Assistant deletes raw history after 40 days. Each night (02:00–04:59 local, once)
+  this App archives every day Home Assistant still holds that is not archived yet, oldest first, at most 45 minutes a
+  night: `/share/house_brain_history_archive/YYYY/MM/YYYY-MM-DD.jsonl.xz` (every recorded state change with changed
+  attributes, plus the 5-minute statistics), a `.meta.json` (counts, SHA-256) and `index.json`. Plain JSON Lines in
+  xz (standard library): any House Brain AI can read a day without touching Home Assistant.
+- **Read-only toward Home Assistant.** The same reads as 0.9.27 `HISTORY_MEASURE`. Writes only its own folder
+  (AppArmor allows nothing else under `/share` beyond the folders it already had).
+- **Safe files.** Written to a temporary name, read back (every line parsed, SHA-256), then renamed; a finished day is
+  never overwritten; a day that hits the time cap is thrown away and tried again (never a partial day). Nothing is
+  written while less than 20 GB is free.
+- **Private things stay out.** People, trackers, cameras, locks, alarm panels, zones, images, geo locations,
+  free-text helpers (`input_text`) and the health-bridge sensors (`sensor.hb_health_*`) are never read.
+- **Job `HISTORY_ARCHIVE`** (`from`/`to` UTC days, at most 45; no approval, like `HISTORY_MEASURE`): run a catch-up at
+  once instead of waiting for the night. Days Home Assistant no longer holds are reported, not invented.
+- Option `history_archive` (default on). A nightly failure shows as a problem ("The nightly history archive could not
+  run") and is retried the next night.
+
 ## 0.9.52
 
 Ready for HACS becoming Home Assistant's built-in "Marketplace" (Home Assistant 2026.11, released 2026-11-04; W26-C9

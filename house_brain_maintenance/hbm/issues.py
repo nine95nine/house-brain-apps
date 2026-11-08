@@ -1038,7 +1038,10 @@ def from_liveness(doc: dict, now: float) -> list[Finding]:
 
 
 # -- 0.9.22: a poll step that keeps failing ----------------------------------------------------------------------------
-STEP_TITLES = {"updates": "Maintenance cannot check for updates"}
+STEP_TITLES = {"updates": "Maintenance cannot check for updates",
+               # 0.9.54: the nightly history archive (retried the next night)
+               "history_archive": "The nightly history archive could not run"}
+STEP_IF_IGNORED = {"history_archive": "Days older than 40 days are deleted by Home Assistant before they are archived."}
 
 
 def from_step_errors(errors: dict[str, str]) -> list[Finding]:
@@ -1055,7 +1058,7 @@ def from_step_errors(errors: dict[str, str]) -> list[Finding]:
                            steps=("Update this App when an update is offered: this is a fault in this App.",
                                   "Problem checks, messages and reports keep working meanwhile."),
                            done="Nothing: I keep checking problems and try the update check again on every poll.",
-                           if_ignored="Updates of Apps, Core and OS are not reviewed or offered until it is fixed.",
+                           if_ignored=STEP_IF_IGNORED.get(step, "Updates of Apps, Core and OS are not reviewed or offered until it is fixed."),
                            facts={"step": step, "error_type": kind}))
     return out
 

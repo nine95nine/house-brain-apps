@@ -132,6 +132,7 @@ class Options:
     pi_health: bool = True            # 0.8.6: power/heat, disk errors, App outliers, weekly health score
     pi_firmware_updates: bool = True  # 0.8.6: Pi bootloader firmware updates in the approval flow (never automatic)
     housekeeping: bool = True         # 0.8.7: failing automations, missing entities, error flood, database size
+    history_archive: bool = True      # 0.9.54: nightly compressed history archive under /share (owner 2026-11-08)
     ai_review: bool = True            # 0.8.9: an AI review on the tracking issue before any update ask/auto install
     cf_control_issue: int = 454       # 0.8.2: Cloudflare control approvals to the phone (0 = off; owner 2026-10-11)
     cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
@@ -237,6 +238,8 @@ def load_options(path: str) -> Options:
         if isinstance(raw.get("pi_firmware_updates", True), bool) else _bad("pi_firmware_updates"),
         housekeeping=raw.get("housekeeping", True) if isinstance(raw.get("housekeeping", True), bool)
         else _bad("housekeeping"),
+        history_archive=raw.get("history_archive", True) if isinstance(raw.get("history_archive", True), bool)
+        else _bad("history_archive"),
         ai_review=raw.get("ai_review", True) if isinstance(raw.get("ai_review", True), bool) else _bad("ai_review"),
         cf_control_url=_cf_url(raw.get("cf_control_url")),
         free_reviewer=raw.get("free_reviewer", "lockout") if raw.get("free_reviewer", "lockout") in ("off", "shadow", "lockout", "primary")
@@ -916,6 +919,31 @@ class Service:
         else:
             self.step_errors.pop("updates", None)
         self.poll_issues()                              # integrations the check is handling)
+        self.poll_history_archive()                     # 0.9.54: nightly compressed history archive
+
+    ARCHIVE_HOURS = (2, 3, 4)                           # local night hours; one catch-up run a night
+
+    def poll_history_archive(self) -> None:
+        """0.9.54 (owner 2026-11-08): once a night, archive every day Home Assistant still holds that is not archived
+        yet (oldest first, at most 45 minutes). Read-only toward Home Assistant; files only under the archive folder.
+        A failure is logged and shown as a step error; it never stops the App."""
+        if not self.o.history_archive or self.o.dry_run:
+            return
+        lt = time.localtime()
+        today = time.strftime("%Y-%m-%d", lt)
+        if lt.tm_hour not in self.ARCHIVE_HOURS or getattr(self, "_archive_night", None) == today:
+            return
+        self._archive_night = today
+        from . import histarchive
+        try:
+            root = getattr(self.engine, "history_archive_root", None) if self.engine is not None else None
+            result = histarchive.nightly(self.ha, root)
+            LOG.info("history archive: %s", "; ".join(result.reasons)[:400])
+            self.step_errors.pop("history_archive", None)
+        except Exception as err:  # noqa: BLE001 - retried the next night; shown as a problem meanwhile
+            message = net.redact(f"{type(err).__name__}: {err}")[:300]
+            LOG.warning("history archive waits: %s", message)
+            self.step_errors["history_archive"] = message
 
     def app_update_done(self, kind: str, txn: dict) -> None:
         """0.7.3 after-update check. 0.9.12: the install is remembered 24 h for the problem queue's ``after_update``

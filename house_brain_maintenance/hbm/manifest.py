@@ -15,6 +15,7 @@ carrier's own ``check``, and asks the owner once before anything is written.
 """
 from __future__ import annotations
 
+import calendar
 import hashlib
 import json
 import re
@@ -117,6 +118,13 @@ JOBS[HISTORY_MEASURE] = (frozenset({"day"}), frozenset({"chunk", "max_minutes"})
 NO_APPROVAL_JOBS = NO_APPROVAL_JOBS | {HISTORY_MEASURE}
 RE_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MEASURE_CHUNK_DEFAULT, MEASURE_MINUTES_DEFAULT = 25, 30
+# 0.9.54 (history archive proposal R1; owner pop-ups 2026-10-24 "Design the compressed archive" and 2026-11-08 "Build
+# only"): archive whole UTC days ``from``..``to`` (at most 45) as xz files under /share/house_brain_history_archive.
+# Read-only toward Home Assistant; it writes only its own archive folder, so it needs no approval.
+HISTORY_ARCHIVE = "HISTORY_ARCHIVE"
+JOBS[HISTORY_ARCHIVE] = (frozenset({"from", "to"}), frozenset({"chunk", "max_minutes"}))
+NO_APPROVAL_JOBS = NO_APPROVAL_JOBS | {HISTORY_ARCHIVE}
+ARCHIVE_MAX_DAYS = 45
 # 0.9.34 (owner pop-ups 2026-10-26 "Build 0.9.34", "06:45 Arizona", "Both"): change two settings of the Google Drive
 # Backup App (sabeechen/hassio-google-drive-backup) through the Supervisor: its daily backup time and whether every
 # App is included (its ``exclude_addons`` list emptied). It asks the owner first and restarts that App once so the
@@ -192,6 +200,11 @@ class Manifest:
     measure_day: str | None = None
     measure_chunk: int = 25
     measure_minutes: int = 30
+    # 0.9.54 HISTORY_ARCHIVE
+    archive_from: str | None = None
+    archive_to: str | None = None
+    archive_chunk: int = 25
+    archive_minutes: int = 60
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict:
@@ -246,6 +259,7 @@ def parse(raw: bytes) -> Manifest:
         raise ManifestError("EXPECT_SCOUT_VERSION")
     log = _log_window(params) if job == APP_LOG_WINDOW else {}
     log.update(_history_measure(params) if job == HISTORY_MEASURE else {})
+    log.update(_history_archive(params) if job == HISTORY_ARCHIVE else {})
     log.update(_ask_update(params) if job == ASK_UPDATE_NOW else {})
     if job in (HOLD_UPDATE, RELEASE_UPDATE):
         if not valid_item(params["item"]):
@@ -377,6 +391,28 @@ def _history_measure(params: dict) -> dict:
     if isinstance(minutes, bool) or not isinstance(minutes, int) or not 5 <= minutes <= 60:
         raise ManifestError("MEASURE_MINUTES")
     return {"measure_day": day, "measure_chunk": chunk, "measure_minutes": minutes}
+
+
+def _history_archive(params: dict) -> dict:
+    """0.9.54: two real UTC days, ``from`` <= ``to``, at most 45 days; 1-200 entities per read; 5-120 minutes."""
+    days = []
+    for key in ("from", "to"):
+        value = params[key]
+        if not isinstance(value, str) or not RE_DAY.fullmatch(value):
+            raise ManifestError("ARCHIVE_DAY")
+        try:
+            days.append(calendar.timegm(time.strptime(value, "%Y-%m-%d")))
+        except ValueError:
+            raise ManifestError("ARCHIVE_DAY") from None
+    if days[0] > days[1] or (days[1] - days[0]) // 86400 + 1 > ARCHIVE_MAX_DAYS:
+        raise ManifestError("ARCHIVE_RANGE")
+    chunk, minutes = params.get("chunk", 25), params.get("max_minutes", 60)
+    if isinstance(chunk, bool) or not isinstance(chunk, int) or not 1 <= chunk <= 200:
+        raise ManifestError("ARCHIVE_CHUNK")
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 5 <= minutes <= 120:
+        raise ManifestError("ARCHIVE_MINUTES")
+    return {"archive_from": params["from"], "archive_to": params["to"], "archive_chunk": chunk,
+            "archive_minutes": minutes}
 
 
 def _log_window(params: dict) -> dict:
