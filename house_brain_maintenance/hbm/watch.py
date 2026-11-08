@@ -34,7 +34,7 @@ from . import reauth as RA
 from . import problems as PR
 from . import rules as RU
 from . import systemsai as SA
-from .ha import AI_ACTIVITY_ENTITY, AI_CONNECTORS_ENTITY, DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
+from .ha import AI_ACTIVITY_ENTITY, AI_CONNECTORS_ENTITY, AI_TILE_ENTITY, DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
 
 LOG = logging.getLogger("hbm")
@@ -591,6 +591,14 @@ class Watcher:
             else:
                 self.ai_activity_now = st.get("attrs") or {}
                 out += I.from_activity(self.ai_activity_now.get("flags"), self.ai_activity_now.get("providers"))
+        try:                                            # 0.9.55: AI heartbeat health (AI Access 0.1.11-dev tile)
+            beat = I.from_heartbeat(self.ha.entity_state(AI_TILE_ENTITY), self.clock(), self.ha.key_slug("ai_read"))
+        except (HAError, net.NetError, ForbiddenCall):
+            beat = None
+        if beat is None:
+            failed.append(I.HEARTBEAT_SOURCE)           # unreadable or stale tile: keep what is open, never a false clear
+        else:
+            out += beat
         if self.key_findings is not None:
             try:
                 out += self.key_findings()

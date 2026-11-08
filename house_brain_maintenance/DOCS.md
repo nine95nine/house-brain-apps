@@ -177,6 +177,11 @@ New in 0.5.1, all read-only:
 - **Unusual AI activity (0.9.17)**: from the AI Access sensor `sensor.house_brain_ai_activity` (the last 7 days of
   AI requests, counts only). One push when an AI had many refused requests, hit the per-minute limit, or read the
   house for the first time; the AI kill switch tile in Home Assistant (`FULL_STOP`) stops AI reads. The Sunday weekly health message also carries one line: each AI's requests that week.
+- **AI cut off (0.9.55)**: from the AI kill switch tile `sensor.house_brain_ai_kill_switch_effective` (AI Access
+  0.1.11-dev and later). When no heartbeat has reached Cloudflare for 10 minutes, every AI and the House Brain
+  Companion are refused even though the tile still says `READ_ONLY`. One critical push; this App first restarts AI
+  Access by itself (at most twice a day). If Cloudflare refused the heartbeat key, it tells you which App option to
+  check instead.
 - **Kept local Observer / Inspector (0.9.10)**: after a store switch, the local Engineering Observer or Inspector
   is stopped on purpose as the rollback. Home Assistant shows it as "error" after that stop, but it is not reported
   as a problem while the store one is in use. If an undo puts the local one back in use, it is watched again.

@@ -125,6 +125,12 @@ Its state is what really applies (`FULL_STOP` or `READ_ONLY`). Its attributes sa
 the record number (`generation`) and when (`updated_at`). Your tile's status sensor then shows that
 state instead of `NOT_CONNECTED`. No Home Assistant YAML change is needed.
 
+**Is the heartbeat getting through? (0.1.11-dev)** The same sensor also shows the heartbeat to Cloudflare:
+`edge_heartbeat` (the newest result; `HEARTBEAT_ACCEPTED` is good), `edge_heartbeat_ok_at` (the last accepted
+beat) and `edge_heartbeat_age_s` (seconds since then). The sensor's state comes from this App's own record, so it
+can read `READ_ONLY` while Cloudflare refuses every AI because no heartbeat arrived for 5 minutes. The House Brain
+Maintenance App (0.9.55 and later) tells you when that lasts 10 minutes and restarts this App first.
+
 **When something is wrong, it never opens up.**
 - If Home Assistant is down, the tile is missing, or its value is unreadable, nothing loosens. The App
   keeps the last state it stored. The reason (`HA_BRIDGE_HA_UNREACHABLE`, `HA_BRIDGE_SELECTOR_MISSING`,

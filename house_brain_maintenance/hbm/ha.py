@@ -198,6 +198,7 @@ FORENSICS_ENTITY = "sensor.house_brain_connection_forensics_last_restart"
 DEPLOYER_STATUS_ENTITY = "sensor.house_brain_deployer_status"      # 0.5.2: PLANNED vs UNPLANNED_CLEAN join
 AI_CONNECTORS_ENTITY = "sensor.house_brain_ai_connectors"        # 0.9.11: AI Access 0.1.5-dev connector sign-ins
 AI_ACTIVITY_ENTITY = "sensor.house_brain_ai_activity"            # 0.9.17: AI Access 0.1.6-dev weekly AI activity
+AI_TILE_ENTITY = "sensor.house_brain_ai_kill_switch_effective"   # 0.9.55: AI Access 0.1.11-dev heartbeat health
 RECOVERY_READ_ENTITIES = frozenset({
     FORENSICS_ENTITY, DEPLOYER_STATUS_ENTITY,
     "sensor.house_brain_network_outage_class", "sensor.house_brain_network_outage_summary",
@@ -206,7 +207,8 @@ RECOVERY_READ_ENTITIES = frozenset({
     "sensor.sense_51446_l1_voltage", "sensor.enphase_solar_power_now",
 })
 # 0.9.11: the one other entity it may read (credential heads-up), kept apart from the Recovery Report's own list.
-CREDENTIAL_READ_ENTITIES = frozenset({AI_CONNECTORS_ENTITY, AI_ACTIVITY_ENTITY})  # 0.9.17: + weekly AI activity
+CREDENTIAL_READ_ENTITIES = frozenset({AI_CONNECTORS_ENTITY, AI_ACTIVITY_ENTITY,   # 0.9.17: + weekly AI activity
+                                      AI_TILE_ENTITY})                           # 0.9.55: + AI heartbeat health
 RECOVERY_NOTIFICATION_ID = "hbm_recovery_report"
 # 0.9.20: the Deployer's own safety backup before each deploy (Home Assistant only, no database, no password;
 # apps/house_brain_deployer/hbd/engine.py "HBD <request_id> pre-deploy") is a partial backup, never the owner's full
@@ -351,7 +353,26 @@ def project_attrs(entity_id: str, attrs: Any) -> dict:
         return {"providers": project_connectors(attrs.get("providers"))}
     if entity_id == AI_ACTIVITY_ENTITY:
         return project_activity(attrs)
+    if entity_id == AI_TILE_ENTITY:
+        return project_heartbeat(attrs)
     return {}
+
+
+RE_HEARTBEAT_CODE = re.compile(r"HEARTBEAT_[A-Z0-9_]{1,40}")
+RE_UTC_STAMP = re.compile(r"20[0-9]{2}-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-6][0-9]Z")
+
+
+def project_heartbeat(attrs: Any) -> dict:
+    """0.9.55: the AI kill-switch tile's heartbeat health (AI Access 0.1.11-dev): a result code, two UTC stamps and
+    one age; anything else (generation, names) is dropped. A missing or odd value is None."""
+    attrs = attrs if isinstance(attrs, dict) else {}
+    code, ok_at, at, age = (attrs.get(k) for k in ("edge_heartbeat", "edge_heartbeat_ok_at", "updated_at",
+                                                    "edge_heartbeat_age_s"))
+    return {"edge_heartbeat": code if isinstance(code, str) and RE_HEARTBEAT_CODE.fullmatch(code) else None,
+            "edge_heartbeat_ok_at": ok_at if isinstance(ok_at, str) and RE_UTC_STAMP.fullmatch(ok_at) else None,
+            "updated_at": at if isinstance(at, str) and RE_UTC_STAMP.fullmatch(at) else None,
+            "edge_heartbeat_age_s": age if isinstance(age, int) and not isinstance(age, bool) and 0 <= age < 10**9
+            else None}
 
 
 CONNECTOR_PROVIDERS = ("claude", "chatgpt", "grok")

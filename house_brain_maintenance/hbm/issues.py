@@ -1291,6 +1291,62 @@ def activity_line(projected: dict | None) -> str | None:
     return "AI this week: " + ("; ".join(parts) if parts else "no AI requests")
 
 
+# -- 0.9.55: the AI heartbeat (owner pop-up 2026-11-08 "Build both, take 0.9.53"; Work Board #942 claims 6717065821,
+# 6717139620). AI Access 0.1.11-dev writes the heartbeat's health on the kill-switch tile sensor. Without an accepted
+# heartbeat for 300 s the Cloudflare edge refuses every AI connector and the Companion, while the tile still reads
+# READ_ONLY. After HEARTBEAT_STALL_SECONDS this is a problem, with an S3 restart of AI Access (the safe list; at most
+# twice a day, then the owner) unless Cloudflare refused the key, which a restart cannot fix.
+HEARTBEAT_STALL_SECONDS = 600
+HEARTBEAT_TILE_FRESH_SECONDS = 180      # the tile is written every 30 s; older means AI Access itself is not running
+HEARTBEAT_KEY_CODES = ("HEARTBEAT_REFUSED_401", "HEARTBEAT_REFUSED_403")
+HEARTBEAT_SOURCE = "ai_heartbeat"
+
+
+def _utc(stamp: str | None) -> float | None:
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() if stamp else None
+    except ValueError:
+        return None
+
+
+def from_heartbeat(tile: dict | None, now: float, ai_access_slug: str | None) -> list[Finding] | None:
+    """``tile``: ``ha.entity_state`` of the AI kill-switch tile (projected by ``ha.project_heartbeat``). [] = fine or
+    nothing to judge (no heartbeat configured, an older AI Access, AI stopped on purpose); None = cannot judge now (the
+    tile is missing or stale: AI Access itself is down, which the App watch reports), so keep what is open."""
+    if not tile:
+        return None
+    attrs = tile.get("attrs") or {}
+    code, age, written = attrs.get("edge_heartbeat"), attrs.get("edge_heartbeat_age_s"), _utc(attrs.get("updated_at"))
+    if code is None or code == "HEARTBEAT_OFF" or tile.get("state") == "FULL_STOP":
+        return []
+    if written is None or age is None or now - written > HEARTBEAT_TILE_FRESH_SECONDS:
+        return None
+    stalled = age + max(0.0, now - written)
+    if stalled < HEARTBEAT_STALL_SECONDS:
+        return []
+    minutes = int(stalled // 60)
+    key_refused = code in HEARTBEAT_KEY_CODES
+    last = attrs.get("edge_heartbeat_ok_at")
+    detail = (f"Last accepted heartbeat: {last} (UTC)." if last else "No heartbeat was accepted since AI Access started.",
+              f"Newest result: {code}.")
+    if key_refused:
+        steps = ("Cloudflare refused the heartbeat's key. Open the AI Access App -> Configuration and check that "
+                 "perimeter_heartbeat_key matches the key set on the AI perimeter Worker; restarting cannot fix this.",)
+    else:
+        steps = ("If the internet is down, this clears by itself when it is back.",
+                 "Otherwise restart the AI Access App (I try that first by myself, at most twice a day).")
+    return [Finding(f"{HEARTBEAT_SOURCE}:stall", HEARTBEAT_SOURCE, CRITICAL,
+                    f"All AI access is cut off: no heartbeat reached Cloudflare for {minutes} minutes",
+                    detail=detail, steps=steps, link=APPS_LINK,
+                    action=None if key_refused or not ai_access_slug else
+                    Action("restart_app", ai_access_slug, "restart AI Access"),
+                    facts={"code": code, "stalled_s": int(stalled)},
+                    done=("Nothing: a restart cannot fix a refused key." if key_refused else ""),
+                    if_ignored=("Claude, ChatGPT, Grok and the House Brain Companion cannot read the house until a "
+                                "heartbeat gets through. Nothing in the house is controlled by them, so nothing else "
+                                "stops."))]
+
+
 # -- 0.6.3: the relay's GitHub dispatch key (weekly self-test on the relay Worker, read once a day) ---------------
 RELAY_SECRETS_STEPS = ("Cloudflare dashboard -> Workers & Pages -> house-brain-live-read-relay -> Settings -> Variables "
                        "and Secrets -> GITHUB_DISPATCH_TOKEN: replace it with a new fine-grained token (this repository "

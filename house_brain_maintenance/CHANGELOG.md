@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.55
+
+AI heartbeat stall (2026-11-08; owner pop-ups "Do a full issue review, figure out what happened, and then fix" and
+"Build both, take 0.9.53", then "Renumber to 0.9.55" after 0.9.54 reached `main` first; Work Board #942 claims 6717065821 and 6717139620, the stale row 74 hand-off). Contains 0.9.52 and 0.9.54 unchanged; 0.9.53 is never used. Without an
+accepted heartbeat from the AI Access App for 300 s, the Cloudflare edge refuses every AI connector and the House Brain
+Companion, while the House Brain AI kill switch tile still reads `READ_ONLY`. On 2026-11-01 this lasted hours unseen.
+- **New problem:** "All AI access is cut off: no heartbeat reached Cloudflare for N minutes" (critical, after 10
+  minutes), read from AI Access 0.1.11-dev's tile attributes (`edge_heartbeat`, `edge_heartbeat_ok_at`,
+  `edge_heartbeat_age_s`). The fix is the safe-list S3 restart of AI Access (no tap, at most twice a day, back-off,
+  then yours). When Cloudflare refused the heartbeat key (`HEARTBEAT_REFUSED_401`/`403`) a restart cannot help, so
+  there is no fix and the problem names the App option to check.
+- **No false alarms:** nothing is judged when no heartbeat is configured, when you stopped AI on purpose (`FULL_STOP`),
+  or with an older AI Access. A tile not written for 3 minutes (AI Access itself down, which the App watch already
+  reports) keeps what is open and never clears it falsely.
+- **One more read:** `sensor.house_brain_ai_kill_switch_effective` joins the credential-lane reads; only the result
+  code, two UTC stamps and one age are kept.
+
 ## 0.9.54
 
 **Compressed history archive** (history archive proposal R1, `docs/architecture/HOUSE_BRAIN_HISTORY_ARCHIVE_PROPOSAL_R1.md`;

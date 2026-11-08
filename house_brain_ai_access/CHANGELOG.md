@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.11-dev
+
+Heartbeat health on the tile (2026-11-08; owner pop-up "Build both, take 0.9.53"; Work Board #942 claims 6717065821 and
+6717139620, the stale row 74 hand-off). `sensor.house_brain_ai_kill_switch_effective` is written from this App's local
+store. If the heartbeat stops reaching Cloudflare while this App runs, the edge refuses every AI (and the Companion) after
+300 s, but the tile kept reading `READ_ONLY` and nothing told the owner.
+- The tile gains three attributes: `edge_heartbeat` (the newest result: `HEARTBEAT_ACCEPTED`, `HEARTBEAT_REFUSED_<http
+  status>` with 0 for no connection, `HEARTBEAT_NOT_SENT_STORE_UNREADABLE`, `HEARTBEAT_STARTING`, or `HEARTBEAT_OFF` when
+  no heartbeat is configured), `edge_heartbeat_ok_at` (the last accepted beat, UTC) and `edge_heartbeat_age_s`. The
+  tile's state is unchanged and is never widened by them. Maintenance 0.9.55 alerts on them.
+- `sensor.house_brain_ai_activity`: refusals because the house could not be read (`KS_EDGE_HEARTBEAT_STALE`,
+  `KS_EDGE_HEARTBEAT_MISSING`, `ENTITY_SNAPSHOT_STALE`, as far as the perimeter's top three codes show them) no longer
+  count toward `MANY_REFUSED`; they are published as `<ai>_outage_refused`. The 2026-11-01 outage had raised
+  `MANY_REFUSED` ("look at the kill switch tile") for a week.
+- **Version:** the User-Agent is `house-brain-ai-access/0.1.11-dev`.
+- **Unchanged:** the heartbeat itself (body, signature, cadence, URL rules), the bridge allowlist, the runtime
+  (`MANIFEST_SHA`), every permission flag and every default.
+
 ## 0.1.10-dev
 
 Start on boot (2026-11-01; owner pop-ups "Yes, Inspector + AI Access (Recommended)" and "Yes, take it over"; Work Board

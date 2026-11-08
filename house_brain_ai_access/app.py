@@ -57,6 +57,10 @@ HEARTBEAT_INTERVAL = 60.0
 # In this mode the wrapper applies the kill switch and publishes only the heartbeat: no tunnel process, no
 # OpenAI egress, no tunnel or Broker capability accepted. It adds no tool, scope or Home Assistant access.
 HEARTBEAT_TIMEOUT = 10.0
+# 0.1.11-dev: the heartbeat's own health on the tile (CHANGELOG); the tile state stays the store's.
+HEARTBEAT_OFF, HEARTBEAT_STARTING = 'HEARTBEAT_OFF', 'HEARTBEAT_STARTING'
+_heartbeat_lock = threading.Lock()
+_heartbeat_latest: dict[str, Any] = {'reason': None, 'ok_at': None, 'since': None}
 # `ha_bridge` (0.1.3-dev, owner approval 2026-10-10 "Approve design, build it";
 # docs/architecture/AI_KILL_SWITCH_HA_BRIDGE_R1.md). Off by default. When on, every 30 s the wrapper reads the
 # owner's HA selector, applies it to the local #56 store (Option A: the store stays authoritative; FULL_STOP
@@ -343,7 +347,7 @@ class _NoHeartbeatRedirect(urlrequest.HTTPRedirectHandler):
         return None
 
 
-HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.10-dev'
+HEARTBEAT_USER_AGENT = 'house-brain-ai-access/0.1.11-dev'
 
 # 0.1.5-dev connector heads-up. Perimeter 0.4.4 answers an accepted heartbeat with `X-HB-Connectors`
 # (house_brain_ai_connectors.v1): per provider the last good sign-in/refresh, its expiry (90 days idle) and the
@@ -435,6 +439,8 @@ ACTIVITY_SCALAR_COUNTS = ('requests', 'refused', 'rate_limited')  # 0.1.7-dev: f
 ACTIVITY_TOP_REFUSED = 3          # 0.1.8-dev: perimeter 0.4.7 top refusal reason codes per AI
 ACTIVITY_CODE_RE = re.compile(r'^[A-Z][A-Z0-9_]{1,47}$')
 ACTIVITY_REFUSED_MIN = 10     # "many refused": at least 10 and at least a fifth of the week's requests
+# 0.1.11-dev: house-unreadable refusals (top codes only) are an outage, not MANY_REFUSED; <ai>_outage_refused.
+ACTIVITY_OUTAGE_CODES = frozenset({'KS_EDGE_HEARTBEAT_STALE', 'KS_EDGE_HEARTBEAT_MISSING', 'ENTITY_SNAPSHOT_STALE'})
 ACTIVITY_SEEN = DATA / 'ai_activity_seen.json'
 _activity_lock = threading.Lock()
 _activity_latest: dict[str, Any] = {'raw': None, 'at': None}
@@ -483,7 +489,10 @@ def activity_payload(raw: str | None, received_at: float | None, now: float,
     0.1.8-dev (owner pop-up 2026-10-18 "Show the reasons (Recommended)", Work Board #942 row 74): perimeter 0.4.7 adds
     each AI's largest refusal reason codes; they are published flat as <ai>_top_refused, for example
     "KS_EDGE_STALE:120, HISTORY_NOT_AVAILABLE:40" ("none" when there were none, None while UNKNOWN or from an older
-    perimeter). Only plain codes with positive integer counts are kept, at most three."""
+    perimeter). Only plain codes with positive integer counts are kept, at most three.
+
+    0.1.11-dev: refusals with an outage code (ACTIVITY_OUTAGE_CODES) among those top codes are published as
+    <ai>_outage_refused and do not count toward MANY_REFUSED."""
     attributes: dict[str, Any] = {'friendly_name': 'House Brain AI Activity (7 days)', 'schema': ACTIVITY_SCHEMA,
                                   'from': None, 'to': None, 'total_requests': 0, 'providers': {}, 'flags': [],
                                   'flag_summary': None}
@@ -491,6 +500,7 @@ def activity_payload(raw: str | None, received_at: float | None, now: float,
         for key in ACTIVITY_SCALAR_COUNTS:
             attributes[f'{provider}_{key}'] = 0
         attributes[f'{provider}_top_refused'] = None
+        attributes[f'{provider}_outage_refused'] = 0
     value = None
     if type(raw) is str and isinstance(received_at, (int, float)) and now - received_at <= ACTIVITY_STALE_S:
         try:
@@ -509,19 +519,24 @@ def activity_payload(raw: str | None, received_at: float | None, now: float,
         if type(item) is not dict:
             continue
         top = item.get('top_refused')
+        outage = 0
         if type(top) is list:
-            pairs = [f'{p[0]}:{p[1]}' for p in top[:ACTIVITY_TOP_REFUSED]
-                     if type(p) is list and len(p) == 2 and type(p[0]) is str and ACTIVITY_CODE_RE.match(p[0])
-                     and type(p[1]) is int and p[1] > 0]
-            attributes[f'{provider}_top_refused'] = ', '.join(pairs) or 'none'
+            kept = [p for p in top[:ACTIVITY_TOP_REFUSED]
+                    if type(p) is list and len(p) == 2 and type(p[0]) is str and ACTIVITY_CODE_RE.match(p[0])
+                    and type(p[1]) is int and p[1] > 0]
+            attributes[f'{provider}_top_refused'] = ', '.join(f'{p[0]}:{p[1]}' for p in kept) or 'none'
+            outage = sum(p[1] for p in kept if p[0] in ACTIVITY_OUTAGE_CODES)
         counts = {k: item[k] if type(item.get(k)) is int and item[k] >= 0 else 0 for k in ACTIVITY_COUNTS}
         if not counts['requests']:
             continue
         attributes['providers'][provider] = {'name': CONNECTOR_LABELS[provider], **counts}
         for key in ACTIVITY_SCALAR_COUNTS:
             attributes[f'{provider}_{key}'] = counts[key]
+        outage = min(outage, counts['refused'])
+        attributes[f'{provider}_outage_refused'] = outage
         attributes['total_requests'] += counts['requests']
-        if counts['refused'] >= ACTIVITY_REFUSED_MIN and counts['refused'] * 5 >= counts['requests']:
+        blocked = counts['refused'] - outage
+        if blocked >= ACTIVITY_REFUSED_MIN and blocked * 5 >= counts['requests']:
             attributes['flags'].append({'provider': provider, 'flag': 'MANY_REFUSED'})
         if counts['rate_limited'] > 0:
             attributes['flags'].append({'provider': provider, 'flag': 'RATE_LIMITED'})
@@ -586,6 +601,28 @@ def post_heartbeat(url: str, key: str, heartbeat: dict[str, Any], *, opener: Any
         return 0
 
 
+def note_heartbeat(reason: str | None, now: float, *, start: bool = False) -> None:
+    with _heartbeat_lock:
+        h = _heartbeat_latest
+        if start:
+            h.update(reason=HEARTBEAT_STARTING, ok_at=None, since=float(now))
+            return
+        h['reason'] = reason
+        if reason == 'HEARTBEAT_ACCEPTED':
+            h['ok_at'] = float(now)
+
+
+def heartbeat_health(now: float) -> dict[str, Any]:
+    """edge_heartbeat (newest result), edge_heartbeat_ok_at, edge_heartbeat_age_s (since that, else since start)."""
+    with _heartbeat_lock:
+        reason, ok_at, since = (_heartbeat_latest[k] for k in ('reason', 'ok_at', 'since'))
+    if since is None:
+        return {'edge_heartbeat': HEARTBEAT_OFF, 'edge_heartbeat_ok_at': None, 'edge_heartbeat_age_s': None}
+    return {'edge_heartbeat': reason or HEARTBEAT_STARTING, 'edge_heartbeat_ok_at': None if ok_at is None else
+            datetime.fromtimestamp(ok_at, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'edge_heartbeat_age_s': max(0, int(now - (since if ok_at is None else ok_at)))}
+
+
 def heartbeat_loop(stop: threading.Event, url: str, key: str, *, store_dir: Path | None = None,
                    root: Path | None = None, clock=time.time, post=post_heartbeat,
                    interval: float = HEARTBEAT_INTERVAL) -> None:
@@ -593,6 +630,7 @@ def heartbeat_loop(stop: threading.Event, url: str, key: str, *, store_dir: Path
     store_dir = KS_STORE if store_dir is None else store_dir
     root = ROOT if root is None else root
     last_reason = None
+    note_heartbeat(None, clock(), start=True)
     while not stop.is_set():
         reason = 'HEARTBEAT_NOT_SENT_STORE_UNREADABLE'
         try:
@@ -608,6 +646,10 @@ def heartbeat_loop(stop: threading.Event, url: str, key: str, *, store_dir: Path
                 reason = 'HEARTBEAT_ACCEPTED' if status == 204 else f'HEARTBEAT_REFUSED_{status}'
         except Exception:
             reason = 'HEARTBEAT_NOT_SENT_STORE_UNREADABLE'
+        try:
+            note_heartbeat(reason, clock())
+        except Exception:
+            pass
         if reason != last_reason:  # log changes only, never per beat
             emit(reason)
             last_reason = reason
@@ -747,13 +789,16 @@ def ha_bridge_target(requested: str, ceiling: str, current: str) -> tuple[str, s
     return strictest(current, ceiling), reason
 
 
-def ha_effective_payload(view: Any, reason: str, stamp: str) -> dict[str, Any]:
-    """The exact body POSTed to sensor.house_brain_ai_kill_switch_effective."""
+def ha_effective_payload(view: Any, reason: str, stamp: str, health: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The exact body POSTed to sensor.house_brain_ai_kill_switch_effective (0.1.11-dev: plus ``health``)."""
     ok = type(view) is dict and view.get('fail_closed') is False and view.get('effective_state') in _KS_RANK
     generation = view.get('generation') if type(view) is dict else None
     return {'state': view['effective_state'] if ok else 'FULL_STOP',
             'attributes': {'generation': generation if type(generation) is int else None, 'reason_code': reason,
-                           'updated_at': stamp, 'friendly_name': HA_BRIDGE_FRIENDLY_NAME}}
+                           'updated_at': stamp, 'friendly_name': HA_BRIDGE_FRIENDLY_NAME,
+                           **(health if health is not None else
+                              {'edge_heartbeat': HEARTBEAT_OFF, 'edge_heartbeat_ok_at': None,
+                               'edge_heartbeat_age_s': None})}}
 
 
 def ha_bridge_cycle(ceiling: str, *, publish_view: bool = True, http: Any = None, store_dir: Path | None = None,
@@ -809,7 +854,7 @@ def ha_bridge_cycle(ceiling: str, *, publish_view: bool = True, http: Any = None
                         reason = 'HA_BRIDGE_TRANSITION_FAILED'
                         result['reason'] = reason
         after = store.read_view(stamp)
-        payload = ha_effective_payload(after, result['reason'], stamp)
+        payload = ha_effective_payload(after, result['reason'], stamp, heartbeat_health(clock))
         result['effective'], result['generation'] = payload['state'], payload['attributes']['generation']
         try:
             result['publish_status'] = ha_bridge_call(http, 'POST', HA_EFFECTIVE_PATH, payload)[0]
