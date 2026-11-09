@@ -1,5 +1,5 @@
 name: "House Brain Maintenance"
-version: "0.9.59"
+version: "0.9.60"
 slug: "house_brain_maintenance"
 description: >-
   Reviews pending App, HACS and device-firmware updates and applies them after your iPhone approval
@@ -119,6 +119,8 @@ options:
   pi_health: true
   pi_firmware_updates: true
   housekeeping: true
+  history_upload_repo: ""
+  history_upload_token: ""
   ai_review: true
   free_reviewer: "lockout"
   companion_url: ""
@@ -176,6 +178,8 @@ schema:
   housekeeping: "bool?"
   history_archive: "bool?"
   restore_drill: "list(off|monthly)?"
+  history_upload_repo: "match(^([A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100})?$)?"
+  history_upload_token: password?
   ai_review: "bool?"
   free_reviewer: "list(off|shadow|lockout|primary)?"
   auto_fix: "list(off|safe)?"

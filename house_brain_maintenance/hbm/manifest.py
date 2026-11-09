@@ -125,6 +125,12 @@ HISTORY_ARCHIVE = "HISTORY_ARCHIVE"
 JOBS[HISTORY_ARCHIVE] = (frozenset({"from", "to"}), frozenset({"chunk", "max_minutes"}))
 NO_APPROVAL_JOBS = NO_APPROVAL_JOBS | {HISTORY_ARCHIVE}
 ARCHIVE_MAX_DAYS = 45
+# 0.9.60 (owner pop-up 2026-11-08 "Separate data repo"): upload archived days ``from``..``to`` (at most 45) as a
+# scrubbed copy to the owner's private data repository, with that repository's own token. Read-only toward Home
+# Assistant; it writes only the data repository (never the main repository), so it needs no approval.
+HISTORY_UPLOAD = "HISTORY_UPLOAD"
+JOBS[HISTORY_UPLOAD] = (frozenset({"from", "to"}), frozenset())
+NO_APPROVAL_JOBS = NO_APPROVAL_JOBS | {HISTORY_UPLOAD}
 # 0.9.34 (owner pop-ups 2026-10-26 "Build 0.9.34", "06:45 Arizona", "Both"): change two settings of the Google Drive
 # Backup App (sabeechen/hassio-google-drive-backup) through the Supervisor: its daily backup time and whether every
 # App is included (its ``exclude_addons`` list emptied). It asks the owner first and restarts that App once so the
@@ -205,6 +211,9 @@ class Manifest:
     archive_to: str | None = None
     archive_chunk: int = 25
     archive_minutes: int = 60
+    # 0.9.60 HISTORY_UPLOAD
+    upload_from: str | None = None
+    upload_to: str | None = None
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict:
@@ -260,6 +269,7 @@ def parse(raw: bytes) -> Manifest:
     log = _log_window(params) if job == APP_LOG_WINDOW else {}
     log.update(_history_measure(params) if job == HISTORY_MEASURE else {})
     log.update(_history_archive(params) if job == HISTORY_ARCHIVE else {})
+    log.update(_history_upload(params) if job == HISTORY_UPLOAD else {})
     log.update(_ask_update(params) if job == ASK_UPDATE_NOW else {})
     if job in (HOLD_UPDATE, RELEASE_UPDATE):
         if not valid_item(params["item"]):
@@ -413,6 +423,12 @@ def _history_archive(params: dict) -> dict:
         raise ManifestError("ARCHIVE_MINUTES")
     return {"archive_from": params["from"], "archive_to": params["to"], "archive_chunk": chunk,
             "archive_minutes": minutes}
+
+
+def _history_upload(params: dict) -> dict:
+    """0.9.60: the same day rules as HISTORY_ARCHIVE (two real UTC days, ``from`` <= ``to``, at most 45)."""
+    days = _history_archive({"from": params["from"], "to": params["to"]})
+    return {"upload_from": days["archive_from"], "upload_to": days["archive_to"]}
 
 
 def _log_window(params: dict) -> dict:

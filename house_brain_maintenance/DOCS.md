@@ -1126,3 +1126,30 @@ It reads Home Assistant read-only and never reads people, trackers, cameras, loc
 helpers or health sensors. A day is written whole or not at all, and never rewritten. Nothing is written while less
 than 20 GB is free. Turn it off with the option `history_archive: false`. About 4–10 MB a day (estimate, to be
 measured by the first run).
+
+## History upload (for every AI) — from 0.9.60
+
+The archive above stays on the Pi. From 0.9.60 this App can also copy each archived day, once, to a **private GitHub
+repository of your own**, so every AI you allow (cloud chat AIs too) can read the history. It is off until you set it
+up. Your main code repository stays read-only to the house: the upload has its own repository and its own token.
+
+Setup (about 5 minutes, free):
+
+1. On GitHub, create a new **private** repository, for example `nine95nine/house-brain-history`. Tick "Add a README"
+   so it has a default branch.
+2. GitHub → Settings → Developer settings → Fine-grained tokens → **Generate new token**. Repository access: **Only
+   select repositories** → just the new history repository. Permissions → Repository permissions → **Contents: Read
+   and write** (nothing else). Pick an expiry you are happy with and copy the token.
+3. Settings → Apps → House Brain Maintenance → Configuration: set `history_upload_repo` to the repository name
+   (`owner/name`) and paste the token into `history_upload_token`. Save. Do not use the main repository: it is refused.
+4. Wait for the night (02:00–05:00), or ask an AI to send the job `HISTORY_UPLOAD` with `from`/`to` days for an
+   immediate catch-up.
+
+What lands there, one commit per day: `days/YYYY/MM/YYYY-MM-DD.jsonl.xz` (the full day with secrets scrubbed), its
+`.meta.json`, the day's summary in 64 small files `summaries/YYYY/MM/DD/00.json.gz` … `63.json.gz` (averages, a
+5-minute series, time in each state; an entity's file number is `int(sha256(entity_id)[:8 hex], 16) % 64`) with an
+`index.json` beside them, and the repository's `index.json`; a `README.md` there explains the formats. Attribute keys such as `entity_picture`, `token`,
+`api_key`, `password`, `secret` (and any key ending `_token`, `_key`, `_secret`) are removed, and text that looks like
+a secret becomes `[redacted]`. At most 10 days are uploaded a night; a file over 50 MB is skipped with the reason.
+If the upload fails (for example the token expired), a problem "The nightly history upload could not run" appears and
+the App tries again the next night. To stop: empty `history_upload_repo`.

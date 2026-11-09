@@ -136,6 +136,8 @@ class Options:
     housekeeping: bool = True         # 0.8.7: failing automations, missing entities, error flood, database size
     history_archive: bool = True      # 0.9.54: nightly compressed history archive under /share (owner 2026-11-08)
     restore_drill: str = "off"        # 0.9.58: off | monthly (one owner-approved restore drill of an App a month)
+    history_upload_repo: str = ""     # 0.9.60: the owner's private data repository ("" = off; owner 2026-11-08)
+    history_upload_token: str = ""    # 0.9.60: that repository's own token (never the main token; never logged)
     ai_review: bool = True            # 0.8.9: an AI review on the tracking issue before any update ask/auto install
     cf_control_issue: int = 454       # 0.8.2: Cloudflare control approvals to the phone (0 = off; owner 2026-10-11)
     cf_control_url: str = ""          # 0.8.2: "" = the control on the Broker's own Cloudflare account
@@ -245,6 +247,7 @@ def load_options(path: str) -> Options:
         else _bad("history_archive"),
         restore_drill=raw.get("restore_drill", "off") if raw.get("restore_drill", "off") in ("off", "monthly")
         else _bad("restore_drill"),                                             # 0.9.58
+        **_history_upload(raw),
         ai_review=raw.get("ai_review", True) if isinstance(raw.get("ai_review", True), bool) else _bad("ai_review"),
         cf_control_url=_cf_url(raw.get("cf_control_url")),
         free_reviewer=raw.get("free_reviewer", "lockout") if raw.get("free_reviewer", "lockout") in ("off", "shadow", "lockout", "primary")
@@ -254,6 +257,19 @@ def load_options(path: str) -> Options:
         unretire=tuple(str(n)[:80] for n in raw.get("unretire") or [] if isinstance(n, str) and n.strip())
         if isinstance(raw.get("unretire", []), list) else _bad("unretire"),
     )
+
+
+def _history_upload(raw: dict) -> dict:
+    """0.9.60: the data repository (``owner/name`` or "" = off) and its own token (registered as a secret at once so
+    it is redacted from every log line). Whether the pair may be used (not the main repository, token present) is
+    decided by ``histupload.refusal`` and shown as a problem, so a mistake there never stops the App."""
+    repo, token = raw.get("history_upload_repo") or "", raw.get("history_upload_token") or ""
+    if not isinstance(repo, str) or (repo and not RE_REPO.fullmatch(repo)):
+        raise OptionsError("history_upload_repo")
+    if not isinstance(token, str) or (token and not re.fullmatch(r"[A-Za-z0-9_]{20,255}", token)):
+        raise OptionsError("history_upload_token")
+    net.register_secret(token)
+    return {"history_upload_repo": repo, "history_upload_token": token}
 
 
 def _companion_url(value) -> str:
@@ -506,6 +522,7 @@ class Service:
                                 ask_allowed=lambda: self.j.approvals_requested_since(86400)
                                 < self.o.max_approval_requests_per_day)       # 0.9.39: update asks count too
             self.engine = Engine(self.ha, self.j, settings)
+            self.engine.history_upload = self.history_uploader       # 0.9.60: the HISTORY_UPLOAD job's client
             health = self.o.health_check_minutes * 60.0 * self.health_scale
             policy = Policy(mode=self.o.update_mode,
                             window=(self.o.auto_window_start_hour, self.o.auto_window_end_hour),
@@ -971,24 +988,59 @@ class Service:
     def poll_history_archive(self) -> None:
         """0.9.54 (owner 2026-11-08): once a night, archive every day Home Assistant still holds that is not archived
         yet (oldest first, at most 45 minutes). Read-only toward Home Assistant; files only under the archive folder.
-        A failure is logged and shown as a step error; it never stops the App."""
-        if not self.o.history_archive or self.o.dry_run:
+        A failure is logged and shown as a step error; it never stops the App. 0.9.60: right after it, the upload of
+        new archived days to the owner's private data repository (when ``history_upload_repo`` is set)."""
+        if (not self.o.history_archive and not self.o.history_upload_repo) or self.o.dry_run:
             return
         lt = time.localtime()
         today = time.strftime("%Y-%m-%d", lt)
         if lt.tm_hour not in self.ARCHIVE_HOURS or getattr(self, "_archive_night", None) == today:
             return
         self._archive_night = today
-        from . import histarchive
+        root = getattr(self.engine, "history_archive_root", None) if self.engine is not None else None
+        if self.o.history_archive:
+            from . import histarchive
+            try:
+                result = histarchive.nightly(self.ha, root)
+                LOG.info("history archive: %s", "; ".join(result.reasons)[:400])
+                self.step_errors.pop("history_archive", None)
+            except Exception as err:  # noqa: BLE001 - retried the next night; shown as a problem meanwhile
+                message = net.redact(f"{type(err).__name__}: {err}")[:300]
+                LOG.warning("history archive waits: %s", message)
+                self.step_errors["history_archive"] = message
+        self.poll_history_upload(root)
+
+    def history_uploader(self):
+        """0.9.60: (the data repository client, None) or (None, the reason it may not run). The client is signed
+        ONLY by ``history_upload_token``; the App's own GitHub credentials are never given to it."""
+        from . import histupload
+        if not self.o.history_upload_repo:
+            return None, "HISTORY_UPLOAD_OFF"
+        why = histupload.refusal(self.o.history_upload_repo, self.o.history_upload_token, self.o.github_repo)
+        if why:
+            return None, why
+        return histupload.DataRepo(self.o.history_upload_repo, self.o.history_upload_token, self.gh.api), None
+
+    def poll_history_upload(self, root: str | None = None) -> None:
+        """0.9.60 (owner pop-up 2026-11-08 "Separate data repo"): at most 10 new archived days a night, oldest first.
+        Off when ``history_upload_repo`` is empty; a refusal or failure is a visible step error, retried next night."""
+        if not self.o.history_upload_repo:
+            self.step_errors.pop("history_upload", None)
+            return
+        from . import histupload
+        client, why = self.history_uploader()
+        if client is None:
+            LOG.warning("history upload refused: %s", why)
+            self.step_errors["history_upload"] = f"{why}: the data repository setting cannot be used"
+            return
         try:
-            root = getattr(self.engine, "history_archive_root", None) if self.engine is not None else None
-            result = histarchive.nightly(self.ha, root)
-            LOG.info("history archive: %s", "; ".join(result.reasons)[:400])
-            self.step_errors.pop("history_archive", None)
+            result = histupload.nightly(client, root)
+            LOG.info("history upload: %s", net.redact("; ".join(result.reasons))[:400])
+            self.step_errors.pop("history_upload", None)
         except Exception as err:  # noqa: BLE001 - retried the next night; shown as a problem meanwhile
             message = net.redact(f"{type(err).__name__}: {err}")[:300]
-            LOG.warning("history archive waits: %s", message)
-            self.step_errors["history_archive"] = message
+            LOG.warning("history upload waits: %s", message)
+            self.step_errors["history_upload"] = message
 
     def app_update_done(self, kind: str, txn: dict) -> None:
         """0.7.3 after-update check. 0.9.12: the install is remembered 24 h for the problem queue's ``after_update``

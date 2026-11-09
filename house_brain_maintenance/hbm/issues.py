@@ -1040,8 +1040,12 @@ def from_liveness(doc: dict, now: float) -> list[Finding]:
 # -- 0.9.22: a poll step that keeps failing ----------------------------------------------------------------------------
 STEP_TITLES = {"updates": "Maintenance cannot check for updates",
                # 0.9.54: the nightly history archive (retried the next night)
-               "history_archive": "The nightly history archive could not run"}
-STEP_IF_IGNORED = {"history_archive": "Days older than 40 days are deleted by Home Assistant before they are archived."}
+               "history_archive": "The nightly history archive could not run",
+               # 0.9.60: the nightly upload to the private data repository (retried the next night)
+               "history_upload": "The nightly history upload could not run"}
+STEP_IF_IGNORED = {"history_archive": "Days older than 40 days are deleted by Home Assistant before they are archived.",
+                   "history_upload": "The archive stays on the Pi; the AIs that read the data repository do not see "
+                                     "the newest days until it is fixed (check the data repository and its token)."}
 
 
 def from_step_errors(errors: dict[str, str]) -> list[Finding]:

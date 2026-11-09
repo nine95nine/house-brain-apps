@@ -27,7 +27,7 @@ from . import approval, net
 from .ha import AppView, ForbiddenCall, HAError, HomeAssistant, fingerprint
 from .journal import Journal
 from . import logwindow
-from .manifest import (APP_LOG_WINDOW, CHECK_BROKER, HISTORY_ARCHIVE, HISTORY_MEASURE, LEGACY_STAGE, RETIRE_LOCAL_APP, ROTATE_SCOUT_KEY,
+from .manifest import (APP_LOG_WINDOW, CHECK_BROKER, HISTORY_ARCHIVE, HISTORY_MEASURE, HISTORY_UPLOAD, LEGACY_STAGE, RETIRE_LOCAL_APP, ROTATE_SCOUT_KEY,
                        RUN_SCOUT_ONCE, WRITER_PROBE, Manifest)
 from .writer import WriterError
 from .web import ApprovalBoard
@@ -142,6 +142,7 @@ class Engine:
         self.probe_hold_seconds = PROBE_HOLD_SECONDS
         self.legacy_stage_root = None     # 0.9.5: None = legacystage.STAGE_ROOT (tests point it elsewhere)
         self.history_archive_root = None  # 0.9.54: None = histarchive.ARCHIVE_ROOT (tests point it elsewhere)
+        self.history_upload = None        # 0.9.60: () -> (histupload.DataRepo | None, refusal reason), set by the service
 
     # -- helpers --------------------------------------------------------------
     def _ask(self, m: Manifest, title: str, lines: list[str]) -> str:
@@ -194,6 +195,10 @@ class Engine:
             if m.job == HISTORY_ARCHIVE:                    # 0.9.54: read-only toward HA; writes only its archive folder
                 from . import histarchive
                 return histarchive.run(self.ha, m, self.history_archive_root)
+            if m.job == HISTORY_UPLOAD:                     # 0.9.60: the data repository only, its own token
+                from . import histupload
+                client, why = self.history_upload() if self.history_upload else (None, "HISTORY_UPLOAD_OFF")
+                return histupload.run(client, why, m, self.history_archive_root)
             if m.job == WRITER_PROBE:
                 return self._writer_probe(m)
             if m.job == LEGACY_STAGE:                       # 0.9.5: #985 test plan M2/M3

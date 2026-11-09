@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.9.60
+
+**History for every AI: a scrubbed copy in your own private data repository** (owner pop-up 2026-11-08 "Separate data
+repo"; builds on the 0.9.54 archive). Contains 0.9.59 unchanged otherwise. Off until you set it up (DOCS: "History
+upload").
+
+- **Your own data repository, its own token.** Two new options: `history_upload_repo` (a PRIVATE repository you
+  create, e.g. `nine95nine/house-brain-history`; empty = off, the default) and `history_upload_token` (a fine-grained
+  token with Contents read and write on that one repository only; hidden like a password, never logged). The
+  upload uses only that token. The App's own GitHub sign-in is never sent to the data repository, the data token is
+  never sent to the main repository, and the main repository (`github_repo`) is refused as a data repository: the
+  house's code repository stays read-only to the house.
+- **What is uploaded, per archived day, as ONE commit** (`hbm/histupload.py`, GitHub Git Data API: blobs → tree on
+  the branch head → commit → fast-forward the default branch; a failing step changes nothing):
+  `days/YYYY/MM/YYYY-MM-DD.jsonl.xz` (the day, re-encoded with secrets scrubbed; every other value exactly as
+  recorded), its `.meta.json` (the SHA-256 of the Pi's file and of the copy, counts), the summary in **64 shards**
+  `summaries/YYYY/MM/DD/SS.json.gz` (gzip JSON keyed by entity id: rows, first/last time; numbers: min, max, mean,
+  time-weighted mean and a 5-minute series `series5m`; other states: `state_seconds` (top 20) and the number of
+  changes) with `summaries/YYYY/MM/DD/index.json` (shard names, sizes, entities per shard), and `index.json`. Shard
+  rule: `SS = int(sha256(entity_id UTF-8).hexdigest()[:8], 16) % 64`, two digits, the same formula the connector
+  Worker uses so it opens one small file (Cloudflare Free CPU limit). A `README.md` explains the formats in plain
+  English (in the first commit only).
+- **Scrubbed copy.** Attribute keys `entity_picture`, `access_token`, `token`, `api_key`, `password`, `secret` and
+  any key ending `_token`, `_key` or `_secret` are dropped; any text that looks like a secret becomes `[redacted]`.
+  The Pi's archive is never changed. Private domains were never archived in the first place (0.9.54).
+- **Once per day, checked.** A day is uploaded only after its SHA-256 on the Pi matches its meta file;
+  `uploaded.json` in the archive folder remembers what the repository has, so nothing is sent twice. A file over
+  50 MB (GitHub's limit is 100 MB) is skipped with the reason in the job result and in `index.json`.
+- **When.** Right after the nightly archive (02:00–04:59 local), at most 10 days a night, oldest first. Job
+  `HISTORY_UPLOAD` (`from`/`to` UTC days, at most 45; no approval, it writes only your data repository) catches up at
+  once. A refusal or failure shows as a problem ("The nightly history upload could not run") and is retried the next
+  night.
+- Free: about 73 GitHub API calls per uploaded day (one per file blob, then tree, commit, branch update), at most
+  about 730 a night, far inside the 5,000 an hour a token may make; one commit per day.
+
 ## 0.9.59
 
 ESPHome stable switch (owner decision 2026-11-08 **"Switch to stable"**; the last slice of the rules-first updates
