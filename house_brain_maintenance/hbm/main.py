@@ -23,6 +23,7 @@ from .migrate import JOB as MIGRATE_JOB, MigratePolicy, Migrator
 from .scoutmove import JOB as SCOUTMOVE_JOB, ScoutMove
 from .observermove import JOB as OBSMOVE_JOB, TXN as OBSMOVE_TXN, ObserverMove, ObserverMovePolicy
 from .drill import JOB as DRILL_JOB
+from .esphomeswitch import JOB as ESPHOME_JOB, TXN as ESPHOME_TXN, EsphomePolicy, EsphomeSwitch
 from .inspectormove import JOB as INSMOVE_JOB, TXN as INSMOVE_TXN, InspectorMove
 from .journal import Journal
 from .recovery import HEARTBEAT_SECONDS, Recovery, RecoverySettings, run_forever
@@ -403,6 +404,7 @@ class Service:
         self.batch = None                                    # 0.9.57: the weekly tier B batch (tiers)
         self.soak = None                                     # 0.9.58: soak.Soak (72 h after an automatic install)
         self.drill = None                                    # 0.9.58: drill.Drill (monthly restore drill, option)
+        self.esphome = None                                  # 0.9.59: esphomeswitch.EsphomeSwitch (owner "Switch to stable")
         self.update_queue: UpdateQueue | None = None       # 0.8.9: the "updates waiting" list
         self.rate_noted: set[str] = set()                  # 0.8.9: requests waiting for the ask limit (audited once)
         self.free_lane = None                                   # 0.9.29: the free reviewer lane
@@ -617,6 +619,11 @@ class Service:
             self.evidence.soak = self.soak
             self.drill = Drill(self.ha, self.j, settings, self.o.restore_drill, health_seconds=policy.health_seconds,
                                poll=self.poll, busy=lambda: bool(self.j.load_txn()) or bool(self.after is not None and self.after.active()))
+            self.esphome = EsphomeSwitch(self.ha, self.j, settings, EsphomePolicy(                  # 0.9.59
+                watch_seconds=300.0 * scale, poll=self.poll, reask_hours=float(self.o.update_reask_hours)),
+                busy=lambda: bool(self.j.load_txn()) or bool(self.after is not None and self.after.active()))
+            self.esphome.on_done = lambda slug, version, rid: self.soak.start(kind="app", slug=slug, name="ESPHome Device Builder",
+                                                                              rid=rid, to_version=version)
             if self.watcher is not None:
                 self.watcher.evidence = self.evidence
                 self.watcher.update_mode = self.o.update_mode
@@ -867,6 +874,11 @@ class Service:
             if txn.get("kind") == "migrate":
                 out = self.migrator.recover(txn)
                 self.finish(out.request_id, MIGRATE_JOB, f"migrate:{txn.get('new')}", self.o.report_issue or None,
+                            Result(out.result_outcome, out.reasons, out.facts))
+                return
+            if txn.get("kind") == ESPHOME_TXN:            # 0.9.59: the ESPHome stable switch
+                out = self.esphome.recover(txn)
+                self.finish(out.request_id, ESPHOME_JOB, f"esphome:{txn.get('new')}", self.o.report_issue or None,
                             Result(out.result_outcome, out.reasons, out.facts))
                 return
             if txn.get("kind") == OBSMOVE_TXN:            # 0.9.8: the Observer switch to the store
@@ -1168,7 +1180,8 @@ class Service:
                                  **({"free_reviewer": self.free_lane.status()} if self.free_lane is not None else {}),
                                  **({"update_batch": self.batch.status()} if self.batch is not None else {}),    # 0.9.57
                                  **({"soak": self.soak.status()} if self.soak is not None else {}),              # 0.9.58
-                                 **({"restore_drill": self.drill.status()} if self.drill is not None else {})})
+                                 **({"restore_drill": self.drill.status()} if self.drill is not None else {}),
+                                 **({"esphome_switch": self.esphome.status()} if self.esphome is not None else {})})   # 0.9.59
 
     def _publish_family(self) -> None:
         """0.9.30: relay Systems AI's digest into the one family sensor (owner pop-up "Maintenance relays it")."""
@@ -1273,6 +1286,11 @@ class Service:
             if dr is not None:                          # 0.9.58: the monthly restore drill (owner option, phone-approved)
                 self.finish(dr.request_id, DRILL_JOB, f"drill:{dr.facts.get('slug')}",
                             self.o.report_issue or None, Result(dr.result_outcome, dr.reasons, dr.facts))
+                return
+            es = self.esphome.cycle() if self.esphome is not None else None
+            if es is not None:                          # 0.9.59: ESPHome beta -> stable (owner-approved on the phone)
+                self.finish(es.request_id, ESPHOME_JOB, f"esphome:{es.facts.get('stable')}",
+                            self.o.report_issue or None, Result(es.result_outcome, es.reasons, es.facts))
                 return
             # 0.6.0: Core/OS only when no App update ran in this cycle (never in the same run).
             sys_out = self.system.cycle()

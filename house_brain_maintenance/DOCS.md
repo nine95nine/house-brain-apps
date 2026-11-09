@@ -643,7 +643,7 @@ running. If the local copy is running, the store one is stopped, or the backup d
 removed and you are told why (a copy the Supervisor shows as `error` after its stop counts as stopped, from 0.9.44).
 Nothing else is ever uninstalled.
 
-## Rules-first updates: tiers, the evidence card, the weekly batch and the proven undo path — from 0.9.56
+## Rules-first updates: tiers, the evidence card, the weekly batch, the proven undo path and ESPHome stable — from 0.9.56
 
 Your decision of 2026-11-08: updates should not freeze when the paid AI chats are out of tokens. With
 `update_mode: tiers` this App decides small updates itself from **free public checks**, never from an AI's word.
@@ -673,6 +673,11 @@ Your decision of 2026-11-08: updates should not freeze when the paid AI chats ar
   update installs by itself only at a score of 3; below that it waits on the Maintenance page for your Approve
   (each approved update that works adds a point). Every install that ran by itself is watched for 72 hours: an App
   that stops running is reported once, and its automatic updates are held for 90 days.
+- **ESPHome: beta → stable (from 0.9.59, your decision "Switch to stable").** While the ESPHome Device Builder
+  *beta* App is installed and the stable one is not, the phone asks once: "Switch ESPHome to the stable App?".
+  Approve backs the beta up, installs the stable App from the store, copies its three settings, stops the beta
+  (kept, not removed) and starts the stable App. Your device files are shared by both Apps, nothing is copied, and
+  no device is flashed. Any problem puts the beta back automatically. Reject asks again in 30 days.
 - **Monthly restore drill (option `restore_drill: monthly`, off by default).** Once a month this App asks on your
   phone to back up one App and restore it from that backup, proving the undo path really works (the App restarts
   once, its version does not change). Reject or no answer skips the month. The result is on the tracking issue.

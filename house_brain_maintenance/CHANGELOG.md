@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.59
+
+ESPHome stable switch (owner decision 2026-11-08 **"Switch to stable"**; the last slice of the rules-first updates
+pop-up "Yes, build 0.9.56 → 0.9.59 as sliced"). Contains 0.9.58 unchanged otherwise.
+
+- **One owner-approved job, `ESPHOME_STABLE_SWITCH`** (`hbm/esphomeswitch.py`). While the ESPHome Device Builder
+  **beta** App (`5c53de3b_esphome-beta`, or the dev App) is installed and the **stable** App (`5c53de3b_esphome`)
+  is not, this App asks once on the phone: "Switch ESPHome to the stable App?". Approve runs one transaction:
+  partial backup of the beta (version read back) → install the stable App from the store → copy the beta's three
+  settings (`home_assistant_dashboard_integration`, `default_compile_process_limit`, `leave_front_door_open`) →
+  set the beta to manual start and stop it (kept, never uninstalled) → start the stable App → watch until it runs.
+  Any problem after the install: the stable App is stopped, the beta set to start at boot and started again
+  (UNDONE); nothing is lost. The stable App then gets the 0.9.58 72-hour soak watch.
+- **Your device files stay put.** Both Apps come from ESPHome's own repository and both map the Home Assistant
+  configuration folder, so the YAML files under `/config/esphome` are shared: nothing is copied and this App
+  needs no new folder access. **No device is flashed and no ESPHome API is called.**
+- Reject asks again in 30 days; no answer asks again after `update_reask_hours`; dry run reviews only; never while
+  an update or after-update check is open; never when the stable App is already installed. Removing the stopped
+  beta later is a separate owner decision (not built).
+- Guard: the new `esphome_target` allows exactly the switch's calls (the beta's partial backup, the stable App's
+  store install, its three options, boot/stop/start of the two Apps). Status: `esphome_switch`.
+
 ## 0.9.58
 
 Rules-first updates, part 3 (the same owner decision 2026-11-08 **"Tiers A + B"** and pop-up "Yes, build 0.9.56 →

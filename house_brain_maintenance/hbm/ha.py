@@ -789,6 +789,32 @@ def migrate_call_ok(old: str, new: str, remove: bool, method: str, path: str, bo
                               f"/addons/{new}/stop"}
 
 
+ESPHOME_STABLE = "5c53de3b_esphome"
+ESPHOME_BETAS = ("5c53de3b_esphome-beta", "5c53de3b_esphome-dev")
+ESPHOME_OPTION_NAMES = ("home_assistant_dashboard_integration", "default_compile_process_limit", "leave_front_door_open")
+
+
+def esphome_call_ok(old: str, new: str, method: str, path: str, body: Any) -> bool:
+    """0.9.59: True only for the exact calls of one open ``esphome_target`` (the beta's backup, the stable App's
+    store install, its three options, boot/stop/start of the two Apps; bodies compared whole)."""
+    if method == "GET":
+        return path in (f"/addons/{old}/info", f"/addons/{new}/info", f"/store/addons/{new}") \
+            or re.fullmatch(r"/backups/[a-f0-9]{8,64}/info", path) is not None
+    if method != "POST":
+        return False
+    empty = body in (None, {})
+    if path == "/backups/new/partial":
+        return app_backup_body_ok(old, path, body)
+    if path == f"/store/addons/{new}/install":
+        return empty
+    if path == f"/addons/{new}/options":
+        opts = body.get("options") if isinstance(body, dict) and set(body) == {"options"} else None
+        return isinstance(opts, dict) and bool(opts) and set(opts) <= set(ESPHOME_OPTION_NAMES)
+    if path == f"/addons/{old}/options":
+        return body in ({"boot": "manual"}, {"boot": "auto"})
+    return empty and path in {f"/addons/{old}/stop", f"/addons/{old}/start", f"/addons/{new}/start", f"/addons/{new}/stop"}
+
+
 def observer_move_call_ok(old: str, new: str, method: str, path: str, body: Any,
                           names: tuple = OBSERVER_OPTION_NAMES, boot: bool = True) -> bool:
     """0.9.8: True only for the exact calls of one open ``observer_move_target`` (bodies compared whole). 0.9.9: the
@@ -907,6 +933,7 @@ class HomeAssistant:
         self._os_act: dict | None = None          # 0.8.3: {"action", "version", "slot"} while open
         self._pifw: str | None = None             # 0.8.6: the approved Pi firmware version while open
         self._migrate: dict | None = None         # 0.6.6: {"old", "new", "remove"} while open
+        self._esphome: dict | None = None         # 0.9.59: {"old", "new"} while the ESPHome stable switch is open
         self._entity: dict | None = None          # 0.7.0: {"entity_id", "kind", "to", "frm"} while open
         self._stage: str | None = None            # 0.7.4: the allowlisted local App whose source is being staged
         self._key: dict | None = None             # 0.8.0: {"role", "slug", "names"} during one key change
@@ -993,6 +1020,9 @@ class HomeAssistant:
         mig = self._migrate
         if mig is not None and migrate_call_ok(mig["old"], mig["new"], mig["remove"], method, path, body):
             return
+        esw = self._esphome                       # 0.9.59: the ESPHome stable switch
+        if esw is not None and esphome_call_ok(esw["old"], esw["new"], method, path, body):
+            return
         ent = self._entity
         if ent is not None and entity_call_ok(ent, method, path, body):
             return
@@ -1011,7 +1041,7 @@ class HomeAssistant:
 
     def _busy(self) -> bool:
         return any(t is not None for t in (self._target, self._fix, self._system, self._os_act, self._pifw,
-                                           self._migrate, self._legacy, self._obsmove, self._insmove, self._retire,
+                                           self._migrate, self._esphome, self._legacy, self._obsmove, self._insmove, self._retire,
                                            self._entity,
                                            self._stage, self._key, self._energy, self._drive))
 
@@ -1376,6 +1406,37 @@ class HomeAssistant:
             yield
         finally:
             self._migrate = None
+
+    @contextmanager
+    def esphome_target(self, old: str, new: str):
+        """0.9.59: open the ESPHome stable switch calls: exactly one installed beta/dev ESPHome App and the stable one."""
+        if old not in ESPHOME_BETAS or new != ESPHOME_STABLE:
+            raise ForbiddenCall("esphome target")
+        if self._busy():
+            raise ForbiddenCall("nested esphome target")
+        self._esphome = {"old": old, "new": new}
+        try:
+            yield
+        finally:
+            self._esphome = None
+
+    def esphome_options(self, old: str) -> dict:
+        """0.9.59, only inside ``esphome_target``: the beta's options, limited to the three known names."""
+        esw = self._esphome
+        if esw is None or esw["old"] != old:
+            raise ForbiddenCall("esphome options outside the switch")
+        data = self._supervisor("GET", f"/addons/{old}/info")
+        raw = data.get("options") if isinstance(data, dict) else None
+        if not isinstance(raw, dict):
+            return {}
+        return {k: raw[k] for k in ESPHOME_OPTION_NAMES if k in raw and isinstance(raw[k], (bool, int))}
+
+    def set_esphome_options(self, new: str, options: dict) -> None:
+        self._supervisor("POST", f"/addons/{new}/options", body={"options": options}, timeout=60)
+
+    def install_store_app(self, slug: str) -> None:
+        """0.9.59, only inside ``esphome_target``: install one App from the store (the Supervisor pulls the image)."""
+        self._supervisor("POST", f"/store/addons/{slug}/install", body={}, timeout=1800)
 
     @contextmanager
     def legacy_target(self, bslug: str | None = None):
