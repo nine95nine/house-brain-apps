@@ -35,13 +35,16 @@ RE_SELF = re.compile(r'([0-9a-f]{8})_house_brain_systems_ai')
 FAMILY = ('house_brain_energy_ai', 'house_brain_maintenance', 'house_brain_deployer', 'house_brain_ai_access',
           'house_brain_engineering_inspector', 'house_brain_engineering_observer',
           'house_brain_maintenance_inventory_scout', 'house_brain_cooling_ai', 'house_brain_water_ai',
-          'house_brain_house_health_ai', 'house_brain_pool_ai')
+          'house_brain_house_health_ai', 'house_brain_pool_ai', 'house_brain_tang')
 # Apps that serve house_brain_app_health.v1 at GET /health on their ingress port. 0.1.2: Cooling AI
 # (design R1, owner pop-up 2026-10-25 "Approve design") serves it from its first release. 0.1.4: Water AI (owner
 # pop-up 2026-10-31 "Yes, build 0.1.4"), which has served it since 0.1.0. 0.3.10: House Health AI and Pool AI (both
 # installed 2026-11-08, serving it since 0.1.0; owner "All right, what's next? Let's continue").
 HEALTH_PUBLISHERS = frozenset({'house_brain_energy_ai', 'house_brain_cooling_ai', 'house_brain_water_ai',
-                               'house_brain_house_health_ai', 'house_brain_pool_ai'})
+                               'house_brain_house_health_ai', 'house_brain_pool_ai', 'house_brain_tang'})
+# 0.3.11: the Tang key server (installed 2026-11-08, boot on) has no ingress; its /health is on internal port 8099,
+# reachable only from the Supervisor network. Apps with ingress keep using their ingress port.
+FIXED_HEALTH_PORTS = {'house_brain_tang': 8099}
 APP_HEALTH_REASONS = {'DEGRADED': 'APP_HEALTH_DEGRADED', 'FAILED': 'APP_HEALTH_FAILED', 'STALE': 'APP_HEALTH_STALE',
                       'INVALID': 'APP_HEALTH_INVALID', 'UNREACHABLE': 'APP_HEALTH_UNREACHABLE'}
 FAST_S, SLOW_S, HOURLY_S, DAY_S, INSTALLED_REFRESH_S = 60, 300, 3600, 86400, 3600
@@ -352,7 +355,7 @@ class Runtime:
                     continue
                 observed = None
                 if name in HEALTH_PUBLISHERS and info.get('state') == 'started':
-                    port = info.get('ingress_port')
+                    port = info.get('ingress_port') or FIXED_HEALTH_PORTS.get(name)
                     try:
                         raw = self.client.health(info.get('hostname'), port)
                     except TransportError:
