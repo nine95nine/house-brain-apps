@@ -14,6 +14,7 @@ from .web import Ingress
 from .installation import read_private, validate
 from .interlock import safety_interlock
 from .health import Tracker
+from .answers import answer
 
 
 # 0.1.3, owner pop-up 2026-10-24 "Status sensor counts as advice": writing this App's own status entity is
@@ -118,7 +119,8 @@ def main():
         signal.signal(sig,lambda *_:stop.set())
     commands=Queue(maxsize=16)
     tracker=Tracker()
-    ingress=Ingress(lambda:runtime.status,commands,health=lambda:tracker.build(time.time()))
+    ingress=Ingress(lambda:runtime.status,commands,health=lambda:tracker.build(time.time()),
+                    answer=lambda query:answer(tracker,query,time.time()))
     thread=Thread(target=ingress.run,daemon=True)
     thread.start()
     next_tick=0.

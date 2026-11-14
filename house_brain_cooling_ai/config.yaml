@@ -1,5 +1,5 @@
 name: House Brain Cooling AI
-version: "0.1.0"
+version: "0.1.1"
 slug: house_brain_cooling_ai
 description: Shadow twin of the cooling plant. Learns how the house cools, plans each minute
   and scores the plan against what the house did; no commands, no state writes.

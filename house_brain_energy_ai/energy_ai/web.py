@@ -1,4 +1,8 @@
-"""Supervisor ingress only; CSRF-protected local reviews never call equipment."""
+"""Supervisor ingress only; CSRF-protected local reviews never call equipment.
+
+Internal Supervisor network and loopback only (never the LAN): GET /health (house_brain_app_health.v1, 0.1.2)
+and GET /answer?topic=<topic> (house_brain_specialist_answer.v1, 0.1.7: Systems AI's questions, answered from
+the last cycle's status). Every method but GET on /answer is 405."""
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import hmac
 import ipaddress
@@ -24,10 +28,11 @@ def health_peer(address):
 
 
 class Ingress:
-    def __init__(self, status, commands, port=8099, health=None):
+    def __init__(self, status, commands, port=8099, health=None, answer=None):
         self.status=status
         self.commands=commands
         self.health=health
+        self.answer=answer
         self.csrf=secrets.token_urlsafe(32)
         owner=self
         class Handler(BaseHTTPRequestHandler):
@@ -52,6 +57,12 @@ class Ingress:
                 return self.client_address[0] in {"172.30.32.2","127.0.0.1","::1"}
 
             def do_GET(self):
+                route,_,query=self.path.partition("?")
+                if route=="/answer":
+                    # house_brain_specialist_answer.v1 (0.1.7), served exactly like /health.
+                    if owner.answer is None or not health_peer(self.client_address[0]):
+                        return self.respond(403,{"error":"HEALTH_PEER_REFUSED"})
+                    return self.respond(200,owner.answer(query))
                 if self.path=="/health":
                     # house_brain_app_health.v1, read-only, for Systems AI on the internal network.
                     if owner.health is None or not health_peer(self.client_address[0]):
@@ -67,7 +78,17 @@ class Ingress:
                     return self.respond(200,owner.status())
                 return self.respond(404,{"error":"NOT_FOUND"})
 
+            def read_only(self):
+                """/answer is GET only (0.1.7); every other path keeps the default reply for its method."""
+                if self.path.partition("?")[0]=="/answer":
+                    return self.respond(405,{"error":"READ_ONLY_ROUTE"})
+                return self.send_error(501,"Unsupported method (%r)" % self.command)
+
+            do_PUT=do_PATCH=do_DELETE=do_HEAD=do_OPTIONS=read_only
+
             def do_POST(self):
+                if self.path.partition("?")[0]=="/answer":
+                    return self.respond(405,{"error":"READ_ONLY_ROUTE"})
                 if not self.admitted() or not hmac.compare_digest(self.headers.get("X-Energy-CSRF",""),owner.csrf):
                     return self.respond(403,{"error":"INGRESS_CSRF_REQUIRED"})
                 try:

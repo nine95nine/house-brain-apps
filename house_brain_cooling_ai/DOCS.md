@@ -1,6 +1,6 @@
 # House Brain Cooling AI
 
-Version 0.1.0 (shadow). Boot is manual. Only `SHADOW` mode exists. Design:
+Version 0.1.1 (shadow; 0.1.1 adds `GET /answer`, A4). Boot is manual. Only `SHADOW` mode exists. Design:
 `docs/house-brain/COOLING_AI_DESIGN_R1.md` (owner pop-ups 2026-10-25 "learner plus scorecard, plus
 full plan list", "Read Systems AI's archive", "Approve design").
 
@@ -46,6 +46,7 @@ Home Assistant keeps full detail for 40 days. Cooling AI reads older and earlier
   - `GET /health`: its own `house_brain_app_health.v1`, which Systems AI 0.1.2 reads.
   - `GET /digest`: one line of at most 255 characters.
   - `GET /proposals`: always empty in 0.1. Cooling AI never proposes an action; a later "tune the Arbiter" idea would be its own owner decision and a YAML change through the Cooling chat.
+  - `GET /answer?topic=<topic>` (0.1.1, `house_brain_specialist_answer.v1`, design A4 R1, owner pop-up 2026-11-09 "Approve and merge"): Systems AI's questions, answered only from what the App already holds (no Home Assistant read, no network call, no store read). Topics: `self` (its own health detail: reasons, last cycle, inputs, store) and `cooling_data` (missing plant readings, the Arbiter phase, actual mode and shadow plan, the archive day, modes learned, as of the last cycle). The query must be exactly `topic=<topic>`; anything else, or another App's topic, is a 200 `NOT_MY_TOPIC` answer. At most 5 facts of at most 160 characters, each with its evidence and age; `ANSWERED`, `NOTHING_SEEN`, `NOT_CHECKED` (with reasons) or `NOT_MY_TOPIC`. A kill-switch hold, no finished cycle, an unreadable Core API or an overdue loop is `NOT_CHECKED`, never "nothing seen"; missing readings are facts and are also named as not checked. Plant data only, nothing beyond what the page shows, and `authority: NO_EXECUTION_AUTHORITY`.
 - It sends nothing to the phone; A/C Insight's watchdogs and pushes stay in YAML.
 - Any other method (POST, PUT, PATCH, DELETE, HEAD, OPTIONS) gets HTTP 405 `READ_ONLY_APP`.
 

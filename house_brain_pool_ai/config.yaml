@@ -1,5 +1,5 @@
 name: House Brain Pool AI
-version: "0.1.0"
+version: "0.1.1"
 slug: house_brain_pool_ai
 description: Read-only shadow learner for pool chlorine demand, the salt cell, the salt runway and pump
   cost per run; no commands, no state writes.

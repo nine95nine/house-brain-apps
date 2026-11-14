@@ -1,9 +1,11 @@
-"""Read-only HTTP: the ingress page for the owner, and three reads for the internal network.
+"""Read-only HTTP: the ingress page for the owner, and four reads for the internal network.
 
 Ingress (the Supervisor proxy and loopback only): `/` page, `/status` and `/episodes.json` (the
 latest cooling_thermal_episode.v1 records, plant data only).
 Internal Supervisor network and loopback (never the LAN): `/health` (house_brain_app_health.v1,
-read by Systems AI), `/digest` (one line) and `/proposals` (always empty in 0.1). There is no POST
+read by Systems AI), `/digest` (one line) and `/proposals` (always empty in 0.1).
+`/answer?topic=<topic>` (house_brain_specialist_answer.v1, 0.1.1: Systems AI's
+questions, answered from data the App already holds). There is no POST
 route: this App takes no commands.
 """
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -25,9 +27,10 @@ def internal_peer(address):
 
 
 class Server:
-    def __init__(self, status, health, digest, proposals, episodes, port=8099):
+    def __init__(self, status, health, digest, proposals, episodes, port=8099, answer=None):
         owner = self
         self.status, self.health, self.digest, self.proposals, self.episodes = status, health, digest, proposals, episodes
+        self.answer = answer
 
         class Handler(BaseHTTPRequestHandler):
             def setup(self):
@@ -49,6 +52,12 @@ class Server:
 
             def do_GET(self):
                 peer = self.client_address[0]
+                route, _, query = self.path.partition("?")
+                if route == "/answer":
+                    # house_brain_specialist_answer.v1 (0.1.1), served exactly like /health: internal network only.
+                    if owner.answer is None or not internal_peer(peer):
+                        return self.respond(403, {"error": "INTERNAL_PEER_REFUSED"})
+                    return self.respond(200, owner.answer(query))
                 if self.path in ("/health", "/digest", "/proposals"):
                     if not internal_peer(peer):
                         return self.respond(403, {"error": "INTERNAL_PEER_REFUSED"})

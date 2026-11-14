@@ -1,9 +1,10 @@
-"""Read-only HTTP: the ingress page for the owner, and three reads for the internal network.
+"""Read-only HTTP: the ingress page for the owner, and four reads for the internal network.
 
 Ingress (the Supervisor proxy and loopback only): `/` page and `/status`.
 Internal Supervisor network and loopback (never the LAN): `/health` (house_brain_app_health.v1,
 read by Systems AI once it watches House Health AI), `/digest` (one line) and `/proposals` (always
-empty in 0.1). There is no POST route: this App takes no commands.
+empty in 0.1). `/answer?topic=<topic>` (house_brain_specialist_answer.v1, 0.1.1: Systems AI's
+questions, answered from data the App already holds). There is no POST route: this App takes no commands.
 """
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import ipaddress
@@ -24,9 +25,10 @@ def internal_peer(address):
 
 
 class Server:
-    def __init__(self, status, health, digest, proposals, port=8099):
+    def __init__(self, status, health, digest, proposals, port=8099, answer=None):
         owner = self
         self.status, self.health, self.digest, self.proposals = status, health, digest, proposals
+        self.answer = answer
 
         class Handler(BaseHTTPRequestHandler):
             def setup(self):
@@ -48,6 +50,12 @@ class Server:
 
             def do_GET(self):
                 peer = self.client_address[0]
+                route, _, query = self.path.partition("?")
+                if route == "/answer":
+                    # house_brain_specialist_answer.v1 (0.1.1), served exactly like /health: internal network only.
+                    if owner.answer is None or not internal_peer(peer):
+                        return self.respond(403, {"error": "INTERNAL_PEER_REFUSED"})
+                    return self.respond(200, owner.answer(query))
                 if self.path in ("/health", "/digest", "/proposals"):
                     if not internal_peer(peer):
                         return self.respond(403, {"error": "INTERNAL_PEER_REFUSED"})

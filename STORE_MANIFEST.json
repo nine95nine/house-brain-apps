@@ -6,9 +6,9 @@
       "version": "0.1.11-dev"
     },
     "house_brain_cooling_ai": {
-      "files": 20,
-      "source_manifest_sha256": "7bec1b3245874e17d4db0bfcf3f48e4e15ff5642ed35f4c8ec74d765e61d220b",
-      "version": "0.1.0"
+      "files": 22,
+      "source_manifest_sha256": "d74b3fc72cf0e01fe38a6635a27cc3cb008d14f185d7ca7d69b8a2f1fe5cf266",
+      "version": "0.1.1"
     },
     "house_brain_deployer": {
       "files": 65,
@@ -16,9 +16,9 @@
       "version": "0.3.46"
     },
     "house_brain_energy_ai": {
-      "files": 39,
-      "source_manifest_sha256": "052165a13408189b8f714eb99fed11fbbf8117a67c7014ede6c37f1b541c821a",
-      "version": "0.1.6"
+      "files": 41,
+      "source_manifest_sha256": "3796b07eb3d5213316ac573fddbaac764a2b3c6d33a4e2283aaa97f72d0075cc",
+      "version": "0.1.7"
     },
     "house_brain_engineering_inspector": {
       "files": 20,
@@ -31,9 +31,9 @@
       "version": "0.2.5"
     },
     "house_brain_house_health_ai": {
-      "files": 26,
-      "source_manifest_sha256": "e867f30153714f7c7b0c36e6423ab57e1b2949c8dd97ed8820cd51f31c2481fe",
-      "version": "0.1.0"
+      "files": 28,
+      "source_manifest_sha256": "c479144773205b839cb2a134b29508bb87cf7c80c9641929b1f9ac417619c77c",
+      "version": "0.1.1"
     },
     "house_brain_maintenance": {
       "files": 74,
@@ -46,9 +46,9 @@
       "version": "0.1.2"
     },
     "house_brain_pool_ai": {
-      "files": 24,
-      "source_manifest_sha256": "e7763d0ec47566ad6a6a253686b39f81a474e4ce7b447ae2b8331ebbc05fc171",
-      "version": "0.1.0"
+      "files": 26,
+      "source_manifest_sha256": "2fb991403c22bc9ae7e41dbd98ce095c9b01445bc0100edade983d89f57dec21",
+      "version": "0.1.1"
     },
     "house_brain_systems_ai": {
       "files": 37,
@@ -61,12 +61,12 @@
       "version": "0.1.0"
     },
     "house_brain_water_ai": {
-      "files": 22,
-      "source_manifest_sha256": "7e6251815115c699a60f797ebca7224ea6dcbc03e7cb47f9ebdb03ab0279fba3",
-      "version": "0.1.0"
+      "files": 24,
+      "source_manifest_sha256": "4f20b34d31a4d3eadf7c3e5a8a5b850250015fa5f68c05105476486bd181dad5",
+      "version": "0.1.1"
     }
   },
   "schema_version": "house_brain_apps_store_manifest.v1",
-  "source_commit": "70b72700d1cd3cbcde47ee68a0f8252273c8f247",
+  "source_commit": "e3ab1f7f874944146fb085145fc4f502dd7e01a3",
   "source_repository": "private engineering repository"
 }

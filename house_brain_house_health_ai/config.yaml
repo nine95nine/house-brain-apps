@@ -1,5 +1,5 @@
 name: House Brain House Health AI
-version: "0.1.0"
+version: "0.1.1"
 slug: house_brain_house_health_ai
 description: Read-only shadow learner for room baselines, mold risk, outage class, UPS ageing and the
   replacement calendar; no commands, no state writes.

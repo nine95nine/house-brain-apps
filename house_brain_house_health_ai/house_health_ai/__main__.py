@@ -8,6 +8,7 @@ import signal
 from threading import Event, Thread
 import time
 
+from .answers import answer
 from .health import build, digest, proposals
 from .interlock import safety_interlock
 from .runtime import Runtime
@@ -42,7 +43,8 @@ def main():
         signal.signal(sig, lambda *_: stop.set())
     server = Server(lambda: {**runtime.status, 'safety_interlock': runtime.hold or 'ALLOW'},
                     lambda: build(runtime, time.time()), lambda: digest(runtime, time.time()),
-                    lambda: proposals(runtime, time.time()))
+                    lambda: proposals(runtime, time.time()),
+                    answer=lambda query: answer(runtime, query, time.time()))
     thread = Thread(target=server.run, daemon=True)
     thread.start()
     try:

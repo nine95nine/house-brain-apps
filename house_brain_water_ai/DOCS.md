@@ -1,6 +1,6 @@
 # House Brain Water AI
 
-Version 0.1.0 (shadow). Boot is manual. Only `SHADOW` mode exists. Design:
+Version 0.1.1 (shadow; 0.1.1 adds `GET /answer`, A4). Boot is manual. Only `SHADOW` mode exists. Design:
 `docs/house-brain/WATER_AI_DESIGN_R1.md` (owner pop-ups 2026-10-26 "RO + yard ledger, slots
 reserved", "Reserve a slot now", "Separate Apps", "Approve design").
 
@@ -44,6 +44,7 @@ Home Assistant keeps full detail for 40 days. Once started, Water AI reads those
   - `GET /health`: its own `house_brain_app_health.v1`.
   - `GET /digest`: one line of at most 255 characters.
   - `GET /proposals`: always empty in 0.1.
+  - `GET /answer?topic=<topic>` (0.1.1, `house_brain_specialist_answer.v1`, design A4 R1, owner pop-up 2026-11-09 "Approve and merge"): Systems AI's questions, answered only from what the App already holds (no Home Assistant read, no network call, no store read). Topics: `self` (its own health detail: reasons, last cycle, inputs, store) and `water_data` (the RO monitor, the yard timers (zone keys only), the history read; leak sensors and the R7 probes are always named as not checked; as of the last cycle). The query must be exactly `topic=<topic>`; anything else, or another App's topic, is a 200 `NOT_MY_TOPIC` answer. At most 5 facts of at most 160 characters, each with its evidence and age; `ANSWERED`, `NOTHING_SEEN`, `NOT_CHECKED` (with reasons) or `NOT_MY_TOPIC`. A kill-switch hold, no finished cycle, an unreadable Core API or an overdue loop is `NOT_CHECKED`, never "nothing seen"; a missing or unusable input is a fact and is also named as not checked. Nothing beyond what the page shows, and `authority: NO_EXECUTION_AUTHORITY`.
 - It raises no alerts and sends nothing to the phone. v2.2's problem sensors and the planned fish-room notices stay the alert sources.
 - Any other method (POST, PUT, PATCH, DELETE, HEAD, OPTIONS) gets HTTP 405 `READ_ONLY_APP`.
 

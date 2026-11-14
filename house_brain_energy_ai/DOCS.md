@@ -169,3 +169,18 @@ with activity `PAUSED`/`HELD`; an unreadable kill switch, bad inputs, a resource
 failed cycle is not `OK`; before the first cycle it is never `OK`. The answer is HTTP 503 only
 when this App's own loop has not finished a cycle for 3 minutes; there is no Supervisor
 watchdog line (owner decision 2026-10-20: report only).
+
+Specialist answers (0.1.7, `house_brain_specialist_answer.v1`, design A4 R1, owner pop-up
+2026-11-09 "Approve and merge"): `GET /answer?topic=<topic>` answers Systems AI's questions on the
+same internal Supervisor network and loopback as `/health`; the LAN is refused and every other method
+is 405. Topics: `self` (this App's own health detail: reasons, last cycle, inputs, store) and
+`power_data` (the bound load, solar and grid readings and the Sense device count, as of the last
+cycle). The query must be exactly `topic=<topic>`; anything else, or another App's topic, is a 200
+`NOT_MY_TOPIC` answer. An answer is built only from what the App already holds: no Home Assistant
+read, no network call and no store read. At most 5 facts of at most 160 characters, each with its
+evidence (an entity id or an App record, with its time) and age. `ANSWERED`, `NOTHING_SEEN`,
+`NOT_CHECKED` (with the reasons) or `NOT_MY_TOPIC`; a kill-switch hold, no finished cycle, an
+overdue loop or a failed cycle is `NOT_CHECKED`, never "nothing seen". A missing or stale reading
+is a fact and is also named as not checked (for example `load:STALE_OR_FUTURE`). Sense device
+names are never given (counts only), nothing beyond what the page shows, and
+`authority: NO_EXECUTION_AUTHORITY`: the answer is evidence, never advice or a command.

@@ -1,5 +1,5 @@
 name: House Brain Water AI
-version: "0.1.0"
+version: "0.1.1"
 slug: house_brain_water_ai
 description: Read-only learner for the RO tank (in psi) and ledger for the yard hose timers;
   B-hyve keeps control; no commands, no state writes.
