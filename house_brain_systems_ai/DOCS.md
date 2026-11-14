@@ -1,5 +1,7 @@
 # House Brain Systems AI
 
+Version 0.3.12 (shadow). 0.3.12 only refreshes the embedded privacy data-class map: it gains two rows for the AI perimeter's new history-archive tool (`get_history_archive`). The 0.3.11 code is unchanged.
+
 Version 0.3.11 (shadow). 0.3.11 also watches **House Brain Tang**, the small key server that lets the MacBook unlock its disk at home. Tang has no page of its own, so Systems AI reads its health on its internal port. If Tang stops answering, Systems AI shows it on this page and in the family status line and opens a case, so you hear about it before a MacBook reboot would need the passphrase. Starting Tang again stays your tap, and Home Assistant's watchdog also restarts it.
 
 Version 0.3.10 (shadow). 0.3.10 watches the two newest House Brain AIs, **House Health AI** and **Pool AI**, the same way it watches Water AI. It reads each one's health block, shows it on this page and in the family status line Maintenance shows, and opens a case if one fails, goes stale or stops answering. Starting or restarting one stays your tap in Maintenance, as always. This release also puts back the 0.3.8 note below, which an earlier edit had removed.

@@ -1211,6 +1211,20 @@
       "purpose": "DIAGNOSTICS",
       "default_class": "HOUSEHOLD",
       "note": "Perimeter 0.4.12 / Inspector 0.2.24 (#212 / #1455 R6): sanitized Home Assistant storage readiness from the hassio system-health section (no nameservers, App list, URLs or paths) returned to an admitted AI provider; default = strongest declared AI-fabric label."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/get_history_archive/input_schema": {
+      "role": "INPUT",
+      "destination": "LOCAL_PROCESSOR",
+      "purpose": "OPERATIONS",
+      "default_class": "HOUSEHOLD",
+      "note": "Tool arguments (one entity id, one day) supplied by the AI provider and validated locally."
+    },
+    "house_brain_ai_entity_read_plane.v1.json#tools/get_history_archive/output_schema": {
+      "role": "OUTPUT",
+      "destination": "AI_PROVIDER",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "Perimeter 0.4.14 / Maintenance 0.9.60 (#454 / #212): one exported entity's daily summary from the owner's private history archive, only while the current privacy-filtered snapshot exports that id; default = strongest declared AI-fabric label."
     }
   },
   "restricted_ha_domains": {
