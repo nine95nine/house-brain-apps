@@ -1,5 +1,5 @@
 name: House Brain Systems AI
-version: "0.3.14"
+version: "0.3.17"
 slug: house_brain_systems_ai
 description: Read-only overseer of the House Brain Apps and Home Assistant health. Learns,
   forecasts and explains, and watches public security news (10 reads a day); no commands, no state writes.
@@ -22,14 +22,16 @@ panel_icon: mdi:monitor-eye
 ports:
   8791/tcp: 8791
 ports_description:
-  8791/tcp: House link for the MacBook research service (off until link_key and link_peer are set)
+  8791/tcp: House link for the MacBook research service and the O&M investigator (off until link_key and link_peer are set)
 options:
   mode: SHADOW
   stall_reviews: 3
   link_key: ""
   link_peer: ""
+  onm_key: ""
 schema:
   mode: list(SHADOW)
   stall_reviews: int(2,10)
   link_key: password?
   link_peer: str?
+  onm_key: password?

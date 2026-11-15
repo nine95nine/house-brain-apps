@@ -1,5 +1,35 @@
 # House Brain Systems AI
 
+Version 0.3.17 (shadow). 0.3.17 only refreshes the embedded privacy data-class map: it gains one row for the specialist answer contract (`house_brain_specialist_answer.v1.schema.json`, the read-only `/answer` route the specialists already serve). The 0.3.16 code is unchanged.
+
+Version 0.3.16 (shadow). 0.3.16 is three small corrections to the O&M link of 0.3.15. Nothing new is switched on, and the link is still off until you set `onm_key`.
+
+- **A specialist's answer now counts as a lead for O&M.** When one of the specialist AIs answered a question about a problem (0.3.13), the O&M repair record may now list that answer as a possible cause. Before, the record contract did not know this kind of lead and such a case always read "needs an engineer". "Saw nothing unusual" and "not checked" are still never a lead.
+- **An old kill-switch reading holds the link.** The two O&M routes now also hold when Systems AI's last kill-switch reading is more than 3 minutes old or lies in the future (a stuck cycle, a clock that jumped). Before, they held only until the first reading after a start.
+- **One day for both caps.** The limit of 96 stored repair records a day now counts by the Phoenix day, like the findings limit on the same link. It counted by the UTC day before.
+
+No new option, port, read or write. $0.
+
+Version 0.3.15 (shadow). 0.3.15 adds the **O&M link**: two new signed routes on the House link port (8791) for the O&M investigator that will run on the MacBook (design `ONM_A6_INVESTIGATOR_DESIGN_R1_2026-11-14`, step A6.1). **They stay off** until you set a third option, and nothing on the MacBook uses them yet (that is steps A6.2 and A6.3, each with its own approval).
+
+- `onm_key`: a second long random key (32 to 512 characters). Generate it on the MacBook, like `link_key`, and paste it here; it is never shown in chat or the repository. It must be different from `link_key`. It only works when `link_key` and `link_peer` are also set.
+
+What the two routes do:
+
+- **Read cases** (`GET /link/v1/cases`): the live cases and the cases cleared in the last 8 days, each with its checks, what its investigation concluded, its repair record and a revision number. At most 50 cases and 256 KB. While the kill switch holds Systems AI the list is empty and says "held".
+- **Write one repair record** (`POST /link/v1/repair`): the likely cause, what a full repair must achieve and how to prevent a repeat, for one case. Every claim must name its evidence. At most 64 KB each and 96 stored a day. Refused while the kill switch holds Systems AI, and until the first kill-switch reading after a start.
+
+How they are protected:
+
+- Only the MacBook's address (`link_peer`) is answered.
+- Every request and every answer is **signed** (HMAC-SHA256) over its exact contents, with a time (2 minutes of tolerance) and a number that must always go up. The key itself is never sent. A copied, changed, late or replayed message gets 403 and changes nothing.
+- A record written against an older version of a case is refused, so a stale write never overwrites a newer one.
+- A record can never change a case's status, or the two checks Systems AI measures itself (service restored, prevention proven). It fills only the case's O&M repair record.
+
+On the Systems AI page, a case that has a repair record shows it under the case: its state, O&M's two checks (cause corrected, side effects reconciled) with the evidence they rest on, the most likely cause, and any request O&M suggests. Every request stays your tap in Maintenance or the Deployer. The Cases section also shows whether the O&M link is on, how many records were stored today and the last refusal.
+
+Nothing here acts: no command, no Home Assistant write, no internet, no model, $0. Home network only. Daily counts when the MacBook side is running: at most 288 case reads and 96 stored records. To turn the routes off again, clear `onm_key` and restart Systems AI. If the MacBook ever loses its O&M state, set a new `onm_key` on both sides.
+
 Version 0.3.14 (shadow). 0.3.14 adds a **findings channel** to the House link, so the MacBook's weekly reading can reach this page. Once a week (when that research job is built and switched on, a later step) the MacBook asks one fixed public question per area (energy, cooling, water, pool, house health, systems, AI) and follows new small open models and llama.cpp releases. Each result arrives as a "finding" and is shown in a new section, **What the house read this week (untrusted, not checked)**: the area, the question, how many sources on how many sites, the page titles as links, and any source that could not be checked. Model-watch rows show the size and "may fit" or "size unknown" exactly as the MacBook wrote them.
 
 - A finding is reading material, not a checked fact. It never opens a case, never becomes a hypothesis or a suggestion, never reaches Maintenance, O&M or the Deployer, and never downloads or installs anything.

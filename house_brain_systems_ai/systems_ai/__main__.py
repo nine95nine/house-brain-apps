@@ -19,6 +19,7 @@ from . import __version__
 from .transport import Client, PublicClient
 from .web import Server
 from . import link
+from . import onm_link
 from .readings import parse_ids as readings_parse_ids
 from .interlock import ENTITY as KILL_ENTITY
 
@@ -59,6 +60,10 @@ def main():
     # 0.3.5 House link: only when the owner set both link_key and link_peer (design MACBOOK_HOUSE_LINK_R1).
     linked = link.configured(options)
     link_server = None
+    # 0.3.15 (A6.1): the O&M investigator's two signed routes, only when the owner also set onm_key.
+    onm_key = onm_link.configured(options, linked)
+    if onm_key:
+        runtime.onm.enable(onm_key)
     if linked:
         link_server = link.LinkServer(
             linked[0], linked[1],
@@ -67,7 +72,8 @@ def main():
             health=lambda: build(runtime, time.time()), held=lambda: runtime.hold is not None,
             inbox=runtime.inbox, day=lambda: time.strftime('%Y-%m-%d', time.gmtime()),
             readings=lambda ids: runtime.readings.view(time.time(), ids), parse_ids=readings_parse_ids,
-            findings=runtime.finding_inbox, finding_day=link.phoenix_day)      # 0.3.14 (A3b) POST /link/v1/findings
+            findings=runtime.finding_inbox, finding_day=link.phoenix_day,      # 0.3.14 (A3b) POST /link/v1/findings
+            onm_key=onm_key, onm=runtime.desk.submit if onm_key else None)
         Thread(target=link_server.run, daemon=True).start()
     try:
         while not stop.is_set():

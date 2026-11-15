@@ -430,6 +430,13 @@
         }
       }
     },
+    "house_brain_specialist_answer.v1.schema.json": {
+      "role": "OUTPUT",
+      "destination": "HOUSE_BRAIN_LOCAL",
+      "purpose": "DIAGNOSTICS",
+      "default_class": "HOUSEHOLD",
+      "note": "A4 (#1665): a specialist App's read-only answer to one Systems AI question, served on the internal Supervisor network only, like /health. Facts come from what the App already holds; the builder refuses person, presence, place, camera, lock, alarm and media ids."
+    },
     "house_brain_ai_benchmark_evidence.v1.schema.json": {
       "role": "RECORD",
       "destination": "HOUSE_BRAIN_LOCAL",

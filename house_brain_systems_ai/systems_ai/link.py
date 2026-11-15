@@ -21,6 +21,9 @@ Routes:
   answers), and kept by findings.py only as reading material for the owner. A finding never reaches a case, an
   investigation, a hypothesis, a suggestion, O&M, Maintenance or the Deployer.
 
+- ``GET /link/v1/cases`` and ``POST /link/v1/repair`` (0.3.15, A6.1): the O&M investigator's two signed routes
+  (onm_link.py). Off until the owner also sets ``onm_key``. They are checked by signature, not by ``link_key``.
+
 While Systems AI is held, questions are empty and answers and findings are refused (409). Nothing here can call a Home Assistant
 service, write a state or start, stop or change anything. Control authority stays NONE.
 """
@@ -33,6 +36,8 @@ import re
 import threading
 import time
 import urllib.parse
+
+from . import onm_link
 
 PORT = 8791
 MAX_BODY = 64 * 1024
@@ -358,7 +363,7 @@ class LinkServer:
     """state(), questions(), health() return dicts; held() says whether Systems AI is held; inbox takes answers."""
 
     def __init__(self, key, peer, state, questions, health, held, inbox, day, port=PORT, host='0.0.0.0',
-                 readings=None, parse_ids=None, findings=None, finding_day=phoenix_day):
+                 readings=None, parse_ids=None, findings=None, finding_day=phoenix_day, onm_key=None, onm=None):
         token = ('Bearer ' + key).encode()
         owner = self
 
@@ -386,7 +391,43 @@ class LinkServer:
                 given = (self.headers.get('Authorization') or '').encode()
                 return hmac.compare_digest(given, token)
 
+            def signed(self, method):
+                """0.3.15 (A6.1): the two O&M routes. True when this request was answered here. Only from the
+                peer address, only with ``onm_key`` set, and only with a valid signature over the exact body."""
+                if owner.onm is None or onm_key is None or self.client_address[0] != peer \
+                        or self.path not in onm_link.ROUTES:
+                    return False
+                if onm_link.ROUTES[self.path] != method:
+                    self.respond(405, {'error': 'METHOD_NOT_ALLOWED'})
+                    return True
+                try:
+                    length = int(self.headers.get('Content-Length') or '0')
+                except ValueError:
+                    length = -1
+                if length < 0 or length > onm_link.MAX_REPAIR_BYTES or (method == 'GET' and length):
+                    self.respond(413 if length > 0 else 400)
+                    return True
+                body = self.rfile.read(length) if length else b''
+                header = onm_link.precheck(onm_key, self.headers.get(onm_link.SIGNED_HEADER), body, method,
+                                           self.path, int(time.time() * 1000))
+                if header is None:
+                    self.respond(403)
+                    return True
+                code, signed, raw = owner.onm(method, self.path, header, body)
+                self.send_response(code)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Cache-Control', 'no-store')
+                if signed is not None:
+                    self.send_header(onm_link.SIGNED_HEADER, json.dumps(signed, sort_keys=True, separators=(',', ':')))
+                self.send_header('Content-Length', str(len(raw)))
+                self.end_headers()
+                if raw:
+                    self.wfile.write(raw)
+                return True
+
             def do_GET(self):
+                if self.signed('GET'):
+                    return
                 if not self.allowed():
                     return self.respond(403)
                 if self.path == '/link/v1/state':
@@ -403,6 +444,8 @@ class LinkServer:
                 return self.respond(404, {'error': 'NOT_FOUND'})
 
             def do_POST(self):
+                if self.signed('POST'):
+                    return
                 if not self.allowed():
                     return self.respond(403)
                 if self.path == '/link/v1/findings' and owner.findings is not None:
@@ -459,6 +502,7 @@ class LinkServer:
         self.state, self.questions, self.health, self.held = state, questions, health, held
         self.readings, self.parse_ids = readings, parse_ids         # 0.3.6 GET /link/v1/readings
         self.findings, self.finding_day = findings, finding_day     # 0.3.14 POST /link/v1/findings (off when None)
+        self.onm = onm                                              # 0.3.15 the O&M desk (onm_link.Desk.submit)
         self.server = ThreadingHTTPServer((host, port), Handler)
         self.server.daemon_threads = True
         self.server.timeout = 2

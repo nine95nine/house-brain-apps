@@ -29,6 +29,7 @@ from .learn import trend, days_until, freeze, score, hourly
 from .logs import LogLearner
 from . import playbooks
 from . import link
+from . import onm_link
 from . import readings as readings_mod
 from . import specialists
 from .radar import Radar
@@ -55,6 +56,7 @@ FIXED_HEALTH_PORTS = {'house_brain_tang': 8099}
 APP_HEALTH_REASONS = {'DEGRADED': 'APP_HEALTH_DEGRADED', 'FAILED': 'APP_HEALTH_FAILED', 'STALE': 'APP_HEALTH_STALE',
                       'INVALID': 'APP_HEALTH_INVALID', 'UNREACHABLE': 'APP_HEALTH_UNREACHABLE'}
 FAST_S, SLOW_S, HOURLY_S, DAY_S, INSTALLED_REFRESH_S = 60, 300, 3600, 86400, 3600
+ONM_READING_MAX_S = 3 * FAST_S      # 0.3.16: an older kill-switch reading holds the O&M routes (180 s, as the house rule)
 PROPOSE_AFTER_S = 900
 # 0.2.3 (owner pop-up 2026-11-01 "Systems AI 0.2.3 alarm"): AI Access publishes the kill switch. When it stops, the
 # switch goes stale and every House Brain AI holds, including this App's own reads, so nobody saw it (live 2026-11-01).
@@ -179,6 +181,8 @@ class Runtime:
         self.finding_inbox = link.FindingInbox()                 # 0.3.14 House link: findings in (their own cap)
         self.findings = Findings(self.store)                     # 0.3.14: newest 50 for 30 days, page only
         self.readings = readings_mod.Readings()                   # 0.3.6 House link: privacy-filtered readings
+        self.onm = onm_link.OnmLink(self.store)                   # 0.3.15 (A6.1): the O&M investigator's signed routes
+        self.desk = onm_link.Desk()                               # 0.3.15: HTTP threads hand requests to this thread
         self.registry_rows = None
         # 0.2.1: the World Change Radar; without a public client it reads nothing ("not checked yet").
         self.public = public
@@ -462,9 +466,20 @@ class Runtime:
         self.archive.prune(now)
 
     # -- one loop step -----------------------------------------------------------------------
+    def serve_onm(self, now):
+        """0.3.15 (A6.1): answer the O&M investigator's waiting signed requests, on this thread only. Held means the
+        kill switch holds Systems AI, or no kill-switch reading has been taken yet since start, or (0.3.16) the last
+        reading is older than three fast cycles or lies in the future (a stuck cycle, a stepped clock): unknown
+        always holds."""
+        # last['fast'] is 0 until the first reading, which is far older than the limit: held.
+        held = self.hold is not None or not 0 <= now - self.last['fast'] <= ONM_READING_MAX_S
+        return self.desk.serve(lambda method, path, header, body: self.onm.handle(
+            method, path, header, body, now=now, held=held, cases=self.cases, investigations=self.investigations))
+
     def step(self, now):
         start = time.monotonic()
         failed = False
+        self.serve_onm(now)
         try:
             if now - self.last['fast'] >= FAST_S:
                 self.fast(now)
@@ -495,6 +510,7 @@ class Runtime:
                 # fresh one (one handshake per slow cycle at most).
                 self.client.close()
                 self.finish(now)
+                self.serve_onm(now)
             else:
                 return self.status
         except Exception:  # noqa: BLE001 - any failure is reported, never acted on
@@ -583,6 +599,7 @@ class Runtime:
             'open_problems': result['open'], 'hidden_by_parent': result['hidden_by_parent'],
             'flapping': result['flapping'], 'incidents': self.incidents.recent(), 'cases': cases, 'investigations': investigations,
             'specialist_questions': {**self.asker.report(now), 'held': held},
+            'onm_link': self.onm.report(),
             'playbooks': {**matched, 'library': playbooks.library(), 'authority': playbooks.AUTHORITY},
             'world_changes': {**self.radar.report(now), 'last_read': self.radar_last},
             'findings': self.findings.report(now),               # 0.3.14: the page's "What the house read" only
