@@ -1,5 +1,15 @@
 # House Brain Systems AI
 
+Version 0.3.13 (shadow). 0.3.13 lets Systems AI **ask the specialist AIs** about a problem. When an investigation is about something one of the five specialists knows best, Systems AI asks that App one read-only question and shows its answer under the investigation as a "SPECIALIST" line:
+
+- an Energy AI, Cooling AI, Water AI, House Health AI or Pool AI problem (stopped, failing, unhealthy) asks that App about its own health;
+- unusual errors from Sense or Enphase ask Energy AI about power data; Ecobee or a cooling integration asks Cooling AI; Rachio or B-hyve asks Water AI; NUT (the UPS), Ping, Netgear or Google Wifi asks House Health AI; njsPC, AquaRite, Ondilo or Jandy asks Pool AI;
+- anything else asks nobody. Systems AI never guesses who to ask.
+
+The line reads, for example, "Energy AI says (2 facts): …", "Energy AI saw nothing unusual in power data", or "Energy AI: not checked (reason)". No answer, a refused or unreadable answer, or an answer older than two hours always reads **not checked**, never "nothing wrong". The line sits below a matching playbook and above public research. It is evidence only: it never adds a suggestion, never acts, and a "not checked" or "nothing unusual" line does not count as an explanation.
+
+Limits: at most one question per investigation per hour, at most 24 questions a day to each specialist (the count survives a restart), only to an App that is running, and nothing at all while the kill switch holds Systems AI. Each question is one GET on the internal Supervisor network, on the same address and port as the App's health check; no new port, no internet, no Home Assistant read, $0. A problem that comes only from Home Assistant's WebSocket being unreadable is not sent to House Health AI: Systems AI has no outage signal of its own to tell an outage from a plain read failure.
+
 Version 0.3.12 (shadow). 0.3.12 only refreshes the embedded privacy data-class map: it gains two rows for the AI perimeter's new history-archive tool (`get_history_archive`). The 0.3.11 code is unchanged.
 
 Version 0.3.11 (shadow). 0.3.11 also watches **House Brain Tang**, the small key server that lets the MacBook unlock its disk at home. Tang has no page of its own, so Systems AI reads its health on its internal port. If Tang stops answering, Systems AI shows it on this page and in the family status line and opens a case, so you hear about it before a MacBook reboot would need the passphrase. Starting Tang again stays your tap, and Home Assistant's watchdog also restarts it.

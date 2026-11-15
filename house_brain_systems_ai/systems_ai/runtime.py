@@ -7,6 +7,9 @@ the archive keeper reads one entity-day of cooling history (archive.py), so at m
 0.2.1: at the two daily slots the World Change Radar makes at most one outside read per cycle
 (radar.py), 10 a day at most, none while held. Proposals are counted in a shadow scorecard and offered read-only to Maintenance; only
 Maintenance, after the owner's Approve, can carry one out.
+0.3.13 (A4): for a live investigation whose problem keys match the fixed routing table, Systems AI asks that specialist
+App one read-only question (GET /answer on its /health host and port), at most one an hour per investigation and 24 a
+day per specialist, never while held, only to a started App (specialists.py). The answer is evidence, never an action.
 """
 import re
 import resource
@@ -24,6 +27,7 @@ from .logs import LogLearner
 from . import playbooks
 from . import link
 from . import readings as readings_mod
+from . import specialists
 from .radar import Radar
 from .store import Store
 from .transport import TransportError, ESPHOME_SLUGS
@@ -166,6 +170,8 @@ class Runtime:
         self.incidents = Incidents(self.store)
         self.cases = Cases(self.store)
         self.investigations = Investigations(self.store)        # 0.3.0 (agentic design step A1)
+        self.asker = specialists.Asker(self.store)               # 0.3.13 (A4): specialist questions
+        self.targets = {}                                        # 0.3.13: specialist App -> state, host, port
         self.inbox = link.Inbox()                                # 0.3.5 House link: research answers in
         self.readings = readings_mod.Readings()                   # 0.3.6 House link: privacy-filtered readings
         self.registry_rows = None
@@ -317,6 +323,7 @@ class Runtime:
     def slow(self, now):
         problems = {}
         apps = {}
+        targets = {}
         try:
             self.discover(now)
             sup = self.client.info('/info')
@@ -354,8 +361,11 @@ class Runtime:
                     apps[slug] = {'name': name, 'state': 'UNREADABLE'}
                     continue
                 observed = None
+                port = info.get('ingress_port') or FIXED_HEALTH_PORTS.get(name)
+                if name in specialists.NAMES:
+                    # 0.3.13 (A4): a specialist is asked on the same host and port as its /health.
+                    targets[name] = {'state': info.get('state'), 'hostname': info.get('hostname'), 'port': port}
                 if name in HEALTH_PUBLISHERS and info.get('state') == 'started':
-                    port = info.get('ingress_port') or FIXED_HEALTH_PORTS.get(name)
                     try:
                         raw = self.client.health(info.get('hostname'), port)
                     except TransportError:
@@ -375,6 +385,7 @@ class Runtime:
                     self.incidents.slo('app:' + name, info.get('state') == 'started'
                                        and (observed is None or observed['status'] == 'OK'), now)
         self.view['apps'] = apps
+        self.targets = targets
         try:
             self.logs.observe(self.client.ws({'type': 'system_log/list'}), now)
             issues = self.client.ws({'type': 'repairs/list_issues'})
@@ -541,6 +552,9 @@ class Runtime:
         research = self.inbox.take()          # 0.3.5: applied on this thread only; dropped while held
         if research and not held:
             self.investigations.add_research(research, now)
+        if not held:
+            # 0.3.13 (A4): read-only specialist questions for live routed investigations; none while held.
+            self.asker.step(self.investigations, self.cases.state['cases'], self.targets, self.client, now, held)
         investigations = self.investigations.update(self.cases.state['cases'], self.incidents.state['incidents'], now,
                                                     held, matched)
         forecasts = {}
@@ -557,6 +571,7 @@ class Runtime:
             'physical_actions': False, 'control_authority': 'NONE', 'hold_reason': self.hold,
             'open_problems': result['open'], 'hidden_by_parent': result['hidden_by_parent'],
             'flapping': result['flapping'], 'incidents': self.incidents.recent(), 'cases': cases, 'investigations': investigations,
+            'specialist_questions': {**self.asker.report(now), 'held': held},
             'playbooks': {**matched, 'library': playbooks.library(), 'authority': playbooks.AUTHORITY},
             'world_changes': {**self.radar.report(now), 'last_read': self.radar_last},
             'error_budgets': self.incidents.slo_report(now), 'forecasts': forecasts,

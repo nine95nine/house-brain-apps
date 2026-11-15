@@ -13,6 +13,7 @@ from .health import build, digest, proposals
 from .interlock import safety_interlock
 from .investigations import stall_threshold
 from . import radar  # noqa: F401 - 0.2.1: the World Change Radar runs only inside Runtime.step, behind gate()
+from . import specialists  # noqa: F401 - 0.3.13 (A4): specialist questions run only inside Runtime.finish, never while held
 from .runtime import Runtime
 from . import __version__
 from .transport import Client, PublicClient

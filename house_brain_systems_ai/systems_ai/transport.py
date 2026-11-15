@@ -30,6 +30,10 @@ RE_ADDON_INFO = re.compile(r'/addons/(?:local|[0-9a-f]{8})_house_brain_[a-z0-9_]
 ESPHOME_SLUGS = ('5c53de3b_esphome', '5c53de3b_esphome-beta', '5c53de3b_esphome-dev')
 ESPHOME_INFO = frozenset(f'/addons/{s}/info' for s in ESPHOME_SLUGS)
 RE_HOSTNAME = re.compile(r'[a-z0-9][a-z0-9-]{0,62}')
+# 0.3.13 (A4, design docs/house-brain/A4_SPECIALIST_QUESTIONS_DESIGN_R1_2026-11-09.md): a specialist's answer is at
+# most 4096 bytes (house_brain_specialist_answer.v1); one byte more is read so an over-long body is refused, not cut.
+RE_TOPIC = re.compile(r'[a-z][a-z0-9_]{0,31}')
+ANSWER_MAX_BYTES = 4096
 # Read-only Core WebSocket commands, each with exactly these keys.
 WS_ALLOW = {'system_log/list': {'type'}, 'repairs/list_issues': {'type'},
             'system_health/info': {'type'}, 'recorder/list_statistic_ids': {'type'},
@@ -151,6 +155,21 @@ class Client:
             raw = error.read(4097)
             return raw if error.code == 503 else None
         except (OSError, ValueError, TransportError):
+            return None
+
+    def answer(self, hostname, port, topic):
+        """0.3.13 (A4): a specialist's house_brain_specialist_answer.v1 body (bytes, read bounded), or None when it
+        does not answer. One read-only GET of exactly /answer?topic=<topic> on the internal Supervisor network, on the
+        same host and port as its /health; no token, no other path, no Home Assistant call."""
+        if type(port) is not int or not 1 <= port <= 65535 or not isinstance(hostname, str) \
+                or not RE_HOSTNAME.fullmatch(hostname) or not isinstance(topic, str) or not RE_TOPIC.fullmatch(topic):
+            raise TransportError('ANSWER_TARGET_REFUSED')
+        request = urllib.request.Request(f'http://{hostname}:{port}/answer?topic={topic}', method='GET')
+        self.calls += 1
+        try:
+            with self.opener.open(request, timeout=5) as response:
+                return response.read(ANSWER_MAX_BYTES + 1)
+        except (OSError, ValueError):
             return None
 
     def history(self, entity, start, end):

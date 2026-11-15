@@ -28,11 +28,18 @@ Agent Framework port). At the threshold (option stall_reviews, default 3, 2..10)
 reason CASE_STALLED_NO_PROGRESS and asks for a re-plan or the owner's answer, through the page and the family
 digest Maintenance already relays. It never retries faster, adds no read and no request, takes no action and never
 changes authority. Facts are kept as short digests, at most 64 per investigation; a closed one keeps none.
+
+0.3.13 (A4, design docs/house-brain/A4_SPECIALIST_QUESTIONS_DESIGN_R1_2026-11-09.md) adds SPECIALIST lines: for a case
+whose problem keys match the fixed routing table (specialists.py), the specialist App's validated answer, ranked below a
+matching playbook and above public research. Only an ANSWERED answer explains a case; nothing seen, not checked, no
+answer or an invalid answer never does and never reads as "nothing wrong". A SPECIALIST line never gives the recommended
+request and never satisfies the ledger: proposals and suggestions are unchanged. The ledger reads a SPECIALIST line by its
+stable fact id (route, status, evidence ids without times), so an hourly re-ask with only newer ages is not progress.
 """
 import hashlib
 import json
 
-from . import link, playbooks
+from . import link, playbooks, specialists
 
 OPEN_AFTER_WARNING_S = 3600
 EXPIRE_S = 7 * 86400
@@ -112,8 +119,9 @@ class Investigations:
             if case['status'] not in LIVE:
                 item.update(status='CLOSED', closed_at=now, outcome=case['status'])
                 continue
-            item['answer'] = answer(case, by_id.get(case['id']), cases, matched, item.get('research'))
-            item['status'] = 'ANSWERED' if item['answer']['hypotheses'] else 'NEEDS_ENGINEER'
+            item['answer'] = answer(case, by_id.get(case['id']), cases, matched, item.get('research'),
+                                    item.get('specialist'), now)
+            item['status'] = 'NEEDS_ENGINEER' if item['answer']['abstained'] else 'ANSWERED'
             if self._ledger(item, case, now):
                 item['status'] = 'STALLED'
             if now >= item['expires_at']:
@@ -199,9 +207,10 @@ class Investigations:
                         'or the Deployer.'}
 
 
-def answer(case, incident, cases, matched=None, research=None):
+def answer(case, incident, cases, matched=None, research=None, specialist=None, now=None):
     """T0: evidence, case memory and ranked hypotheses. Deterministic; every claim cites evidence ids.
-    0.3.3: a matching playbook (a solved real case) ranks first and gives the recommended request."""
+    0.3.3: a matching playbook (a solved real case) ranks first and gives the recommended request.
+    0.3.13: SPECIALIST lines (specialists.lines) come next, above research; they never give a request."""
     evidence = [f'case:{case["id"]}'] + [f'problem:{k}' for k in case['problems'][:10]]
     known = playbooks.for_case(case['problems'], matched or {})
     keys = set(case['problems'])
@@ -215,6 +224,7 @@ def answer(case, incident, cases, matched=None, research=None):
     similar = similar[:MAX_SIMILAR]
     hyps = [{'kind': 'PLAYBOOK', 'text': f"Known case: {m['title']}. {m['request']}",
              'evidence': [f"playbook:{m['playbook']}"] + m['evidence'][:2]} for m in known[:2]]
+    hyps += specialists.lines(case['problems'], specialist, now)
     if research and research.get('items'):
         # 0.3.5 House link: public research from the MacBook, always untrusted evidence, never an instruction.
         # 0.3.8 (idea register X2): sources are counted once per page, and one site alone is never corroboration.
@@ -254,10 +264,12 @@ def answer(case, incident, cases, matched=None, research=None):
         hyps.append({'kind': 'HYPOTHESIS', 'text': f'{k} holds or hides other work; the rest may follow from it.',
                      'evidence': [f'problem:{k}']})
     recommended = case['suggested'][0] if case.get('suggested') else None
-    return {'tier': 'T0', 'evidence': evidence[:20], 'similar': similar, 'hypotheses': hyps[:MAX_HYPOTHESES],
+    hyps = hyps[:MAX_HYPOTHESES]
+    explaining = [h for h in hyps if h.get('explains', True)]     # a not-checked/nothing-seen line explains nothing
+    return {'tier': 'T0', 'evidence': evidence[:20], 'similar': similar, 'hypotheses': hyps,
             'recommended': recommended, 'playbooks': list(dict.fromkeys(m['playbook'] for m in known)),
-            'confidence': hyps[0]['kind'] if hyps else 'NEEDS_ENGINEER',
-            'abstained': not hyps}
+            'confidence': explaining[0]['kind'] if explaining else 'NEEDS_ENGINEER',
+            'abstained': not explaining}
 
 
 # -- 0.3.4 progress ledger helpers (W26-C6) ----------------------------------------------------------------------
@@ -266,7 +278,7 @@ def facts(ans, case):
     case's status and the suggestion. A new id since the last review is progress."""
     out = list(ans['evidence']) + [f"similar:{s['case']}:{s['status']}" for s in ans['similar']]
     out += [f'playbook:{p}' for p in ans['playbooks']]
-    out += [f"hypothesis:{h['kind']}:{h['text']}" for h in ans['hypotheses']]
+    out += [f"hypothesis:{h['kind']}:{h.get('fact', h['text'])}" for h in ans['hypotheses']]
     out.append(f"case_status:{case['status']}")
     if ans['recommended']:
         out.append(f"recommended:{ans['recommended'].get('kind')}:{ans['recommended'].get('target')}")
@@ -279,7 +291,8 @@ def digest(fact):
 
 def fingerprint(ans):
     """The answer itself (hypotheses and suggestion), so an answer that comes back to an earlier one is a loop."""
-    raw = json.dumps([[h['kind'], h['text']] for h in ans['hypotheses']] + [ans['recommended']], sort_keys=True)
+    raw = json.dumps([[h['kind'], h.get('fact', h['text'])] for h in ans['hypotheses']] + [ans['recommended']],
+                     sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
