@@ -66,7 +66,8 @@ def main():
             questions=lambda: link.questions_view(runtime.status, runtime.cases.state['cases']),
             health=lambda: build(runtime, time.time()), held=lambda: runtime.hold is not None,
             inbox=runtime.inbox, day=lambda: time.strftime('%Y-%m-%d', time.gmtime()),
-            readings=lambda ids: runtime.readings.view(time.time(), ids), parse_ids=readings_parse_ids)
+            readings=lambda ids: runtime.readings.view(time.time(), ids), parse_ids=readings_parse_ids,
+            findings=runtime.finding_inbox, finding_day=link.phoenix_day)      # 0.3.14 (A3b) POST /link/v1/findings
         Thread(target=link_server.run, daemon=True).start()
     try:
         while not stop.is_set():

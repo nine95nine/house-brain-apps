@@ -15,8 +15,13 @@ Routes:
 - ``GET /link/v1/health``: Systems AI's own house_brain_app_health.v1 block.
 - ``GET /link/v1/readings[?ids=a,b]`` (0.3.6): the privacy-filtered entity snapshot (readings.py), ids only without a query,
   at most 50 entities with one.
+- ``POST /link/v1/findings`` (0.3.14, A3b design R1 §4, owner pop-up 2026-11-15 "Approve and merge"): one
+  ``house_brain_research_finding.v1`` per request, from the weekly curiosity routine (``cq-<role>-<yyyy>w<ww>``) or the AI
+  model watch (``mw-<yyyy>w<ww>``). Validated as strictly as an answer, at most 20 a Phoenix day (separate from the 120
+  answers), and kept by findings.py only as reading material for the owner. A finding never reaches a case, an
+  investigation, a hypothesis, a suggestion, O&M, Maintenance or the Deployer.
 
-While Systems AI is held, questions are empty and answers are refused (409). Nothing here can call a Home Assistant
+While Systems AI is held, questions are empty and answers and findings are refused (409). Nothing here can call a Home Assistant
 service, write a state or start, stop or change anything. Control authority stays NONE.
 """
 from collections import deque
@@ -26,6 +31,7 @@ import ipaddress
 import json
 import re
 import threading
+import time
 import urllib.parse
 
 PORT = 8791
@@ -48,6 +54,17 @@ RESULT_KEYS = frozenset({'schema', 'task', 'role', 'question', 'status', 'items'
 RESULT_REQUIRED = frozenset({'schema', 'task', 'status', 'items', 'permission', 'authority'})
 ITEM_KEYS = frozenset({'title', 'url', 'source', 'date', 'untrusted'})
 SOURCE_KEYS = frozenset({'source', 'status', 'code'})
+# 0.3.14 (A3b design R1 §4): the findings route. Exactly these keys, each once, at every level.
+FINDING_SCHEMA = 'house_brain_research_finding.v1'
+FINDING_KEYS = frozenset({'schema', 'id', 'role', 'kind', 'question', 'status', 'items', 'not_checked', 'permission',
+                          'authority'})
+FINDING_ROLES = ('energy', 'cooling', 'water', 'pool', 'house_health', 'systems', 'ai')
+KIND_BY_PREFIX = {'cq': 'CURIOSITY', 'mw': 'MODEL_WATCH'}          # id prefix -> kind; they must agree
+RESEARCH_STATUS = ('FOUND', 'NOTHING_FOUND', 'NOT_CHECKED', 'QUESTION_REFUSED')
+FINDING_MAX_ITEMS = 10
+FINDINGS_PER_DAY = 20                                                # a Phoenix day; separate from ANSWERS_PER_DAY
+RE_FINDING_ID = re.compile(r'(?:cq-(?P<role>[a-z_]{2,12})|mw)-20[0-9]{2}w(?:0[1-9]|[1-4][0-9]|5[0-3])')
+PHOENIX_OFFSET_S = 7 * 3600                                          # Arizona keeps UTC-7 all year
 
 
 def canonical_url(url):
@@ -153,6 +170,77 @@ def validate(doc):
             'untrusted': True, 'authority': 'NO_EXECUTION_AUTHORITY'}
 
 
+def _finding_text(value, limit, field):
+    try:
+        return _text(value, limit, field)
+    except LinkError:
+        raise LinkError('FINDING_FIELD_INVALID:' + field) from None
+
+
+def _finding_url(value):
+    try:
+        return _url(value)
+    except LinkError:
+        raise LinkError('FINDING_URL_INVALID') from None
+
+
+def validate_finding(doc):
+    """0.3.14: one curiosity or model-watch finding, reduced to what the page shows. Untrusted reading material only:
+    it carries no task, so it can never be matched to an investigation."""
+    if not isinstance(doc, dict) or doc.get('schema') != FINDING_SCHEMA:
+        raise LinkError('FINDING_SCHEMA_INVALID')
+    if doc.keys() != FINDING_KEYS:
+        raise LinkError('FINDING_FIELDS_INVALID')
+    if (doc.get('permission'), doc.get('authority')) != ('READ_RESEARCH_ONLY', 'NO_EXECUTION_AUTHORITY'):
+        raise LinkError('FINDING_AUTHORITY_INVALID')
+    fid = doc.get('id')
+    match = RE_FINDING_ID.fullmatch(fid) if isinstance(fid, str) else None
+    if match is None:
+        raise LinkError('FINDING_ID_INVALID')                      # an inv- id belongs on /answers, never here
+    if doc.get('role') not in FINDING_ROLES:
+        raise LinkError('FINDING_ROLE_INVALID')
+    if match.group('role') not in (None, doc.get('role')):
+        raise LinkError('FINDING_ROLE_INVALID')                    # cq-<role>-... names its own role
+    if doc.get('kind') != KIND_BY_PREFIX.get(fid[:2]):
+        raise LinkError('FINDING_KIND_INVALID')
+    if doc.get('status') not in RESEARCH_STATUS:
+        raise LinkError('FINDING_STATUS_INVALID')
+    question = _finding_text(doc.get('question'), TEXT['title'], 'question')
+    items = doc.get('items')
+    if not isinstance(items, list) or len(items) > FINDING_MAX_ITEMS:
+        raise LinkError('FINDING_ITEMS_INVALID')
+    kept = []
+    for it in items:
+        if not isinstance(it, dict) or not it.keys() <= ITEM_KEYS:
+            raise LinkError('FINDING_FIELDS_INVALID')
+        if it.get('untrusted') is not True:
+            raise LinkError('FINDING_ITEM_NOT_UNTRUSTED')
+        kept.append({'title': _finding_text(it.get('title', ''), TEXT['title'], 'title'),
+                     'url': _finding_url(it.get('url')),
+                     'source': _finding_text(it.get('source', ''), TEXT['source'], 'source'),
+                     'date': _finding_text(it.get('date') or '', TEXT['date'], 'date')})
+    rows = doc.get('not_checked')
+    if not isinstance(rows, list) or len(rows) > MAX_ITEMS:
+        raise LinkError('FINDING_SOURCES_INVALID')
+    not_checked = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.keys() <= SOURCE_KEYS or row.get('status') not in SOURCE_STATUS:
+            raise LinkError('FINDING_SOURCES_INVALID')
+        code = row.get('code') or ''
+        if not isinstance(code, str) or not RE_CODE.fullmatch(code):
+            raise LinkError('FINDING_SOURCES_INVALID')
+        not_checked.append({'source': _finding_text(row.get('source', ''), TEXT['source'], 'source'),
+                            'status': row['status'], 'code': code})
+    return {'id': fid, 'role': doc['role'], 'kind': doc['kind'], 'question': question, 'status': doc['status'],
+            'items': kept, 'not_checked': not_checked, 'untrusted': True, 'authority': 'NO_EXECUTION_AUTHORITY'}
+
+
+def phoenix_day(now=None):
+    """The Phoenix calendar day (UTC-7, no daylight saving) the findings cap counts in."""
+    at = time.time() if now is None else now
+    return time.strftime('%Y-%m-%d', time.gmtime(at - PHOENIX_OFFSET_S))
+
+
 def _no_constant(_):
     raise LinkError('ANSWER_NOT_JSON')
 
@@ -199,6 +287,43 @@ class Inbox:
             return out
 
 
+def parse_finding(raw):
+    """0.3.14: the same strict parser as an answer (no NaN/Infinity, no key twice at any depth), finding codes."""
+    try:
+        return parse_answer(raw)
+    except LinkError as error:
+        if str(error) == 'ANSWER_DUPLICATE_KEY':
+            raise LinkError('FINDING_DUPLICATE_KEY') from None
+        raise LinkError('FINDING_NOT_JSON') from None
+
+
+class FindingInbox:
+    """0.3.14: findings waiting for the runtime thread. Its own count: 20 a Phoenix day, never the answers' 120.
+    Over the cap nothing is queued."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.queue = []
+        self.day = None
+        self.accepted = 0
+
+    def put(self, finding, day):
+        with self.lock:
+            if self.day != day:
+                self.day, self.accepted = day, 0
+            if self.accepted >= FINDINGS_PER_DAY:
+                raise LinkError('FINDING_DAILY_CAP')
+            if len(self.queue) >= FINDINGS_PER_DAY:
+                raise LinkError('FINDING_QUEUE_FULL')
+            self.accepted += 1
+            self.queue.append(finding)
+
+    def take(self):
+        with self.lock:
+            out, self.queue = self.queue, []
+            return out
+
+
 def state_view(status, states, kill_entity):
     """What the MacBook needs to decide whether it may work. App states only, no household readings."""
     row = (states or {}).get(kill_entity) if isinstance(states, dict) else None
@@ -233,7 +358,7 @@ class LinkServer:
     """state(), questions(), health() return dicts; held() says whether Systems AI is held; inbox takes answers."""
 
     def __init__(self, key, peer, state, questions, health, held, inbox, day, port=PORT, host='0.0.0.0',
-                 readings=None, parse_ids=None):
+                 readings=None, parse_ids=None, findings=None, finding_day=phoenix_day):
         token = ('Bearer ' + key).encode()
         owner = self
 
@@ -280,6 +405,8 @@ class LinkServer:
             def do_POST(self):
                 if not self.allowed():
                     return self.respond(403)
+                if self.path == '/link/v1/findings' and owner.findings is not None:
+                    return self.post_finding()
                 if self.path != '/link/v1/answers':
                     return self.respond(404, {'error': 'NOT_FOUND'})
                 if owner.held():
@@ -300,6 +427,30 @@ class LinkServer:
                     return self.respond(422, {'error': 'ANSWER_NOT_JSON'})
                 return self.respond(202, {'accepted': True, 'authority': 'NO_EXECUTION_AUTHORITY'})
 
+            def post_finding(self):
+                """0.3.14: one finding. Held 409, over 64 KB 413, invalid 422, over the daily cap 429; only a
+                valid finding under the cap is queued, and only for the findings store."""
+                is_held = owner.held()
+                if is_held:
+                    return self.respond(409, {'error': 'HELD'})
+                try:
+                    size = int(self.headers.get('Content-Length') or '-1')
+                except ValueError:
+                    size = -1
+                if not 0 <= size <= MAX_BODY:
+                    return self.respond(413, {'error': 'FINDING_TOO_LARGE'})
+                try:
+                    finding = validate_finding(parse_finding(self.rfile.read(size)))
+                    owner.findings.put(finding, owner.finding_day())
+                except LinkError as error:
+                    code = str(error)
+                    return self.respond(429 if code in ('FINDING_DAILY_CAP', 'FINDING_QUEUE_FULL') else 422,
+                                        {'error': code})
+                except (ValueError, UnicodeDecodeError):
+                    return self.respond(422, {'error': 'FINDING_NOT_JSON'})
+                return self.respond(202, {'accepted': True, 'kind': finding['kind'],
+                                          'authority': 'NO_EXECUTION_AUTHORITY'})
+
             def refuse(self):
                 return self.respond(405, {'error': 'METHOD_NOT_ALLOWED'})
 
@@ -307,6 +458,7 @@ class LinkServer:
 
         self.state, self.questions, self.health, self.held = state, questions, health, held
         self.readings, self.parse_ids = readings, parse_ids         # 0.3.6 GET /link/v1/readings
+        self.findings, self.finding_day = findings, finding_day     # 0.3.14 POST /link/v1/findings (off when None)
         self.server = ThreadingHTTPServer((host, port), Handler)
         self.server.daemon_threads = True
         self.server.timeout = 2

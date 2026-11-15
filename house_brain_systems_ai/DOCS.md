@@ -1,5 +1,13 @@
 # House Brain Systems AI
 
+Version 0.3.14 (shadow). 0.3.14 adds a **findings channel** to the House link, so the MacBook's weekly reading can reach this page. Once a week (when that research job is built and switched on, a later step) the MacBook asks one fixed public question per area (energy, cooling, water, pool, house health, systems, AI) and follows new small open models and llama.cpp releases. Each result arrives as a "finding" and is shown in a new section, **What the house read this week (untrusted, not checked)**: the area, the question, how many sources on how many sites, the page titles as links, and any source that could not be checked. Model-watch rows show the size and "may fit" or "size unknown" exactly as the MacBook wrote them.
+
+- A finding is reading material, not a checked fact. It never opens a case, never becomes a hypothesis or a suggestion, never reaches Maintenance, O&M or the Deployer, and never downloads or installs anything.
+- The route is `POST /link/v1/findings`, on the same port, address and key as the other House link routes, and it is off while the link is off. Each finding is checked strictly: only the known fields, none twice, only `https` links, at most 10 links, every link marked untrusted, read-only permission and no execution authority. An investigation id (`inv-…`) is refused here.
+- Limits: 64 KB a request and 20 findings a Phoenix day (separate from the 120 research answers); over the cap the MacBook gets "429" and nothing is kept. While the kill switch holds Systems AI, findings are refused ("409").
+- Systems AI keeps the newest 50 findings for 30 days in its own database. A finding for the same area and week replaces the earlier one. Findings that drop off are counted on the page.
+- Nothing new is read from the internet by the Pi, and nothing costs money ($0).
+
 Version 0.3.13 (shadow). 0.3.13 lets Systems AI **ask the specialist AIs** about a problem. When an investigation is about something one of the five specialists knows best, Systems AI asks that App one read-only question and shows its answer under the investigation as a "SPECIALIST" line:
 
 - an Energy AI, Cooling AI, Water AI, House Health AI or Pool AI problem (stopped, failing, unhealthy) asks that App about its own health;

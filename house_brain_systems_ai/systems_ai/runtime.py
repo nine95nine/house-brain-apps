@@ -10,6 +10,8 @@ Maintenance, after the owner's Approve, can carry one out.
 0.3.13 (A4): for a live investigation whose problem keys match the fixed routing table, Systems AI asks that specialist
 App one read-only question (GET /answer on its /health host and port), at most one an hour per investigation and 24 a
 day per specialist, never while held, only to a started App (specialists.py). The answer is evidence, never an action.
+0.3.14 (A3b): findings from the House link's /link/v1/findings go to their own store (findings.py) and the page only;
+they never reach cases, investigations, hypotheses, suggestions, O&M, Maintenance or the Deployer.
 """
 import re
 import resource
@@ -20,6 +22,7 @@ from . import __version__
 from . import app_health
 from .archive import Archive
 from .cases import Cases
+from .findings import Findings
 from .incidents import Incidents
 from .investigations import Investigations
 from .learn import trend, days_until, freeze, score, hourly
@@ -173,6 +176,8 @@ class Runtime:
         self.asker = specialists.Asker(self.store)               # 0.3.13 (A4): specialist questions
         self.targets = {}                                        # 0.3.13: specialist App -> state, host, port
         self.inbox = link.Inbox()                                # 0.3.5 House link: research answers in
+        self.finding_inbox = link.FindingInbox()                 # 0.3.14 House link: findings in (their own cap)
+        self.findings = Findings(self.store)                     # 0.3.14: newest 50 for 30 days, page only
         self.readings = readings_mod.Readings()                   # 0.3.6 House link: privacy-filtered readings
         self.registry_rows = None
         # 0.2.1: the World Change Radar; without a public client it reads nothing ("not checked yet").
@@ -552,6 +557,12 @@ class Runtime:
         research = self.inbox.take()          # 0.3.5: applied on this thread only; dropped while held
         if research and not held:
             self.investigations.add_research(research, now)
+        found = self.finding_inbox.take()     # 0.3.14 (A3b): to the findings store only, never to investigations
+        if found and held:
+            self.findings.drop_held(found)
+        elif found:
+            self.findings.add(found, now)
+        self.findings.prune(now)
         if not held:
             # 0.3.13 (A4): read-only specialist questions for live routed investigations; none while held.
             self.asker.step(self.investigations, self.cases.state['cases'], self.targets, self.client, now, held)
@@ -574,6 +585,7 @@ class Runtime:
             'specialist_questions': {**self.asker.report(now), 'held': held},
             'playbooks': {**matched, 'library': playbooks.library(), 'authority': playbooks.AUTHORITY},
             'world_changes': {**self.radar.report(now), 'last_read': self.radar_last},
+            'findings': self.findings.report(now),               # 0.3.14: the page's "What the house read" only
             'error_budgets': self.incidents.slo_report(now), 'forecasts': forecasts,
             'changes': self.incidents.state['changes'][-30:], 'proposals': self.proposals,
             'proposal_scorecard': self.store.get('proposal_scorecard', {}),
