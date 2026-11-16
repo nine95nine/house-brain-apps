@@ -266,7 +266,9 @@ def fit(mode, pts):
     if line is None:
         return {**base, 'status': 'LEARNING', 'band': None}
     slope, intercept = line
-    out = {**base, 'slope': slope, 'intercept': intercept}
+    # 0.2.0: the training range of the drive, so a counterfactual far outside what was learned is not priced.
+    out = {**base, 'slope': slope, 'intercept': intercept,
+           'x_min': min(x for x, _ in train), 'x_max': max(x for x, _ in train)}
     if len(held) < MIN_HOLDOUT:
         return {**out, 'status': 'EARLY', 'band': None}
     errors = [abs(y - (slope * x + intercept)) for x, y in held]

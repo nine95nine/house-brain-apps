@@ -98,6 +98,20 @@ def predict(model, row, t_in=None):
     return model['slope'] * x + model['intercept'], model['band']
 
 
+SUPPORT_MARGIN_F = 3.0      # how far past the learned drive range a counterfactual may still be priced
+
+
+def in_support(model, row, t_in=None):
+    """True when this minute's drive lies within the model's training range (± SUPPORT_MARGIN_F).
+
+    A model without a recorded range (learned before 0.2.0) is treated as in support until the next hourly
+    relearn records one; an unknown drive is out of support."""
+    if not model or 'x_min' not in model or 'x_max' not in model:
+        return bool(model)
+    x = drive(model['mode'], row, t_in)
+    return x is not None and model['x_min'] - SUPPORT_MARGIN_F <= x <= model['x_max'] + SUPPORT_MARGIN_F
+
+
 def drive(mode, row, t_in=None):
     t_in = row.get('t_in') if t_in is None else t_in
     other = row.get('wb') if mode == 'WET_EVAP' else row.get('t_out')
@@ -165,6 +179,7 @@ class Scorecard:
                                                                        'minutes': 0, 'bank_covered_minutes': 0,
                                                                        'bank_unknown_minutes': 0}})
         rec['codes'][code] = rec['codes'].get(code, 0) + minutes
+        outcome = None
         actual = actual_mode(row)
         if ai in MODES and self.last.get('ai') in MODES and ai != self.last['ai']:
             rec['ai_switches'] += 1
@@ -177,32 +192,39 @@ class Scorecard:
             if shadow is not None:
                 rec['shadow_compared'] += minutes
                 rec['shadow_agree'] += minutes if shadow == ai else 0
-            self._simulate(rec['sim'], row, ai, actual, code, models, power, minutes)
+            outcome = self._simulate(rec['sim'], row, ai, actual, code, models, power, minutes)
         else:
             self.sim = {'t_sim': None}
         self._prune(now)
         self.store.put('scorecard:days', self.days)
         self.store.put('scorecard:sim', self.sim)
         self.store.put('scorecard:last', self.last)
+        return outcome
 
     def _simulate(self, sim, row, ai, actual, code, models, power, minutes):
-        """SIMULATED: during a disagreement, follow a shadow indoor temperature under Cooling AI's plan."""
+        """SIMULATED: during a disagreement, follow a shadow indoor temperature under Cooling AI's plan.
+
+        Returns this minute's outcome for the regret ledger (house minus Cooling AI), or None when the minute
+        could not be simulated. The day totals in sim are exactly what 0.1 kept."""
         target, t_in = target_of(row), row.get('t_in')
         if code == 'AGREE' or target is None or t_in is None:
             self.sim = {'t_sim': None}
-            return
+            return None
         t_sim = self.sim.get('t_sim')
         t_sim = t_in if t_sim is None else t_sim
         mode_model = models.get('IDLE' if ai == 'IDLE' else ai)
         rate = predict(mode_model, row, t_sim) if mode_model and mode_model.get('status') == 'LEARNED' else None
         if rate is None:
             self.sim = {'t_sim': None}
-            return
+            return None
         hours = minutes / 60.
         run_h = self.sim.get('run_h', 0.) + hours
         t_sim = t_sim + rate[0] * hours
-        sim['ai_degree_h'] += max(0., t_sim - target) * hours
-        sim['house_degree_h'] += max(0., t_in - target) * hours
+        ai_deg, house_deg = max(0., t_sim - target) * hours, max(0., t_in - target) * hours
+        sim['ai_degree_h'] += ai_deg
+        sim['house_degree_h'] += house_deg
+        outcome = {'degree_h_delta': house_deg - ai_deg, 'priced': False, 'bank_covered': False,
+                   'in_support': in_support(mode_model, row, t_sim)}
         # The shadow temperature's band widens with the time it has been integrated (band × run hours).
         sim['band_degree_h'] += rate[1] * run_h * hours
         sim['minutes'] += minutes
@@ -215,9 +237,13 @@ class Scorecard:
                 sim['bank_unknown_minutes'] += minutes          # unknown is not $0
             elif on_peak == 'on' and bank > 0:
                 sim['bank_covered_minutes'] += minutes
+                outcome['bank_covered'] = True
             elif row.get('price') is not None and on_peak in ('on', 'off'):
-                sim['cost_delta'] += (ai_kw - house_kw) * hours * row['price']
+                delta = (ai_kw - house_kw) * hours * row['price']
+                sim['cost_delta'] += delta
+                outcome.update(priced=True, cost_delta_usd=-delta)
         self.sim = {'t_sim': t_sim, 'run_h': run_h}
+        return outcome
 
     def _prune(self, now):
         keep = {local_day(now - n * 86400) for n in range(KEEP_DAYS)}

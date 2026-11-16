@@ -72,6 +72,8 @@ class Server:
                     return self.respond(200, page, "text/html; charset=utf-8")
                 if self.path == "/status":
                     return self.respond(200, owner.status())
+                if self.path == "/regret.json":
+                    return self.respond(200, owner.status().get("regret") or {})
                 if self.path == "/episodes.json":
                     return self.respond(200, owner.episodes())
                 return self.respond(404, {"error": "NOT_FOUND"})

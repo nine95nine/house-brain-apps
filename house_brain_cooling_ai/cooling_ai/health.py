@@ -67,7 +67,8 @@ def _words(code):
 
 
 def digest(runtime, now):
-    """One line (<= 255 characters): today's agreement and how many models are learned. Counts only."""
+    """One line (<= 255 characters): today's agreement, the 7-day top regret rule (0.2.0) and how many models
+    are learned. Counts, a rule name and a SIMULATED dollar figure only."""
     me = build(runtime, now)
     status = runtime.status
     if me['activity'] == 'HELD':
@@ -86,6 +87,10 @@ def digest(runtime, now):
                 parts.append('top difference: ' + _words(today['top_differences'][0]['code']))
         else:
             parts.append('no comparable minutes yet today')
+        top = (((status.get('regret') or {}).get('windows') or {}).get('7d') or {}).get('top') or []
+        if top:
+            parts.append(f"7-day top rule: {_words(top[0]['reason'])} ({top[0]['verdict'].lower()}, "
+                         f"${top[0]['cost_delta_usd']:.2f} simulated)")
         models = status.get('models') or {}
         parts.append(f"{sum(m.get('status') == 'LEARNED' for m in models.values())}/4 modes learned")
     text = f'Cooling AI {state}: ' + ('; '.join(parts) if parts else 'no current reading') + '.'

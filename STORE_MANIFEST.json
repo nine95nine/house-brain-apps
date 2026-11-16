@@ -6,9 +6,9 @@
       "version": "0.1.11-dev"
     },
     "house_brain_cooling_ai": {
-      "files": 22,
-      "source_manifest_sha256": "d74b3fc72cf0e01fe38a6635a27cc3cb008d14f185d7ca7d69b8a2f1fe5cf266",
-      "version": "0.1.1"
+      "files": 23,
+      "source_manifest_sha256": "310c6740198681a5eb9fb056c6597f89c279413d693578f853fb0ebbb0c3d73e",
+      "version": "0.2.0"
     },
     "house_brain_deployer": {
       "files": 65,
@@ -67,6 +67,6 @@
     }
   },
   "schema_version": "house_brain_apps_store_manifest.v1",
-  "source_commit": "5624fbca1ac05563ceacee3f3cd890a391a746b4",
+  "source_commit": "05785c85aee3cd301c31b1d2eb41d62821bfe5e3",
   "source_repository": "private engineering repository"
 }

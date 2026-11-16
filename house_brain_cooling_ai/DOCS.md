@@ -1,6 +1,6 @@
 # House Brain Cooling AI
 
-Version 0.1.1 (shadow; 0.1.1 adds `GET /answer`, A4). Boot is manual. Only `SHADOW` mode exists. Design:
+Version 0.2.0 (shadow; 0.1.1 added `GET /answer`, A4; 0.2.0 adds the regret ledger). Boot is manual. Only `SHADOW` mode exists. Design:
 `docs/house-brain/COOLING_AI_DESIGN_R1.md` (owner pop-ups 2026-10-25 "learner plus scorecard, plus
 full plan list", "Read Systems AI's archive", "Approve design").
 
@@ -42,6 +42,21 @@ Home Assistant keeps full detail for 40 days. Cooling AI reads older and earlier
 ## Outputs
 
 - **Ingress page** (sidebar): plain words first, full evidence behind "tap to open", and `/episodes.json` (the latest episodes).
+- **Regret ledger** (0.2.0, owner pop-up 2026-11-16 "Approve, build 0.2.0"; proposal `docs/architecture/COOLING_AI_0_2_0_REGRET_LEDGER_PROPOSAL_2026-11-16.md`).
+  - Shown on the page section "Which rules cost the most" and in `/regret.json` (ingress only).
+  - Each comparable minute is charged to the Arbiter's own `REASON`, with the scorecard code and the weather band (outdoor °F and dew point, 5 °F steps).
+  - A disagreement minute adds the scorecard's SIMULATED increments, house minus Cooling AI. Minutes that cannot be priced (no learned model, power or price, unknown EPR-6 bank) are counted and add no dollars.
+  - A minute whose drive lies outside the learned model's training range (± 3 °F) is **not priced** (`out_of_support_minutes`): the model would be extrapolating.
+  - Rolling 7- and 28-day top 5, ranked by a one-sided 90 % **lower bound** on the window cost, with each evidence day treated as one draw:
+    - `REGRET` only when the lower bound is above $0 and the house was not cooler;
+    - `COMFORT_TRADE` when the lower bound is above $0 but the house was kept cooler;
+    - `NOT_PROVEN` when the point estimate is positive but the lower bound is not, which includes any rule with fewer than 3 evidence days (`evidence: THIN`);
+    - `BELOW_FLOOR` under $0.25 in the window, not ranked;
+    - `MODEL_NOT_QUALIFIED` when nothing could be priced.
+  - `rules` lists up to 20 rules seen, most costly first, for the evidence view.
+  - Kept 120 local days, at most 400 rows a day (the excess folds into one `OTHER` row, still counted).
+  - The digest adds the 7-day top rule.
+  - `/proposals` stays empty.
 - **Internal network only** (the /23 holding the Supervisor proxy address, and loopback; never the LAN):
   - `GET /health`: its own `house_brain_app_health.v1`, which Systems AI 0.1.2 reads.
   - `GET /digest`: one line of at most 255 characters.

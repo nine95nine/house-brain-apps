@@ -12,9 +12,10 @@ import resource
 import time
 
 from . import __version__
-from .entities import ALL_NUMBERS, ALL_TEXTS, ARCHIVE_KEYS, CONTEXT, MODES, actual_mode, number, token
+from .entities import ALL_NUMBERS, ALL_TEXTS, ARCHIVE_KEYS, CONTEXT, MODES, actual_mode, decision, number, token
 from .learn import LEARN_KEYS, Boost, Forecasts, Grid, Minutes, Overnight, archive_rows, learn
 from .plan import ZONE, Scorecard, compare, local_day, plan, precool_value, target_of
+from .regret import Ledger
 from .store import Store
 from .transport import TransportError
 
@@ -53,6 +54,7 @@ class Runtime:
         self.grid = Grid(self.store)
         self.minutes = Minutes()
         self.scorecard = Scorecard(self.store)
+        self.ledger = Ledger(self.store)
         self.forecasts = Forecasts(self.store)
         self.overnight = Overnight(self.store)
         self.boost = Boost(self.store)
@@ -104,7 +106,9 @@ class Runtime:
         power = (self.learned or {}).get('power', {})
         ai, why = plan(row, models, self.ai)
         code = compare(row, ai, now)
-        self.scorecard.add(row, ai, code, models, power, now)
+        outcome = self.scorecard.add(row, ai, code, models, power, now)
+        d = decision(row.get('decision'))
+        self.ledger.add(d['reason'] if d else None, code, row, outcome, now)
         self.now = {'plan': ai, 'why': why, 'code': code, 'actual': actual_mode(row), 'target': target_of(row),
                     't_in': row.get('t_in'), 'phase': row.get('phase'), 'decision': row.get('decision')}
         self.ai = ai if ai in MODES else None
@@ -232,7 +236,7 @@ class Runtime:
                 'models': learned.get('models'), 'ac_response': learned.get('ac_response'),
                 'epsilon': learned.get('epsilon'), 'power_kw': learned.get('power'),
                 'prices': learned.get('prices'), 'precool': learned.get('precool'),
-                'scorecard': self.scorecard.report(now), 'forecast_1h': self.forecasts.report(),
+                'scorecard': self.scorecard.report(now), 'regret': self.ledger.report(now), 'forecast_1h': self.forecasts.report(),
                 'forecast_overnight': self.overnight.report(), 'humid_boost': self.boost.report(),
                 'archive': {'days_waiting': waiting,
                             'days': {s: sum(r.get('status') == s for r in self.archive.values())
