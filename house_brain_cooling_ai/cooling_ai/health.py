@@ -87,6 +87,9 @@ def digest(runtime, now):
                 parts.append('top difference: ' + _words(today['top_differences'][0]['code']))
         else:
             parts.append('no comparable minutes yet today')
+        ledger = getattr(runtime, 'commissioning', None)
+        if ledger is not None:
+            parts.append(ledger.token(now)[:40])        # 0.3.0, before the regret part so it is never cut
         top = (((status.get('regret') or {}).get('windows') or {}).get('7d') or {}).get('top') or []
         if top:
             parts.append(f"7-day top rule: {_words(top[0]['reason'])} ({top[0]['verdict'].lower()}, "

@@ -1,6 +1,6 @@
 # House Brain Cooling AI
 
-Version 0.2.0 (shadow; 0.1.1 added `GET /answer`, A4; 0.2.0 adds the regret ledger). Boot is manual. Only `SHADOW` mode exists. Design:
+Version 0.3.0 (shadow; 0.1.1 added `GET /answer`, A4; 0.2.0 added the regret ledger; 0.3.0 adds the natural commissioning ledger and the shadow comfort readout). Boot is manual. Only `SHADOW` mode exists. Design:
 `docs/house-brain/COOLING_AI_DESIGN_R1.md` (owner pop-ups 2026-10-25 "learner plus scorecard, plus
 full plan list", "Read Systems AI's archive", "Approve design").
 
@@ -57,6 +57,34 @@ Home Assistant keeps full detail for 40 days. Cooling AI reads older and earlier
   - Kept 120 local days, at most 400 rows a day (the excess folds into one `OTHER` row, still counted).
   - The digest adds the 7-day top rule.
   - `/proposals` stays empty.
+- **Natural commissioning ledger** (0.3.0, owner pop-ups 2026-11-16 "Approve ...", "Yes, read both", "Build now, hints as 0.3.1"; proposal `docs/architecture/COOLING_AI_0_3_0_COMMISSIONING_LEDGER_PROPOSAL_2026-11-16.md`).
+  - Shown on the page section "How each start went (commissioning)" and in `/commissioning.json` (ingress only).
+  - **A start** is 30 clean idle minutes, then vent, wet evap or A/C by the house itself. A wet start may pass through a pump-only pre-wet of up to 10 minutes. The App never starts anything.
+  - **Its response** is read to the earlier of 30 minutes or the mode's own stop (at least 15 minutes), less the drift already under way before the start: the change in the indoor temperature slope and in the indoor dew-point slope.
+  - **Not judged, counted by reason:** owner override or safety, Pause, a transfer from another cooling mode, a short run, a gap, a missing input, more than 8 starts in a day.
+  - **Starts from before the first 0.3.0 run only build the baseline** (`BASELINE`) and are never judged. For those days only the Arbiter owner and decision can be checked, because Pause, panic and the evap mode are not in the archive.
+  - **Band:** a robust line of the response against the drive on 4 days in 5, with a one-sided 90 % lower band from the fifth. It is used only with 20 held-out starts on 5 held-out days, and only inside the learned drive range ± 3 °F.
+  - **Verdict, made once and kept:** `NORMAL`, `LOW_RESPONSE`, `NO_BASELINE`, `BASELINE`, `BAND_MISCALIBRATED`. A later relearn never changes a stored verdict. Low starts never re-enter a fit.
+  - **Pattern** (after 2 low starts on 2 days and 2 of the last 3 judged starts; 2 normal starts clear it). A pattern says what was measured and names no part:
+    - `WET_LIKE_VENT`: a wet start cooled like a fan-only start and added almost no moisture;
+    - `BOTH_REDUCED`: a wet start cooled less and added less moisture than usual;
+    - `TEMP_ONLY_LOW`: a wet start cooled less while moisture rose as usual;
+    - `VENT_LOW`, `AC_LOW`: a fan-only or A/C start cooled less than usual;
+    - `ROOM_FLAT`: one room reading did not change at all while the other room moved.
+    - With a wet-bulb depression under 10 °F the moisture signal is not used. A/C never uses it.
+  - **Drift:** once a mode has 30 starts over 10 days, that fit is frozen as its season anchor. The last 28 days are compared with it: `STEADY`, `WEAKER` (even the upper bound is below zero) or `NOT_PROVEN`.
+  - **Self-check:** when more than 30 % of a mode's last 20 judged starts were low and lows alternate with normals, the band is not trusted: the mode reads `BAND_MISCALIBRATED` and shows no pattern until that clears.
+  - **Kept:** one store row per local day, at most 8 starts a day, not expired by the 120-day rule. At 1.5 MB the ledger stops adding and says `COMMISSIONING_STORE_FULL`; nothing is deleted.
+  - **Limit:** it compares the house with its own past. A fault that was already there while the baseline was learned looks normal. Held history starts about 2026-09-16, so most modes read "no baseline yet" until summer 2027.
+  - The digest adds one token of at most 40 characters (`starts: ok`, `starts: no baseline`, `starts: WET low 2/3`).
+- **Shadow comfort readout** (0.3.0). Page section "Comfort (shadow model)". MODELLED.
+  - The ASHRAE 55 adaptive band from the mean of the previous 7 days' outdoor temperature, beside the Arbiter's fixed target: how many minutes above the target were still inside the 90 % and 80 % bands, for idle, vent and wet evap.
+  - Valid only for a 7-day outdoor mean of 50–92.3 °F; otherwise `OUT_OF_RANGE` and no claim.
+  - A minute with indoor dew point above 62 °F, or unknown, is never counted acceptable.
+  - Room air speed is not measured. The air-movement credit (+2.2 °F on HIGH fan) is a separate "if air speed is at least 0.6 m/s" column, never a claim.
+  - The applicability range and the credit are as recalled from the standard; the primary text was not retrieved, and the output says so.
+  - **It feeds nothing:** not the plan, the scorecard, the regret ledger or any proposal.
+- **Two more readings** (0.3.0, owner pop-up "Yes, read both"): `sensor.living_room_temperature` and `sensor.master_bedroom_temperature`, the number only, kept in the App's own 5-minute rows for 120 days. They are not in Systems AI's archive, so they have no history before 0.3.0.
 - **Internal network only** (the /23 holding the Supervisor proxy address, and loopback; never the LAN):
   - `GET /health`: its own `house_brain_app_health.v1`, which Systems AI 0.1.2 reads.
   - `GET /digest`: one line of at most 255 characters.
@@ -73,12 +101,13 @@ Every cycle reads `sensor.house_brain_ai_kill_switch_effective`. FULL_STOP holds
 
 - About 1,450 local requests a day: states each minute (1,440), plus one Supervisor lookup of Systems AI an hour at most (24), plus archive days. While catching up it reads one day a minute (up to 120 reads once); after that, 1 a day. Without Systems AI it adds only the hourly lookup. No external calls and no paid API.
 - Python standard library only.
-- 256 MiB address cap. App-owned SQLite (mode 0600, at most 96 MB): 5-minute rows for 120 days (about 27 MB), models, a 14-day scorecard, and 600 frozen forecasts.
+- 256 MiB address cap. App-owned SQLite (mode 0600, at most 96 MB): 5-minute rows for 120 days (about 27 MB), models, a 14-day scorecard, 600 frozen forecasts, and the start ledger (at most 1.5 MB).
 - The hourly relearn reads back only the keys learning needs. With a full 120 days it peaked at 94 MB resident and about 1.4 s on the build machine, and it also completes under a 160 MiB address cap. The Pi figure is measured after install.
 
-## Not in 0.1
+## Not in 0.1 to 0.3
 
-- Any action, proposal, YAML suggestion, push or Home Assistant sensor.
+- Any action, proposal, YAML suggestion, push, notice or Home Assistant sensor.
+- Naming a part, airflow or equipment health from a start pattern. "What to check" hints are a separate owner-approved step (0.3.1) with their own governance line.
 - Pad-scaling claims before the #119 supply probe.
 - Weather-forecast inputs (Open-Meteo would be a new external call and its own owner decision).
 - Natural acceptance: about two weeks of scorecard, read back, before any claim beyond SHADOW.

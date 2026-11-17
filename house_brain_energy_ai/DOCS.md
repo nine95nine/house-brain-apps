@@ -184,3 +184,39 @@ overdue loop or a failed cycle is `NOT_CHECKED`, never "nothing seen". A missing
 is a fact and is also named as not checked (for example `load:STALE_OR_FUTURE`). Sense device
 names are never given (counts only), nothing beyond what the page shows, and
 `authority: NO_EXECUTION_AUTHORITY`: the answer is evidence, never advice or a command.
+
+EV tab (0.1.8; AI family plan step 5; owner pop-ups 2026-11-15 "all of them, your
+preference on how the priority should go" and "Bind it by settings delivery"). The page has
+an "EV charging (advice only)" section. You enter a trip: when you leave, and either the
+percent to charge to with the battery size, or the kWh needed, and the charger's kW. The App
+then suggests one continuous charging window that finishes before you leave and costs the
+least for the billing cycle, counting the banked credit in each rate period. It says why,
+and when the car must be plugged in by.
+
+What it never does: it sends nothing to a car. No wake, no charge command, no schedule. You
+set the car's own schedule yourself. The second car is not compared (owner-attended hold).
+
+Data quality: the charge level is shown with its age. It is read from Home Assistant only;
+the car is never asked for a new reading. A reading up to 3 days old is still used (a parked,
+sleeping car reports nothing new) and the plan then allows 30 more minutes. Older than 3 days,
+unreadable or not bound reads "not known" and no plan is made from a percent target (you can
+still enter the kWh needed).
+
+Ready early on purpose: every plan ends at least 30 minutes before you leave, 30 more when
+the target is above 90 percent (charging slows near full), and 30 more for an old reading.
+The energy per percent is an estimate from the battery size until this car's own charging
+sessions prove a better number: at least 5 scored sessions that beat the estimate. If the
+learned number then loses 3 sessions in a row, the estimate is used again. A session whose
+numbers cannot belong to this car (for example a counter that reset in the middle) is set
+aside and counted, never learned from. The battery size and charger power you enter are kept
+between trips, so sessions are scored whether or not a trip is entered.
+
+Privacy: the trip stays in this App's own store and is forgotten after the departure time.
+Nothing about the EV tab is written to the status sensor (which the AI connectors read):
+even "plan ready" would tell a reader that the house empties within a day.
+
+Bindings: the charge-level and plug sensors (and an optional wall-energy counter in kWh)
+arrive as the optional `ev` adapter in the private household bundle, through the
+owner-approved settings delivery. Until then the tab reads "not known" and plans only from
+typed kWh. Records kept: up to 60 charging sessions (percent gained and kWh, no times of
+travel). Rollback: update back to 0.1.7; the `ev:*` store keys are then unused.

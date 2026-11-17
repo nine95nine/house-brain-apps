@@ -39,7 +39,9 @@ EPISODE_SCHEMA = 'house_brain_cooling_thermal_episode.v1'
 NUMERIC_KEYS = frozenset(ALL_NUMBERS)
 # What learning, the plan list and the forecasts read back from history; nothing else is loaded.
 LEARN_KEYS = frozenset({'t_in', 't_out', 'wb', 'rh_in', 'rh_out', 'dp_out', 'relay', 'ac', 'owner', 'supply', 'ac_w',
-                        'evap_w', 'price', 'on_peak', 'holiday', 'bank_kwh'})
+                        'evap_w', 'price', 'on_peak', 'holiday', 'bank_kwh',
+                        # 0.3.0: what the commissioning ledger and the shadow comfort readout read back
+                        'dp_in', 'decision', 'pause', 'panic', 'evap_mode', 'comfort', 't_living', 't_master'})
 
 
 def holdout(day):

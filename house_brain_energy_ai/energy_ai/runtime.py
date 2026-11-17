@@ -25,6 +25,7 @@ from .scorecard import record as record_scorecard
 from .rateplan import stay_put_value, what_if
 from . import insights
 from . import weather
+from . import ev
 
 
 class Runtime:
@@ -106,6 +107,10 @@ class Runtime:
     def approve_template(self, template_id, approved):
         """Owner decision on the page (0.1.5): approve or withdraw one learned template. Shadow planning only."""
         return templates.approve(self.store,getattr(self,"template_proposals",{}),template_id,approved,time.time())
+
+    def set_ev_job(self, payload):
+        """Owner-entered trip on the page (0.1.8). Kept in this App's store only; nothing is sent to a car."""
+        return ev.set_job(self.store,payload,time.time())
 
     def pause(self, paused):
         if type(paused) is not bool:
@@ -318,6 +323,13 @@ class Runtime:
             if plan["status"]=="SHADOW_PROPOSAL":
                 plan_digest=hashlib.sha256(encode({"templates":approved_templates,"forecasts":forecasts,
                                                   "bank":plan["bank_kwh"]}).encode()).hexdigest()
+        # 0.1.8: the EV tab. Advice only; it reads states already held and never asks the car for anything.
+        if self.paused or budget_hold:
+            diagnostics["ev"]={"plan":{"status":"BLOCKED","reasons":["PAUSED" if self.paused else "RESOURCE_HOLD"],
+                                         "physical_actions":False},"bolt":ev.BOLT,"physical_actions":False}
+        else:
+            diagnostics["ev"]=ev.evaluate(self.store,states,now,self.adapters.get("ev"),self.adapters["telemetry"],
+                                          {} if essential_bad else forecasts,self.retained_bill,self.tariff)
         opportunities=[{"id":"NATIVE_QUALIFICATION","owner":"Energy AI engineering/release lane",
                         "reason":"ARM64 and HAOS validation and installation approval required",
                         "supported_value_dollars":None},
@@ -354,12 +366,21 @@ class Runtime:
         """Kill-switch hold: no collection, model update, forecast or plan this cycle."""
         self.status={**self.status,"state":"KILL_SWITCH_HOLD","at":now,"physical_actions":False,
                      "hold_reason":reason,"plan_status":{"status":"UNAVAILABLE"},"forecasts":{}}
+        self._ev_unavailable()
         return self.status
 
     def failure(self, now, code):
         self.status={**self.status,"state":"DEGRADED","at":now,"physical_actions":False,
                      "data_quality":{"all":code},"plan_status":{"status":"UNAVAILABLE"},"forecasts":{}}
+        self._ev_unavailable()
         return self.status
+
+    def _ev_unavailable(self):
+        """0.1.8: a held or failed cycle shows no EV plan from an earlier cycle."""
+        diagnostics=self.status.get("diagnostics")
+        if isinstance(diagnostics,dict) and "ev" in diagnostics:
+            self.status["diagnostics"]={**diagnostics,"ev":{**diagnostics["ev"],
+                "plan":{"status":"UNAVAILABLE","physical_actions":False}}}
 
     def close(self):
         self.store.close()

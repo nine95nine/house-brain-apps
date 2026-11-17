@@ -16,6 +16,8 @@ from .entities import ALL_NUMBERS, ALL_TEXTS, ARCHIVE_KEYS, CONTEXT, MODES, actu
 from .learn import LEARN_KEYS, Boost, Forecasts, Grid, Minutes, Overnight, archive_rows, learn
 from .plan import ZONE, Scorecard, compare, local_day, plan, precool_value, target_of
 from .regret import Ledger
+from .commissioning import Commissioning
+from . import comfort
 from .store import Store
 from .transport import TransportError
 
@@ -55,6 +57,8 @@ class Runtime:
         self.minutes = Minutes()
         self.scorecard = Scorecard(self.store)
         self.ledger = Ledger(self.store)
+        self.commissioning = None       # made on the first relearn, which knows the time
+        self.comfort = None
         self.forecasts = Forecasts(self.store)
         self.overnight = Overnight(self.store)
         self.boost = Boost(self.store)
@@ -216,6 +220,10 @@ class Runtime:
             by_day.setdefault(local_day(t), []).append(r)
         learned['precool'] = {d: precool_value(rs, learned['models'], learned['power'], learned['prices'])
                               for d, rs in sorted(by_day.items())[-14:]}
+        if self.commissioning is None:
+            self.commissioning = Commissioning(self.store, now)
+        self.commissioning.update(rows, now)
+        self.comfort = comfort.report([r for r in rows if r[0] >= now - 36 * 86400], now)
         self.episodes = learned.pop('episodes')
         self.learned = learned
         self.store.put('learned', learned)
@@ -236,7 +244,9 @@ class Runtime:
                 'models': learned.get('models'), 'ac_response': learned.get('ac_response'),
                 'epsilon': learned.get('epsilon'), 'power_kw': learned.get('power'),
                 'prices': learned.get('prices'), 'precool': learned.get('precool'),
-                'scorecard': self.scorecard.report(now), 'regret': self.ledger.report(now), 'forecast_1h': self.forecasts.report(),
+                'scorecard': self.scorecard.report(now), 'regret': self.ledger.report(now),
+                'commissioning': self.commissioning.report(now) if self.commissioning else None,
+                'comfort': self.comfort, 'forecast_1h': self.forecasts.report(),
                 'forecast_overnight': self.overnight.report(), 'humid_boost': self.boost.report(),
                 'archive': {'days_waiting': waiting,
                             'days': {s: sum(r.get('status') == s for r in self.archive.values())

@@ -66,6 +66,8 @@ def handle(runtime,route,payload,result):
             if set(payload)!={"template","approved"}:
                 raise ValueError("TEMPLATE_DECISION_ONLY")
             result.update(runtime.approve_template(payload["template"],payload["approved"]))
+        elif route=="/ev":
+            result.update(runtime.set_ev_job(payload))
         elif route=="/model/rollback":
             if set(payload)!={"role"}:
                 raise ValueError("ROLLBACK_ROLE_ONLY")
@@ -74,6 +76,8 @@ def handle(runtime,route,payload,result):
             result.update(runtime.identities.review(at=time.time(),**payload))
     except (ValueError,TypeError,KeyError) as error:
         known=route=="/template" and isinstance(error,ValueError) and str(error).startswith("TEMPLATE_")
+        if route=="/ev" and isinstance(error,ValueError) and str(error).startswith("EV_JOB_"):
+            known=True       # 0.1.8: the EV form names its own refusal the same way
         result["error"]=str(error) if known else "REVIEW_OR_BINDING_INVALID"
     return result
 

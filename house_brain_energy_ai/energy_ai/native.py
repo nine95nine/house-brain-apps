@@ -17,7 +17,7 @@ BILLING_FIELDS = frozenset({'status', 'on_peak', 'off_peak', 'price', 'tou', 'ho
 
 def validate_adapters(config):
     base = {'schema_version', 'billing', 'telemetry', 'surfaces', 'questions'}
-    optional = {'solar_reference', 'rate_plan_alternatives', 'weather_reference'}
+    optional = {'solar_reference', 'rate_plan_alternatives', 'weather_reference', 'ev'}
     if not isinstance(config, dict) or not base <= set(config) <= base | optional:
         raise ValueError('ADAPTER_FIELDS')
     if type(config['schema_version']) is not int or config['schema_version'] != 1:
@@ -53,6 +53,14 @@ def validate_adapters(config):
                 raise ValueError('ADAPTER_ROW')
             if any(not isinstance(v,str) or not 1<=len(v)<=512 for v in row.values()):
                 raise ValueError('ADAPTER_TEXT')
+    if 'ev' in config:
+        # 0.1.8: the EV tab's read-only bindings (charge level, plug state, optional wall-energy counter).
+        from .ev import ADAPTER_FIELDS, ADAPTER_OPTIONAL
+        ev = config['ev']
+        if not isinstance(ev, dict) or not ADAPTER_FIELDS <= set(ev) <= ADAPTER_FIELDS | ADAPTER_OPTIONAL:
+            raise ValueError('EV_ADAPTER_FIELDS')
+        if any(not isinstance(v, str) or not ENTITY.fullmatch(v) for v in ev.values()):
+            raise ValueError('EV_ADAPTER_ENTITY')
     if 'solar_reference' in config:
         from .reference import validate_reference
         validate_reference(config['solar_reference'])

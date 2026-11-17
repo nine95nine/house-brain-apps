@@ -38,6 +38,10 @@ LIVE_NUMBERS = {
     'evap_w': 'sensor.evap_estimated_power_now',                     # MODELLED evap power
     'boost_rh': 'sensor.cooling_humid_boost_projected_rh',
     'bank_kwh': 'sensor.house_brain_epr6_on_peak_bank_estimate',
+    # 0.3.0 (owner pop-up 2026-11-16 "Yes, read both"): the two owner-chosen rooms, number only, for the
+    # commissioning ledger's two-room spread and its flat-reading check. Not in the Systems AI archive.
+    't_living': 'sensor.living_room_temperature',
+    't_master': 'sensor.master_bedroom_temperature',
 }
 TEXTS = {
     'relay': 'sensor.evap_actual_relay_mode',
