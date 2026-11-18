@@ -110,3 +110,25 @@ def build(status, now, last_at, last_good_at):
                    data={'status': 'UNKNOWN', 'inputs': 0, 'good': 0, 'idle': 0, 'bad': 0},
                    resources={'peak_rss_mb': 0, 'db_bytes': None, 'address_cap_mb': ADDRESS_CAP_MB})
     return doc
+
+
+FEATURES_SCHEMA = 'house_brain_energy_ai_features.v0'
+FEATURE_STATES = ('LIVE', 'INERT', 'SUSPECT')
+
+
+def features(status, now):
+    """GET /features (0.1.9): each advisory feature's readiness from the last cycle. Only feature names, states,
+    input names and since-times: no reading, trip or vehicle value. Before a cycle, or while held or paused, the
+    list is empty and the reason says why; it never repeats an older cycle's answer as current."""
+    state = status.get('state')
+    ev = (status.get('diagnostics') or {}).get('ev') or {}
+    rows = {}
+    failed = 'all' in (status.get('data_quality') or {})   # failure() keeps the earlier cycle's diagnostics
+    if state in ('SHADOW', 'DEGRADED') and not failed and isinstance(ev.get('features'), dict):
+        for name, row in ev['features'].items():
+            if isinstance(row, dict) and row.get('status') in FEATURE_STATES:
+                rows[name] = {k: row[k] for k in ('status', 'since', 'missing', 'kind', 'charging_source') if k in row}
+    reason = None if rows else ('NO_CYCLE_YET' if state in (None, 'STARTING') else
+                                 'NOT_EVALUATED_THIS_CYCLE')
+    return {'schema_version': FEATURES_SCHEMA, 'app': APP, 'version': __version__, 'at': _stamp(now) or 1,
+            'features': rows, 'reason': reason, 'physical_actions': False, 'control_authority': 'NONE'}

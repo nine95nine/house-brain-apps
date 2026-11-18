@@ -215,8 +215,33 @@ Privacy: the trip stays in this App's own store and is forgotten after the depar
 Nothing about the EV tab is written to the status sensor (which the AI connectors read):
 even "plan ready" would tell a reader that the house empties within a day.
 
-Bindings: the charge-level and plug sensors (and an optional wall-energy counter in kWh)
-arrive as the optional `ev` adapter in the private household bundle, through the
-owner-approved settings delivery. Until then the tab reads "not known" and plans only from
+Bindings: the charge-level and plug sensors (and, from 0.1.9, an optional charging signal and
+an optional wall meter with its evidence) arrive as the optional `ev` adapter in the private
+household bundle, through the owner-approved settings delivery. Until then the tab reads "not known" and plans only from
 typed kWh. Records kept: up to 60 charging sessions (percent gained and kWh, no times of
 travel). Rollback: update back to 0.1.7; the `ev:*` store keys are then unused.
+
+EV inputs (0.1.9; #1135; design review `docs/validation/ENERGY_AI_0_1_9_DESIGN_REVIEW_2026-11-18.md`;
+owner pop-up "Build all of the above"). Learning the energy per percent now needs a real wall
+meter: the `energy` binding must come with `energy_evidence` (a short note naming the meter on
+the EV circuit), must read in kWh and must be a total that only counts up
+(`state_class: total_increasing`). The car's own "energy added" counter is refused by name: it
+measures energy into the battery, so charging losses of 10 to 15 percent are invisible to it.
+Sense's EV energy sensors are not a meter either (a share of a load, and two cars). If the meter
+goes backwards during a charge, that session is set aside; twice, and the meter is called
+suspect. If the learned number would mean the car took in more energy than the meter saw (more
+than 100 percent efficient), the meter cannot be the wall meter: it is called suspect and the
+estimate from the battery size is used. Sessions learned under 0.1.8, or under another meter,
+are moved to an archive in this App's own store, never deleted, and learning starts again.
+
+Charging signal: the `ev` adapter's own `charging` sensor is used first, the telemetry
+adapter's otherwise. "Charging" is believed only from that exact sensor and only when it was
+reported within the last day; "not charging" at any age.
+
+The page now says when learning is off and why: "the car is not bound yet", "no charging
+signal", "no wall meter", or what is wrong with the meter. An "Inputs" line shows each EV
+feature as ready, waiting or suspect, and since when. The same, with feature names and states
+only, is served read-only at `GET /features` to the internal Supervisor network (like
+`/health`). `/health` itself is unchanged: its schema is exact in every App that reads it.
+Rollback: update back to 0.1.8; it ignores the new adapter fields and the `ev:features` and
+`ev:sessions-archive` store keys.

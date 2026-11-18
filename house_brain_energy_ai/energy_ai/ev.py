@@ -1,4 +1,4 @@
-"""EV tab (0.1.8): an EV job builder, the cheapest window and banked-credit use. Advice only.
+"""EV tab (0.1.8; inputs hardened 0.1.9): an EV job builder, the cheapest window and banked-credit use. Advice only.
 
 Owner pop-ups 2026-11-15 "all of them, your preference on how the priority should go" (AI family plan §6 step 5) and
 "Bind it by settings delivery". Design: docs/validation/AI_FAMILY_LEFTOVERS_DESIGN_REVIEW_2026-11-15.md §7 B.
@@ -11,6 +11,14 @@ Hard rules (family plan §3 and §7):
 * The Bolt stays on its owner-attended hold, so no comparison between cars is made.
 * Every number says how good its data is. A missing, stale or unbound reading is "not known", never a default.
 * A learned number is called PROVEN only after it beats the naive baseline on later natural charging sessions.
+
+0.1.9 (#1135; docs/validation/ENERGY_AI_0_1_9_DESIGN_REVIEW_2026-11-18.md, owner pop-up "Build all of the above"):
+* Learning reads only a declared wall-side meter (`energy` plus `energy_evidence`) that is kWh and total_increasing.
+  The car's battery-side counter (charge_energy_added, state_class total) and Sense's EV fragments are never meters.
+* A counter that drops during a session discards that session; two drops, or a learned value implying more than
+  100 % charging efficiency, make the meter SUSPECT and the naive value is used.
+* The charging signal is the EV adapter's own `charging` (else telemetry's), checked for entity id and age.
+* Learning OFF is said on the page with its reason; `features()` reports LIVE / INERT / SUSPECT with a since time.
 """
 from datetime import datetime
 import math
@@ -22,9 +30,18 @@ from .planning import TZ, BankObjective, Job, period, schedule
 JOB_KEY = 'ev:job'
 SESSION_KEY = 'ev:sessions'
 SHOWN_KEY = 'ev:shown'
+ARCHIVE_KEY = 'ev:sessions-archive'               # 0.1.9: books from another meter or rule, kept, never deleted
+FEATURES_KEY = 'ev:features'                      # 0.1.9: first time each feature entered its current state
+RULE = '0.1.9'
 CAR_KEY = 'ev:car'                                # battery size and charger power: car facts, kept between trips
 ADAPTER_FIELDS = frozenset({'soc', 'plugged'})
-ADAPTER_OPTIONAL = frozenset({'energy'})          # a wall-energy counter in kWh; only for learning from sessions
+ADAPTER_OPTIONAL = frozenset({'charging', 'energy', 'energy_evidence'})   # energy is a wall meter, with evidence
+NOT_ENTITIES = frozenset({'energy_evidence'})
+BATTERY_SIDE_MARKERS = ('charge_energy_added',)  # battery-side: charging losses invisible, restarts each session
+CHARGING_ON_MAX_AGE_S = 24 * 3600                 # an "on" older than this is not believed (a session is at most 8 h)
+MAX_EFFICIENCY = 1.0                              # more wall-to-battery than 100 % is impossible: the meter is wrong
+SUSPECT_DROPS = 2                                 # counter drops during sessions before the meter is SUSPECT
+DROP_TOLERANCE_KWH = 0.05                         # a smaller dip is meter noise, not a reset (run 5)
 SOC_FRESH_S = 900                                 # GOOD up to here
 SOC_LAST_KNOWN_S = 24 * 3600                      # LAST_KNOWN up to here (a sleeping car reports nothing new)
 SOC_MAX_AGE_S = 72 * 3600                         # OLD up to here, planned with extra time; beyond it "not known"
@@ -128,15 +145,44 @@ def observe(states, now, ids):
 
 
 # -- learning from natural charging sessions ----------------------------------------------------------------------
-def _counter(states, entity):
-    row = states.get(entity) if entity else None
+def meter(states, ids):
+    """(kWh, None) from a bound wall meter, or (None, reason). A wrong kind is METER_KIND_*, an absent reading
+    METER_MISSING / METER_UNREADABLE (a gap, not a fault). Only kWh + total_increasing is a meter here."""
+    entity = (ids or {}).get('energy')
+    if not entity:
+        return None, 'NO_WALL_METER'
+    row = states.get(entity)
+    if not isinstance(row, dict) or row.get('entity_id') != entity:
+        return None, 'METER_MISSING'
+    attributes = row.get('attributes') or {}
+    if attributes.get('unit_of_measurement') != 'kWh':
+        return None, 'METER_KIND_UNIT'
+    if attributes.get('state_class') != 'total_increasing':
+        return None, 'METER_KIND_STATE_CLASS'
     try:
-        if (row.get('attributes') or {}).get('unit_of_measurement') != 'kWh':
-            return None
         value = float(row['state'])
-    except (AttributeError, KeyError, TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) and value >= 0 else None
+    except (KeyError, TypeError, ValueError):
+        return None, 'METER_UNREADABLE'
+    return (value, None) if math.isfinite(value) and value >= 0 else (None, 'METER_UNREADABLE')
+
+
+def charging_state(states, now, ids, telemetry):
+    """(True/False/None, source, reason). The EV adapter's own signal first, then telemetry's. "on" is believed only
+    when the row is this entity and its report is at most a day old; "off" at any valid age."""
+    entity, source = (ids or {}).get('charging'), 'ev'
+    if not entity:
+        entity, source = (telemetry or {}).get('charging'), 'telemetry'
+    if not entity:
+        return None, None, 'NO_CHARGING_SIGNAL'
+    row = states.get(entity)
+    if not isinstance(row, dict) or row.get('entity_id') != entity:
+        return None, source, 'CHARGING_MISSING'
+    age = _age(row, now)
+    if age is None or row.get('state') not in ('on', 'off'):
+        return None, source, 'CHARGING_UNREADABLE'
+    if row['state'] == 'on' and age > CHARGING_ON_MAX_AGE_S:
+        return None, source, 'CHARGING_ON_TOO_OLD'
+    return row['state'] == 'on', source, None
 
 
 def naive_kwh_per_percent(battery_kwh):
@@ -149,9 +195,21 @@ def learned(book):
     return statistics.median(rates) if len(rates) >= MIN_PRIOR_SESSIONS else None
 
 
-def standing(book):
+def efficiency(book, battery_kwh):
+    """Wall-to-battery share the learned value implies, or None. Above MAX_EFFICIENCY the meter cannot be the wall."""
+    value = learned(book)
+    return battery_kwh / 100. / value if value and battery_kwh else None
+
+
+def standing(book, battery_kwh=None):
     """PROVEN only when the learned value beat the naive one on at least MIN_SCORED later sessions and has not just
-    lost LOSS_STREAK in a row (then the naive value is used again)."""
+    lost LOSS_STREAK in a row (then the naive value is used again). A meter that drops, or a learned value that
+    implies more than 100 % efficiency, is SUSPECT and never PROVEN (0.1.9)."""
+    implied = efficiency(book, battery_kwh)
+    if book.get('counter_drops', 0) >= SUSPECT_DROPS:
+        return {'status': 'SUSPECT', 'reason': 'COUNTER_DECREASED', 'counter_drops': book['counter_drops']}
+    if implied is not None and implied > MAX_EFFICIENCY:
+        return {'status': 'SUSPECT', 'reason': 'ABOVE_100_PERCENT_EFFICIENCY', 'implied_efficiency': round(implied, 3)}
     scored = [s for s in book.get('sessions', []) if s.get('learned_error_kwh') is not None]
     if len(scored) < MIN_SCORED:
         return {'status': 'NOT_PROVEN', 'scored': len(scored), 'needed': MIN_SCORED}
@@ -179,8 +237,17 @@ def track(store, view, charging, energy_kwh, battery_kwh, now):
     """One natural session = charging on, then off. Scored before it is learned from, so the score is out of sample."""
     book = store.get(SESSION_KEY, {'open': None, 'sessions': []})
     book.setdefault('rejected', 0)
+    book.setdefault('counter_drops', 0)
     soc = view.get('soc_percent')
     opened = book.get('open')
+    last = book.get('last_energy_kwh')
+    if energy_kwh is not None:
+        if last is not None and last - DROP_TOLERANCE_KWH <= energy_kwh < last:
+            energy_kwh = last                             # a few watt-hours of wobble: keep the high-water mark
+        if opened is not None and last is not None and energy_kwh < last:
+            book['open'] = opened = None                  # the counter went back: this session cannot be measured
+            book['counter_drops'] += 1
+        book['last_energy_kwh'] = energy_kwh
     if charging is True and opened is None and soc is not None and energy_kwh is not None:
         book['open'] = {'start': now, 'soc': soc, 'energy_kwh': energy_kwh}
     elif charging is False and opened is not None:
@@ -288,6 +355,65 @@ def plan(job, view, per_percent, forecasts, bill_packet, tariff, now):
             'classification': 'ESTIMATED', 'caveat': result['caveat']}
 
 
+def book_tag(ids):
+    """Which meter and rule a session book was learned under. A book under another tag is archived, not reused."""
+    return {'meter': (ids or {}).get('energy'), 'rule': RULE}
+
+
+def session_book(store, ids, now):
+    """The session book for the bound meter. One from 0.1.8, or from another meter, moves to the archive (kept,
+    never deleted: DATA_RETENTION_STANDARD) and learning starts again from nothing."""
+    book = store.get(SESSION_KEY)
+    tag = book_tag(ids)
+    if isinstance(book, dict) and book.get('tag') == tag:
+        return book
+    if isinstance(book, dict) and (book.get('sessions') or book.get('open') or book.get('rejected')):
+        store.put(ARCHIVE_KEY, (store.get(ARCHIVE_KEY) or []) + [{'archived_at': now, 'book': book}])
+    book = {'open': None, 'sessions': [], 'tag': tag}
+    store.put(SESSION_KEY, book)
+    return book
+
+
+def learning(ids, signal_source, meter_reason, stand):
+    """ON, or OFF with the one reason the page shows. Configuration first, then the meter's kind, then its record."""
+    if not ids:
+        return 'OFF', 'NOT_BOUND'
+    if signal_source is None:
+        return 'OFF', 'NO_CHARGING_SIGNAL'
+    if meter_reason in ('NO_WALL_METER', 'METER_KIND_UNIT', 'METER_KIND_STATE_CLASS'):
+        return 'OFF', meter_reason
+    if stand['status'] == 'SUSPECT':
+        return 'OFF', stand['reason']
+    return 'ON', None
+
+
+def _feature(store, name, status, now, **detail):
+    seen = store.get(FEATURES_KEY) or {}
+    if (seen.get(name) or {}).get('status') != status:
+        seen[name] = {'status': status, 'since': now}
+        store.put(FEATURES_KEY, seen)
+    return {'status': status, 'since': seen[name]['since'], **detail}
+
+
+def features(store, now, view, signal, meter_reason, learn):
+    """Inputs-ready manifest (run 3 §6): each EV feature is LIVE, INERT (an input is missing) or SUSPECT (an input
+    is the wrong kind). Reports only; it changes nothing."""
+    missing = [k for k, absent in (('soc', view.get('soc_percent') is None), ('plugged', view.get('plugged') is None))
+               if absent]
+    plan = _feature(store, 'ev_plan', 'INERT' if 'soc' in missing else 'LIVE', now, missing=missing)
+    state, reason = learn
+    value, source, signal_reason = signal
+    if state == 'OFF' and reason in ('METER_KIND_UNIT', 'METER_KIND_STATE_CLASS', 'COUNTER_DECREASED',
+                                     'ABOVE_100_PERCENT_EFFICIENCY'):
+        learner = _feature(store, 'ev_learning', 'SUSPECT', now, kind=reason, charging_source=source)
+    else:
+        gaps = ([reason] if state == 'OFF' else []) + [r for r in (signal_reason, meter_reason)
+                                                         if r and r not in ('NO_WALL_METER', 'NO_CHARGING_SIGNAL')]
+        learner = _feature(store, 'ev_learning', 'INERT' if gaps else 'LIVE', now, missing=gaps,
+                           charging_source=source)
+    return {'ev_plan': plan, 'ev_learning': learner}
+
+
 def evaluate(store, states, now, ev_ids, telemetry, forecasts, bill_packet, tariff):
     """The EV tab's whole view for one cycle. Reads only; the one write is this App's own store."""
     view = observe(states, now, ev_ids)
@@ -297,15 +423,16 @@ def evaluate(store, states, now, ev_ids, telemetry, forecasts, bill_packet, tari
         job = None
     car = store.get(CAR_KEY) or {}
     battery = (job or {}).get('battery_kwh') or car.get('battery_kwh')
-    charging = None
-    if telemetry:
-        row = states.get(telemetry['charging'])
-        if isinstance(row, dict) and row.get('state') in ('on', 'off'):
-            charging = row['state'] == 'on'
-    book = track(store, view, charging, _counter(states, (ev_ids or {}).get('energy')), battery, now) if ev_ids \
-        else store.get(SESSION_KEY, {'open': None, 'sessions': []})
-    stand, value = standing(book), learned(book)
-    if stand['status'] == 'PROVEN' and value is not None:
+    signal = charging_state(states, now, ev_ids, telemetry)
+    energy, meter_reason = meter(states, ev_ids)
+    if ev_ids:
+        session_book(store, ev_ids, now)
+        book = track(store, view, signal[0], energy, battery, now)
+    else:
+        book = store.get(SESSION_KEY) or {'open': None, 'sessions': []}
+    stand, value = standing(book, battery), learned(book)
+    learn = learning(ev_ids, signal[1], meter_reason, stand)
+    if learn[0] == 'ON' and stand['status'] == 'PROVEN' and value is not None:
         per = {'value': value, 'basis': 'LEARNED_PROVEN'}
     elif battery:
         per = {'value': naive_kwh_per_percent(battery), 'basis': 'ESTIMATE_NOT_PROVEN'}
@@ -323,7 +450,10 @@ def evaluate(store, states, now, ev_ids, telemetry, forecasts, bill_packet, tari
             'car': {'battery_kwh': car.get('battery_kwh'), 'charge_kw': car.get('charge_kw')},
             'plan': result, 'kwh_per_percent': {**per, 'learned': None if value is None else round(value, 4),
                                                 'sessions': len(book.get('sessions', [])),
-                                                'rejected': book.get('rejected', 0), **stand},
+                                                'rejected': book.get('rejected', 0),
+                                                'counter_drops': book.get('counter_drops', 0), **stand,
+                                                'learning': learn[0], 'learning_reason': learn[1]},
+            'charging': {'state': signal[0], 'source': signal[1], 'reason': signal[2]},
+            'features': features(store, now, view, signal, meter_reason, learn),
             'scorecard': {'plans_shown': shown, 'carried_out_by_this_app': 0, 'savings_claimed': None},
             'bolt': BOLT, 'never': 'no wake, no charge command, no schedule write', 'physical_actions': False}
-

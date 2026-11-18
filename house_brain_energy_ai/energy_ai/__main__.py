@@ -13,7 +13,7 @@ from .transport import HAClient
 from .web import Ingress
 from .installation import read_private, validate
 from .interlock import safety_interlock
-from .health import Tracker
+from .health import Tracker, features
 from .answers import answer
 
 
@@ -124,7 +124,8 @@ def main():
     commands=Queue(maxsize=16)
     tracker=Tracker()
     ingress=Ingress(lambda:runtime.status,commands,health=lambda:tracker.build(time.time()),
-                    answer=lambda query:answer(tracker,query,time.time()))
+                    answer=lambda query:answer(tracker,query,time.time()),
+                    features=lambda:features(tracker.status,time.time()))
     thread=Thread(target=ingress.run,daemon=True)
     thread.start()
     next_tick=0.

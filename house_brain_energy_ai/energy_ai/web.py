@@ -2,7 +2,8 @@
 
 Internal Supervisor network and loopback only (never the LAN): GET /health (house_brain_app_health.v1, 0.1.2)
 and GET /answer?topic=<topic> (house_brain_specialist_answer.v1, 0.1.7: Systems AI's questions, answered from
-the last cycle's status). Every method but GET on /answer is 405."""
+the last cycle's status), and GET /features (0.1.9: which advisory features have their inputs; names and states
+only, no household values). Every method but GET on /answer is 405."""
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import hmac
 import ipaddress
@@ -28,8 +29,9 @@ def health_peer(address):
 
 
 class Ingress:
-    def __init__(self, status, commands, port=8099, health=None, answer=None):
+    def __init__(self, status, commands, port=8099, health=None, answer=None, features=None):
         self.status=status
+        self.features=features
         self.commands=commands
         self.health=health
         self.answer=answer
@@ -63,6 +65,12 @@ class Ingress:
                     if owner.answer is None or not health_peer(self.client_address[0]):
                         return self.respond(403,{"error":"HEALTH_PEER_REFUSED"})
                     return self.respond(200,owner.answer(query))
+                if self.path=="/features":
+                    # 0.1.9: the inputs-ready manifest, read-only, the same peers as /health. Not part of
+                    # house_brain_app_health.v1: that schema is exact in every reader, so it stays unchanged.
+                    if owner.features is None or not health_peer(self.client_address[0]):
+                        return self.respond(403,{"error":"HEALTH_PEER_REFUSED"})
+                    return self.respond(200,owner.features())
                 if self.path=="/health":
                     # house_brain_app_health.v1, read-only, for Systems AI on the internal network.
                     if owner.health is None or not health_peer(self.client_address[0]):

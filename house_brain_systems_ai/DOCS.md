@@ -1,5 +1,7 @@
 # House Brain Systems AI
 
+Version 0.3.18 (shadow). 0.3.18 only refreshes the embedded read policy to 1.14.0 (the family status sensor becomes readable by the AI connectors: its word, its one line and its time). No code change.
+
 Version 0.3.17 (shadow). 0.3.17 only refreshes the embedded privacy data-class map: it gains one row for the specialist answer contract (`house_brain_specialist_answer.v1.schema.json`, the read-only `/answer` route the specialists already serve). The 0.3.16 code is unchanged.
 
 Version 0.3.16 (shadow). 0.3.16 is three small corrections to the O&M link of 0.3.15. Nothing new is switched on, and the link is still off until you set `onm_key`.

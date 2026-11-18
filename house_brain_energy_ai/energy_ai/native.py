@@ -55,12 +55,20 @@ def validate_adapters(config):
                 raise ValueError('ADAPTER_TEXT')
     if 'ev' in config:
         # 0.1.8: the EV tab's read-only bindings (charge level, plug state, optional wall-energy counter).
-        from .ev import ADAPTER_FIELDS, ADAPTER_OPTIONAL
+        # 0.1.9: optional own charging signal; a wall meter only with its evidence; never the battery-side counter.
+        from .ev import ADAPTER_FIELDS, ADAPTER_OPTIONAL, NOT_ENTITIES, BATTERY_SIDE_MARKERS
         ev = config['ev']
         if not isinstance(ev, dict) or not ADAPTER_FIELDS <= set(ev) <= ADAPTER_FIELDS | ADAPTER_OPTIONAL:
             raise ValueError('EV_ADAPTER_FIELDS')
-        if any(not isinstance(v, str) or not ENTITY.fullmatch(v) for v in ev.values()):
+        if any(not isinstance(v, str) or not ENTITY.fullmatch(v) for k, v in ev.items() if k not in NOT_ENTITIES):
             raise ValueError('EV_ADAPTER_ENTITY')
+        if ('energy' in ev) != ('energy_evidence' in ev):
+            raise ValueError('EV_ENERGY_EVIDENCE_REQUIRED')
+        if 'energy' in ev:
+            if not isinstance(ev['energy_evidence'], str) or not 1 <= len(ev['energy_evidence']) <= 256:
+                raise ValueError('EV_ENERGY_EVIDENCE_REQUIRED')
+            if any(marker in ev['energy'] for marker in BATTERY_SIDE_MARKERS):
+                raise ValueError('EV_ENERGY_BATTERY_SIDE')
     if 'solar_reference' in config:
         from .reference import validate_reference
         validate_reference(config['solar_reference'])
