@@ -1127,6 +1127,27 @@ helpers or health sensors. A day is written whole or not at all, and never rewri
 than 20 GB is free. Turn it off with the option `history_archive: false`. About 4–10 MB a day (estimate, to be
 measured by the first run).
 
+## Results that never get lost — from 0.9.61
+
+Every post this App makes on the tracking issue (results, morning summaries, update lists, batch posts) is kept on
+the Pi until GitHub has it. If GitHub cannot be reached, the post waits in `/data/outbox.json` and is sent again
+after 5 minutes, 30 minutes, 2 hours, then every 6 hours, and it is never thrown away. A post that arrives late says
+"Sent late" at its end with the time it was written. Each post has a hidden id on its heading line, so a post GitHub already
+has is not posted twice.
+
+What you can see:
+
+- the status entity: `posts_owed` and `posts_owed_oldest_hours` (0 when all is well), `update_mode`, `time_zone` and
+  `time_zone_ok`;
+- the morning summary: one line "This App runs with `update_mode: …`, time zone …; no post waiting to reach GitHub";
+- one phone message a day if a post has waited more than 6 hours: check the GitHub page of this App.
+
+A phone ask that nobody answered is reported as **no answer**, not as a decline: nothing was refused, and the item
+waits on the Maintenance page as before.
+
+After the update to 0.9.61 the App posts one "results check": results of the last 14 days that never reached the
+tracking issue, and the posts its log says failed.
+
 ## History upload (for every AI) — from 0.9.60
 
 The archive above stays on the Pi. From 0.9.60 this App can also copy each archived day, once, to a **private GitHub

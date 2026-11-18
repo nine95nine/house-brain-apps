@@ -14,6 +14,7 @@ from __future__ import annotations
 import time
 
 from . import approval
+from . import settingsline as SL
 from . import issues as I
 
 DOC = "update_batch"
@@ -178,7 +179,8 @@ class Batch:
                  f"These tier B updates install by themselves on **{when(doc['install_at'], self.localtime)}** unless "
                  "the owner taps Hold (one week) or decides each one on the Maintenance page. Each is checked again right "
                  "before it installs; a red evidence card waits.", "", *self._lines(doc), "",
-                 f"- **App:** `{VERSION}`", "",
+                 f"- **App:** `{VERSION}`",
+                 f"- **Time zone of these times:** {SL.zone_text(doc['install_at'])}", "",   # 0.9.61 (deep-dive R1 A13)
                  "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._"]
         return I.scrub("\n".join(lines), 8000)
 

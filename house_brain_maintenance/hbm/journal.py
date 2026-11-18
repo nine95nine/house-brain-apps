@@ -87,11 +87,20 @@ class Journal:
     def ledger(self) -> dict:
         return _read(self.ledger_path, {})
 
-    def record(self, request_id: str, digest: str, outcome: str) -> None:
+    def record(self, request_id: str, digest: str, outcome: str, **extra: Any) -> None:
+        """0.9.61: ``extra`` keeps a few more fields in the same row and the same atomic write (``answer``)."""
         ledger = self.ledger()
-        ledger[request_id] = {"digest": digest, "outcome": outcome,
+        ledger[request_id] = {**{k: v for k, v in extra.items() if v is not None},
+                              "digest": digest, "outcome": outcome,
                               "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         _atomic_write(self.ledger_path, ledger)
+
+    def note(self, request_id: str, **fields: Any) -> None:
+        """0.9.61: add fields to an existing ledger row (``post``: the result's address on GitHub, or "owed")."""
+        ledger = self.ledger()
+        if request_id in ledger and isinstance(ledger[request_id], dict):
+            ledger[request_id].update(fields)
+            _atomic_write(self.ledger_path, ledger)
 
     def mark_reuse(self, request_id: str, digest: str) -> None:
         ledger = self.ledger()

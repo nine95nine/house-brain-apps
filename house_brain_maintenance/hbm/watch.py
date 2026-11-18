@@ -146,6 +146,7 @@ class Watcher:
         self.free_lane = None                                 # 0.9.29: the free reviewer lane (set by the Service)
         self.evidence = None                                  # 0.9.56: evidence.Evidence (automatic installs overnight)
         self.update_mode = "ask"                              # 0.9.56: for the one-time tiers reminder
+        self.settings_line: Callable[[], str] | None = None   # 0.9.61: mode, zone, owed posts (summary text only)
         # 0.9.12 reviewer watchdog: (name, first offered) of waiting updates without an AI review, None when not known
         self.review_waits: Callable[[], list | None] | None = None
         self.queued: list[str] = []                           # 0.9.12: problem keys in the queue line being posted
@@ -1150,10 +1151,16 @@ class Watcher:
             reminder = self.evidence.reminder_line(self.update_mode)     # morning summary that goes out anyway
             if reminder:
                 extra.append(reminder)
+        settings = ""
+        if self.settings_line is not None and (items or cleared or extra):   # 0.9.61: rides a summary that goes out
+            try:                                                             # anyway; on GitHub only, not the push
+                settings = self.settings_line()
+            except Exception:  # noqa: BLE001 - a status line only
+                settings = ""
         if not items and not cleared:
             if extra:
                 text = self._markdown("morning summary", [], [])
-                for line in extra:
+                for line in extra + ([settings] if settings else []):
                     text = text.replace("\n\n_Posted by", f"\n- {line}\n\n_Posted by", 1)
                 if needs_machine:
                     text += "\n" + needs_machine
@@ -1169,7 +1176,7 @@ class Watcher:
         lines += extra
         title = f"Maintenance: {total} to look at" if items else "Maintenance: problems cleared"
         text = self._markdown("morning summary", items, cleared)
-        for line in extra:
+        for line in extra + ([settings] if settings else []):
             text = text.replace("\n\n_Posted by", f"\n- {line}\n\n_Posted by", 1)
         if needs_machine:
             text += "\n" + needs_machine                                     # 0.9.50 B4: never a review line

@@ -43,6 +43,8 @@ from .stage import PENDING_DOC as STAGE_PENDING_DOC, StagePolicy, Stager
 from .holds import Holds
 from .aireview import AiReviews, item_app
 from .inbox import Inbox
+from .outbox import Outbox
+from . import settingsline as SL
 from . import system as system_mod, entities as entities_mod, updates as updates_mod
 from .updatequeue import UpdateQueue, rows_from
 from .afterupdate import JOB as AFTER_JOB, AfterPolicy, AfterUpdate, after_request_id, loaded_snapshot
@@ -366,13 +368,28 @@ def _bad(key: str):
     raise OptionsError(key)
 
 
+RE_NO_ANSWER = re.compile(r"owner decision: (?:TIMEOUT|UNAVAILABLE)")
+RE_RESULT_REQUEST = re.compile(r"\*\*Request:\*\* `([^`\n]{1,200})`")   # 0.9.61: a result post's request id
+WORKING_OUTCOMES = frozenset({"STAGING", "DELIVERING", "APPLYING", "ASKING"})
+GAP_DOC, GAP_DAYS, GAP_PAGES = "gapcheck", 14, 15
+
+
+def is_no_answer(result: Result) -> bool:
+    """0.9.61 (deep-dive R1 A3): a REJECTED whose first reason is a phone ask that timed out or could not be sent.
+    The outcome stays REJECTED (the page re-run, the re-ask back-off and the scores read it); the ledger row and the
+    report say "no answer" so later counts can tell "not seen" from "no"."""
+    return (result.outcome == REJECTED and bool(result.reasons)
+            and bool(RE_NO_ANSWER.fullmatch(str(result.reasons[0]))))
+
+
 def report_markdown(request_id: str, job: str, result: Result, dry_run: bool) -> str:
     lines = [
         "### House Brain Maintenance result",
         "",
         f"- **Request:** `{request_id}`",
         f"- **Job:** `{job}`",
-        f"- **Outcome:** `{result.outcome}`" + (" (dry-run mode)" if dry_run else ""),
+        f"- **Outcome:** `{result.outcome}`" + (" (dry-run mode)" if dry_run else "")
+        + (" (no answer: nobody decided, nothing was declined)" if is_no_answer(result) else ""),
         f"- **App:** `{VERSION}`",
     ]
     for reason in result.reasons[:10]:
@@ -459,6 +476,80 @@ class Service:
         self.messages.fixes = self._page_fixes                               # 0.9.23: the page's "Fix it"
         self.messenger = Messenger(self.ha, self.messages, self.o.notify_service, open_url=self._open_url,
                                    quiet=parse_quiet(self.o.quiet_hours))
+        # 0.9.61 (deep-dive R1 slice S1): every post on GitHub is kept until GitHub has it, then sent again
+        self.outbox = Outbox(self.j, self.gh, on_delivered=self._post_delivered)
+        self._started = time.time()
+
+    def gap_check(self) -> None:
+        """0.9.61 (deep-dive R1, one time): which results of the last 14 days never reached the tracking issue, and
+        which posts the App's own log says failed. One post, at most ``GAP_PAGES`` reads, up to 3 tries an hour apart."""
+        if not self.o.report_issue or self.o.dry_run:
+            return
+        doc = self.j.load_doc(GAP_DOC, {})
+        doc = doc if isinstance(doc, dict) else {}
+        now = time.time()
+        tries = int(doc.get("tries", 0))
+        if doc.get("done") or tries >= 3 or (tries and now - float(doc.get("last", 0)) < 3600):
+            return
+        since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - GAP_DAYS * 86400))
+        before = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self._started - 60))
+        if not any(isinstance(r, dict) and "post" not in r and since <= str(r.get("at", "")) < before
+                   and r.get("outcome") not in WORKING_OUTCOMES for r in self.j.ledger().values()):
+            doc.update(done=True, at=now, skipped="no result from before 0.9.61 in the window")
+            self.j.save_doc(GAP_DOC, doc)        # a new install, or nothing to check: nothing is posted
+            return
+        posted: set[str] = set()
+        complete = False
+        try:
+            for page in range(1, GAP_PAGES + 1):
+                comments = self.gh.issue_comments(self.o.report_issue, since, page)
+                for c in comments:
+                    posted.update(RE_RESULT_REQUEST.findall(str((c or {}).get("body") or "")))
+                if len(comments) < 100:
+                    complete = True
+                    break
+        except Exception as err:  # noqa: BLE001 - tried again within the hour, at most 3 times
+            doc.update(tries=tries + 1, last=now)
+            self.j.save_doc(GAP_DOC, doc)
+            self.j.audit("gapcheck", "GAP_CHECK_WAITS", error=net.redact(str(err))[:200])
+            return
+        rows = [(k, r) for k, r in self.j.ledger().items()
+                if isinstance(r, dict) and not k.endswith("#dry") and str(r.get("at", "")) >= since
+                and r.get("outcome") not in WORKING_OUTCOMES and r.get("digest") != "soak"]
+        missing = sorted((r.get("at", ""), k, r.get("outcome", "")) for k, r in rows if k not in posted)
+        failed = []
+        try:
+            with open(self.j.audit_path, encoding="utf-8") as fh:
+                for raw in fh:
+                    if '"REPORT_FAILED"' not in raw:
+                        continue
+                    rec = json.loads(raw)
+                    if str(rec.get("ts", "")) >= since:
+                        failed.append((rec.get("ts", ""), rec.get("request_id", ""), str(rec.get("error", ""))[:120]))
+        except (OSError, ValueError):
+            pass
+        lines = ["### House Brain Maintenance: results check (one time, 0.9.61)", "",
+                 "From this version every post is kept on the Pi until GitHub has it. Before, a post that failed was "
+                 f"not sent again. This looked back {GAP_DAYS} days.", "",
+                 f"- Results in this App's ledger: {len(rows)}; with a result post on this issue: {len(rows) - len(missing)}"
+                 + ("" if complete else f" (only the first {GAP_PAGES * 100} comments were read)") + ".",
+                 f"- Results with no result post here ({len(missing)})"
+                 + (":" if missing else "."),
+                 *[f"  - `{k}`: {o}, {a}" for a, k, o in missing[:30]],
+                 f"- Posts this App's log says failed ({len(failed)})" + (":" if failed else "."),
+                 *[f"  - {t}: `{rid}`: {err}" for t, rid, err in failed[:30]],
+                 "", "A result can also be missing here because its request named another tracking issue.", "",
+                 f"- **App:** `{VERSION}`", "",
+                 "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._"]
+        self.report_text(net.redact("\n".join(lines)))
+        doc.update(done=True, at=now, missing=len(missing), failed=len(failed))
+        self.j.save_doc(GAP_DOC, doc)
+        self.j.audit("gapcheck", "GAP_CHECK_DONE", results=len(rows), missing=len(missing), failed=len(failed))
+
+    def _post_delivered(self, source: str, url: str) -> None:
+        """0.9.61: a result posted late gets its address in its ledger row."""
+        if source.startswith("ledger:"):
+            self.j.note(source[len("ledger:"):], post=url or "posted")
 
     def _problem_review(self, key: str) -> dict | None:
         """0.9.23: the AI review of a problem as the Messages page shows it (None without one)."""
@@ -576,6 +667,7 @@ class Service:
                                 housekeeping=self.o.housekeeping, auto_fix=self.o.auto_fix,
                                 backup_verify_seconds=1800.0 * self.health_scale, unretire=self.o.unretire)
             self.watcher = Watcher(self.ha, self.j, settings, watch, self.report_text)
+            self.watcher.settings_line = lambda: SL.line(self.o.update_mode, self.outbox.status())   # 0.9.61
             self.watcher.step_errors = self.step_errors                   # 0.9.22
             if self.o.report_issue:                                        # 0.9.26: after-update reports
                 self.after_reports = AfterReports(self.j, self.report_text)
@@ -771,7 +863,8 @@ class Service:
 
     def finish(self, request_id: str, job: str, digest: str, issue: int | None, result: Result,
                notify: bool = True) -> None:
-        self.j.record(self.key(request_id), digest, result.outcome)
+        no_answer = is_no_answer(result)             # 0.9.61: an ask nobody answered is not a "no"
+        self.j.record(self.key(request_id), digest, result.outcome, answer="none" if no_answer else None)
         self.j.audit(request_id, "OUTCOME", job=job, outcome=result.outcome, reasons=result.reasons[:5])
         if result.outcome == DONE and self.after_reports is not None:   # 0.9.26: its own after-update report in a day
             item = item_of(digest)
@@ -786,17 +879,24 @@ class Service:
                                      "dry_run": self.o.dry_run})
         url = ""
         if issue:                                       # 0.9.23: posted first, so the message links to the report
+            # 0.9.61: built inside the guard (a report that cannot be built is still posted, in short), sent through
+            # the outbox (a failed post is kept and sent again), and its address kept in the ledger row.
             try:
-                url = self.gh.comment(issue, self._stamped(report_markdown(request_id, job, result, self.o.dry_run))) or ""
-            except net.NetError as err:
-                self.j.audit(request_id, "REPORT_FAILED", error=str(err)[:200])
+                body = self._stamped(report_markdown(request_id, job, result, self.o.dry_run))
+            except Exception as err:  # noqa: BLE001 - the ledger already has the outcome; the post must not be lost
+                body = (f"### House Brain Maintenance result\n\n- **Request:** `{request_id}`\n- **Job:** `{job}`\n"
+                        f"- **Outcome:** `{result.outcome}`\n- **App:** `{VERSION}`\n- Reason: the full report could "
+                        f"not be built ({type(err).__name__}); details are in the App log.")
+            url = self.outbox.post(issue, body, source=f"ledger:{self.key(request_id)}")
+            self.j.note(self.key(request_id), post=url or ("owed" if self.outbox.kept else "posted"))
             if not url and hasattr(self.gh, "issue_url"):
                 url = self.gh.issue_url(issue)
         if notify:                                      # 0.9.18: kept in the Messages list, own tag
             reasons = "; ".join(str(r)[:120] for r in result.reasons[:3])
             failed = result.outcome in (FAILED, FAILED_MANUAL)
             msg = self.messages.add(
-                "result", f"Maintenance: {result.outcome}", happened=f"{request_id} ({job})",
+                "result", "Maintenance: no answer" if no_answer else f"Maintenance: {result.outcome}",
+                happened=f"{request_id} ({job})",
                 done=f"{result.outcome}: {reasons}" if reasons else result.outcome,
                 todo=(("Read the full report: the link below." if url else "Details are in the App log."),)
                 if failed else (), severity="warning" if failed else "info", link=url)
@@ -872,6 +972,19 @@ class Service:
             if ident else {}
 
     def poll_once(self) -> None:
+        try:                                            # 0.9.61: owed posts first (never stops the poll)
+            self.outbox.drain()
+            self.gap_check()
+            if self.outbox.alert_due():
+                st = self.outbox.status()
+                self.messenger.send(self.messages.add(
+                    "result", "Maintenance cannot post to GitHub",
+                    happened=f"{st['owed']} report(s) are waiting to be posted on the tracking issue; the oldest is "
+                             f"{st['oldest_hours']} hours old.",
+                    done="Each one is kept on the Pi and tried again every few hours; none is lost.",
+                    todo=("Check the GitHub connection on the App's GitHub page.",), severity="warning"))
+        except Exception as err:  # noqa: BLE001 - the rest of the poll runs
+            LOG.warning("outbox waits: %s", net.redact(f"{type(err).__name__}: {err}")[:200])
         if not self._writer_reported:              # 0.9.4: once per start (and only when it changed)
             self._writer_reported = True
             try:
@@ -1146,8 +1259,8 @@ class Service:
 
     def report_text(self, text: str) -> str:
         """Post on the tracking issue; 0.9.23: returns the comment's address ("" when unknown)."""
-        if self.o.report_issue:
-            return self.gh.comment(self.o.report_issue, self._stamped(text)) or ""
+        if self.o.report_issue:                         # 0.9.61: kept and sent again when GitHub fails
+            return self.outbox.post(self.o.report_issue, self._stamped(text), source="report")
         return ""
 
     def _item_name(self, item: str) -> str:
@@ -1226,6 +1339,7 @@ class Service:
             except Exception as err:  # noqa: BLE001 - the lane is best effort; the problem watch itself stands
                 LOG.warning("free reviewer lane waits: %s", net.redact(str(err))[:200])
         self.status("WATCHING", {"version": VERSION, "dry_run": self.o.dry_run, **summary, **self._ledger_attrs(),
+                                 **SL.attributes(self.o.update_mode, self.outbox.status()),   # 0.9.61
                                  **self._writer_attrs(), **self._skipped_attrs(),
                                  **self._waiting_attrs(), **self._keys_attrs(),
                                  "needs_review": self.needs_review(),           # 0.9.26

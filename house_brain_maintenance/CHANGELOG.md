@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.9.61
+
+**Never lose a result** (deep-dive review R1, slice S1; owner pop-ups 2026-11-16 "build all slices, your order" and
+2026-11-18 "Continue"; record `docs/validation/HB454_MAINTENANCE_0_9_61_OUTBOX_2026-11-18.md`). Contains 0.9.60
+unchanged otherwise. No new option.
+
+- **Every post is kept until GitHub has it** (`hbm/outbox.py`). Until 0.9.60 a result or report whose post failed
+  was written to the App's log and never sent again (the ESPHome switch of 2026-11-09 and the OS 18.5 download left
+  no result on the tracking issue). Now the post is tried at once as before; when it fails, for any reason, it is
+  kept in `/data/outbox.json` and sent again: at most 3 a poll, oldest first, after 5 minutes, 30 minutes, 2 hours,
+  then every 6 hours, never giving up. A post sent late ends with "Sent late: written <time> UTC".
+- **No double posts.** Each post carries a hidden `<!-- hbm:post:<id> -->` at the end of its heading line (line 2
+  stays the machine status line, and nothing follows a post's last machine block). When a
+  failure was unclear (no answer or a GitHub server error), the next try first reads the issue's newest comments and
+  does not post again when its line is already there (at most 10 such reads a day).
+- **The ledger knows where each result is.** Each result's ledger row gains `post` (its address on GitHub, or
+  `owed` until it is there).
+- **"No answer" is not "no".** A phone ask that timed out or could not be sent stays `REJECTED` (the page re-run,
+  the re-ask back-off and the scores read it), but its ledger row gains `answer: none`, its report says "no answer:
+  nobody decided, nothing was declined", and the message title is "Maintenance: no answer".
+- **The App says how it runs.** The status entity gains `update_mode`, `time_zone`, `time_zone_ok`, `posts_owed`
+  and `posts_owed_oldest_hours`; a morning summary that goes out anyway carries one line with the same; each weekly
+  batch post names the time zone of its times and says so when it is not Arizona time.
+- **When GitHub posting is broken.** A post owed for more than 6 hours gives one phone message a day
+  ("Maintenance cannot post to GitHub").
+- **One-time results check after the update.** One post lists the results of the last 14 days with no result post
+  on the tracking issue, and the posts the App's own log says failed. Not on a new install. At most 15 reads, once.
+- $0: no new recurring post; at most 10 reads a day for the duplicate check plus 15 once. `CONTROL_AUTHORITY=NONE`.
+
 ## 0.9.60
 
 **History for every AI: a scrubbed copy in your own private data repository** (owner pop-up 2026-11-08 "Separate data
