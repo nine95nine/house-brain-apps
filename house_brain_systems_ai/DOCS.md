@@ -1,5 +1,16 @@
 # House Brain Systems AI
 
+Version 0.3.19 (shadow). 0.3.19 adds a **version list** to the one family line (`sensor.house_brain_family_status`, which the AI connectors already read), so a release can be confirmed by machine and a failing App is named:
+
+- **The top reason names the App** when it is an App problem, for example `top: app health failed: Cooling`. This sits in the first part of the line, which is never cut.
+- **`apps 24h:`** lists the Apps whose version or status changed in the last 24 hours, and every App that is not OK now. Not-OK Apps come first, then the newest change. Example: `apps 24h: Systems 0.3.19, Cooling 0.3.0 failed, Energy 0.1.9 (running 0.1.8), +2 more`.
+  - `(running …)` means the installed version differs from the one the App's own health says it runs: updated but not yet restarted.
+- **It only uses the room the line has left** (255 characters in all): whole entries, then `+N more`, or nothing. Every other part of the line stays as before.
+- **It remembers across restarts**, in the App's own store, so the first line after this update says `Systems 0.3.19`.
+- **Only checked words reach the line.** Versions must look like a version, otherwise `?` is shown. Names come from a fixed list.
+
+The Maintenance App relays the line at most every 30 minutes, so allow about 35 minutes after an update. No new route, field, schema or entity; read policy and health schema unchanged.
+
 Version 0.3.18 (shadow). 0.3.18 only refreshes the embedded read policy to 1.14.0 (the family status sensor becomes readable by the AI connectors: its word, its one line and its time). No code change.
 
 Version 0.3.17 (shadow). 0.3.17 only refreshes the embedded privacy data-class map: it gains one row for the specialist answer contract (`house_brain_specialist_answer.v1.schema.json`, the read-only `/answer` route the specialists already serve). The 0.3.16 code is unchanged.

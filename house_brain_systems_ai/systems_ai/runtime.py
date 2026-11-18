@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import __version__
 from . import app_health
+from . import beacon
 from .archive import Archive
 from .cases import Cases
 from .findings import Findings
@@ -333,6 +334,7 @@ class Runtime:
         problems = {}
         apps = {}
         targets = {}
+        seed = None
         try:
             self.discover(now)
             sup = self.client.info('/info')
@@ -363,6 +365,10 @@ class Runtime:
                 kind = str((issue or {}).get('type') if isinstance(issue, dict) else issue)[:48]
                 problems[f'SUP:ISSUE:{kind}'] = {'severity': 'WARNING', 'reason': 'SUPERVISOR_ISSUE',
                                                  'subject': kind, 'owner': 'systems_ai'}
+            # 0.3.19 (version beacon): on the first start with a beacon, the last versions already stored seed it,
+            # read before this cycle's _change overwrites them.
+            seed = None if self.store.get(beacon.STORE_KEY) else {
+                slug: self.store.get('last:app_version:' + slug) for slug in self.installed}
             for slug, name in sorted(self.installed.items()):
                 try:
                     info = self.client.info(f'/addons/{slug}/info')
@@ -388,12 +394,16 @@ class Runtime:
                               'version': info.get('version'), 'update_available': info.get('update_available'),
                               'health': observed['status'] if observed else None,
                               'health_reasons': observed['reasons'][:6] if observed else [],
-                              'activity': (observed.get('doc') or {}).get('activity') if observed else None}
+                              'activity': (observed.get('doc') or {}).get('activity') if observed else None,
+                              'running_version': (observed.get('doc') or {}).get('version') if observed else None}
                 countable = info.get('state') == 'started' or info.get('boot') == 'auto'
                 if countable:
                     self.incidents.slo('app:' + name, info.get('state') == 'started'
                                        and (observed is None or observed['status'] == 'OK'), now)
         self.view['apps'] = apps
+        if self.inputs.get('supervisor_api') and sup is not None:
+            self.view['beacon'] = beacon.update(self.store, apps, now, __version__, seed=seed,
+                                                always_on=playbooks.ALWAYS_ON)
         self.targets = targets
         try:
             self.logs.observe(self.client.ws({'type': 'system_log/list'}), now)

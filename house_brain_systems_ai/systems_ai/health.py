@@ -8,6 +8,7 @@ import math
 import re
 
 from . import __version__
+from . import beacon
 from .app_health import SCHEMA_VERSION, OVERDUE_CYCLES, MIN_STALE_S, validate
 from .runtime import RESCUE_HOLDS, AI_ACCESS
 
@@ -77,6 +78,10 @@ def build(runtime, now):
     return doc
 
 
+def at_of(now):
+    return float(now) if isinstance(now, (int, float)) and math.isfinite(now) else 0.0
+
+
 def _fit(text, limit):
     return text if len(text) <= limit else text[:limit - 1] + '…'
 
@@ -101,7 +106,14 @@ def digest(runtime, now):
         word = 'stopped' if access['state'] != 'UNREADABLE' else 'not readable or not installed'
         parts.append(f"AI Access is {word}, so every House Brain AI is held; start it in Settings, Add-ons")
     if state in ('OK', 'WATCH', 'PROBLEMS'):
-        parts.append(f"{len(open_)} open" + (f" (top: {open_[0]['reason'].lower().replace('_', ' ')})" if open_ else ''))
+        top = ''
+        if open_:
+            top = open_[0]['reason'].lower().replace('_', ' ')
+            # 0.3.19 (Brief C, run 6 C1): an App problem names its App here, in the first part, which is never cut.
+            app = beacon.name_of(open_[0].get('subject')) if str(open_[0].get('reason')).startswith('APP_') else None
+            if app:
+                top += ': ' + beacon.label(app)
+        parts.append(f"{len(open_)} open" + (f" (top: {top})" if open_ else ''))
         # 0.3.4 (W26-C6): a stalled investigation asks for a re-plan or your answer on the line Maintenance relays.
         stalled = ((status.get('investigations') or {}).get('counts') or {}).get('STALLED')
         if isinstance(stalled, int) and stalled > 0:
@@ -118,8 +130,14 @@ def digest(runtime, now):
         m = view.get('maintenance_open_problems')
         if isinstance(m, int):
             parts.append(f"Maintenance {m} open")
-    text = _fit(f"House Brain systems {state}: " + ('; '.join(parts) if parts else
-                                                     'no current reading') + '.', DIGEST_CHARS)
+    head = f"House Brain systems {state}: " + ('; '.join(parts) if parts else 'no current reading')
+    if state in ('OK', 'WATCH', 'PROBLEMS'):
+        # 0.3.19 (version beacon): fitted to the room the line leaves; never shortens another part.
+        room = DIGEST_CHARS - len(head) - len('; ') - len('.')
+        frag = beacon.fragment(view.get('beacon'), at_of(now), room)
+        if frag:
+            head += '; ' + frag
+    text = _fit(head + '.', DIGEST_CHARS)
     apps = {}
     for slug, a in sorted((view.get('apps') or {}).items()):
         name = SHORT.get(a.get('name'), a.get('name'))

@@ -2,71 +2,87 @@
   "apps": {
     "house_brain_ai_access": {
       "files": 25,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "f82d103a711527b38af0ea113b70e75e0f48f2a84aea54c03f1995c0bc86d833",
       "version": "0.1.11-dev"
     },
     "house_brain_cooling_ai": {
       "files": 25,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "68ea05166710bb7ee14cdce73501f0f71854101034b933fc5bdc58a19d94b3a5",
       "version": "0.3.0"
     },
     "house_brain_deployer": {
       "files": 65,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "d0a875af807652c33c9bae772c1c83aa1d99aafdf8aa23f2a0d6abb6acf47688",
       "version": "0.3.46"
     },
     "house_brain_energy_ai": {
       "files": 42,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "00b616a37c5e317840c5d73f5e9f4b7aa13f98bc9b5d39331f92e455cffa5b11",
       "version": "0.1.9"
     },
     "house_brain_engineering_inspector": {
       "files": 20,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "57fe3e112fa1f101977e521dfeaf4d72a0f2a205f2a5f696b350523221d3916f",
       "version": "0.2.29"
     },
     "house_brain_engineering_observer": {
       "files": 13,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "9bf2f96ba638f81eeb32229c6e429a9fb4f00018a53a1d779e0712890bddddba",
       "version": "0.2.5"
     },
     "house_brain_house_health_ai": {
       "files": 28,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "c479144773205b839cb2a134b29508bb87cf7c80c9641929b1f9ac417619c77c",
       "version": "0.1.1"
     },
     "house_brain_maintenance": {
       "files": 76,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "0147339a4d9afa100c12ef97205ca3046ccae0d8750f9b69009ed8199444df64",
       "version": "0.9.61"
     },
     "house_brain_maintenance_inventory_scout": {
       "files": 7,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "1092ac0d05a005d59f46d3f42049f128018c4f7522d1c34828487bfe3843bae8",
       "version": "0.1.2"
     },
     "house_brain_pool_ai": {
       "files": 26,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "2fb991403c22bc9ae7e41dbd98ce095c9b01445bc0100edade983d89f57dec21",
       "version": "0.1.1"
     },
     "house_brain_systems_ai": {
-      "files": 43,
-      "source_manifest_sha256": "d345d4e9d9ec069a0f44d5f5354c700a7fad9a2b7f877f43ece8a0323ef7d51e",
-      "version": "0.3.18"
+      "files": 44,
+      "source_commit": "eb3a6ae3c9c421aa01b64264fa9a1f2283925b28",
+      "source_manifest_sha256": "6a72ed2af660f61b21144af9bdc87dca949b9b4d2664b6e994de9bc8f4fdd097",
+      "version": "0.3.19"
     },
     "house_brain_tang": {
       "files": 12,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "d5ab393582d3726efef6104ee5c2031251063f3402957875e10624dbfb9e7058",
       "version": "0.1.0"
     },
     "house_brain_water_ai": {
       "files": 24,
+      "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
       "source_manifest_sha256": "4f20b34d31a4d3eadf7c3e5a8a5b850250015fa5f68c05105476486bd181dad5",
       "version": "0.1.1"
     }
   },
+  "released_apps": [
+    "house_brain_systems_ai"
+  ],
   "schema_version": "house_brain_apps_store_manifest.v1",
-  "source_commit": "92dd016f8a8eff4d2efdcf26978e4483f999efa7",
+  "source_commit": "eb3a6ae3c9c421aa01b64264fa9a1f2283925b28",
   "source_repository": "private engineering repository"
 }
