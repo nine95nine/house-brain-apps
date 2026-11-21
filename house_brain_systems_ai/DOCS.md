@@ -1,6 +1,15 @@
 # House Brain Systems AI
 
-Version 0.3.19 (shadow). 0.3.19 adds a **version list** to the one family line (`sensor.house_brain_family_status`, which the AI connectors already read), so a release can be confirmed by machine and a failing App is named:
+Version 0.3.21 (shadow). 0.3.21 makes the family line quieter about short blips in another House Brain App (0.3.20 is reserved for the MacBook House Link and is not this release):
+
+- **A short blip is a warning, not a problem.** When another App says its last cycle failed but it finished a good cycle no more than 3 of its own cycles ago (3 minutes for today's Apps), Systems AI shows it as `app health degraded` (WATCH), not `app health failed` (PROBLEMS). The App's own reasons are still listed.
+- **It becomes an error by itself** at the next 5-minute read if the App has not recovered. A loop that stopped (`CYCLE_OVERDUE`), a broken health block, or a stale, unreachable or invalid one is an error at once, as before.
+- **Home Assistant restarts are not held against the Apps.** The 3 minutes start when Systems AI could last not read Home Assistant, if that is later than the App's last good cycle.
+- **The first reasons are kept.** A case's timeline keeps the reasons from the first read, and says `WORSENED` if a warning later became an error.
+- **One-read cases are counted** on the page under Cases: how many of the cases closed in the last 7 days were a single problem seen in one read. A high number means this page is crying wolf.
+- The 3 cycles are fixed in the App; there is no new setting. No new route, entity or schema; the health schema, the read policy and every other App are unchanged.
+
+0.3.19 added a **version list** to the one family line (`sensor.house_brain_family_status`, which the AI connectors already read), so a release can be confirmed by machine and a failing App is named:
 
 - **The top reason names the App** when it is an App problem, for example `top: app health failed: Cooling`. This sits in the first part of the line, which is never cut.
 - **`apps 24h:`** lists the Apps whose version or status changed in the last 24 hours, and every App that is not OK now. Not-OK Apps come first, then the newest change. Example: `apps 24h: Systems 0.3.19, Cooling 0.3.0 failed, Energy 0.1.9 (running 0.1.8), +2 more`.

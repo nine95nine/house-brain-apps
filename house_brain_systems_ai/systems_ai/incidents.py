@@ -20,6 +20,10 @@ KEEP_CHANGES = 200
 SLO_TARGET = .995
 SLO_DAYS = 30
 SEVERITY = ('INFO', 'WARNING', 'ERROR', 'CRITICAL')
+NOISE_DAYS = 7
+NOISE_MARGIN_S = 60
+DETAIL_ITEMS = 6
+DETAIL_CHARS = 64
 # A child problem is hidden while its parent is open (inhibition).
 PARENTS = {'CORE_API_UNREADABLE': ('HA:', 'LOG:', 'REPAIRS:', 'DB:', 'KILL:', 'MEM:', 'MAINT:'),
            'SUPERVISOR_UNREADABLE': ('APP:', 'DISK:', 'BACKUP:')}
@@ -27,6 +31,16 @@ PARENTS = {'CORE_API_UNREADABLE': ('HA:', 'LOG:', 'REPAIRS:', 'DB:', 'KILL:', 'M
 
 def fingerprint(key):
     return hashlib.sha256(key.encode()).hexdigest()[:12]
+
+
+def opened(problem, now):
+    """The timeline row for a problem's first sight. 0.3.21: the first read's reasons (detail) are kept with it, so
+    the cause is still there after the App has recovered; short strings only, at most 6."""
+    row = {'at': now, 'event': 'OPENED', 'key': problem['key'], 'reason': problem['reason']}
+    detail = [d[:DETAIL_CHARS] for d in problem.get('detail') or [] if isinstance(d, str)][:DETAIL_ITEMS]
+    if detail:
+        row['detail'] = detail
+    return row
 
 
 def flap_change(history):
@@ -81,7 +95,10 @@ class Incidents:
                 open_[key] = {**p, 'key': key, 'id': fingerprint(key), 'since': now, 'last_seen': now,
                               'incident': None}
             else:
+                was = open_[key]['severity']
                 open_[key].update(p, last_seen=now)
+                if SEVERITY.index(p['severity']) > SEVERITY.index(was):
+                    self._worsened(open_[key], now)      # 0.3.21: a blip that did not recover is an ERROR case
         for key in list(open_):
             if key in shown or key in flapping:
                 continue
@@ -101,16 +118,23 @@ class Incidents:
             if inc['closed_at'] is None and now - inc['last_open_at'] <= GROUP_S:
                 inc['problems'].append(problem['key'])
                 inc['last_open_at'] = now
-                inc['timeline'].append({'at': now, 'event': 'OPENED', 'key': problem['key'], 'reason': problem['reason']})
+                inc['timeline'].append(opened(problem, now))
                 inc['severity'] = max(inc['severity'], problem['severity'], key=SEVERITY.index)
                 return inc['id']
         inc = {'id': fingerprint(f"{problem['key']}{now}"), 'opened_at': now, 'last_open_at': now, 'closed_at': None,
                'severity': problem['severity'], 'problems': [problem['key']],
-               'timeline': [{'at': now, 'event': 'OPENED', 'key': problem['key'], 'reason': problem['reason']}],
+               'timeline': [opened(problem, now)],
                'related_changes': self.related_changes(now), 'postmortem': None}
         self.state['incidents'].append(inc)
         self.state['incidents'] = self.state['incidents'][-KEEP_INCIDENTS:]
         return inc['id']
+
+    def _worsened(self, problem, now):
+        """An open problem's severity went up: its incident's severity follows and the timeline says so."""
+        for inc in self.state['incidents']:
+            if inc['id'] == problem.get('incident') and inc['closed_at'] is None:
+                inc['timeline'].append({**opened(problem, now), 'event': 'WORSENED'})
+                inc['severity'] = max(inc['severity'], problem['severity'], key=SEVERITY.index)
 
     def _close_problem(self, problem, now):
         for inc in self.state['incidents']:
@@ -153,6 +177,17 @@ class Incidents:
                                           ((fast >= 14.4 and slow >= 14.4) or (slow >= 6 and fast >= 6))),
                             'days': len(s['days'])}
         return out
+
+    def noise(self, now, slow_s):
+        """0.3.21: cases closed in the last 7 days that lasted about one slow read (slow read + close delay + 60 s)
+        with a single problem. A count over what is already stored: a measure of this App crying wolf."""
+        limit = slow_s + CLOSE_AFTER_S + NOISE_MARGIN_S
+        closed = [i for i in self.state['incidents'] if i['closed_at'] is not None
+                  and now - i['closed_at'] <= NOISE_DAYS * 86400]
+        single = [i for i in closed if len(i['problems']) == 1 and i['closed_at'] - i['opened_at'] <= limit]
+        return {'days': NOISE_DAYS, 'closed': len(closed), 'single_read': len(single),
+                'single_read_error': sum(i['severity'] in ('ERROR', 'CRITICAL') for i in single),
+                'max_seconds': limit, 'kept_incidents': KEEP_INCIDENTS}
 
     def recent(self, limit=10):
         return list(reversed(self.state['incidents']))[:limit]

@@ -13,6 +13,7 @@ day per specialist, never while held, only to a started App (specialists.py). Th
 0.3.14 (A3b): findings from the House link's /link/v1/findings go to their own store (findings.py) and the page only;
 they never reach cases, investigations, hypotheses, suggestions, O&M, Maintenance or the Deployer.
 """
+import math
 import re
 import resource
 import time
@@ -57,6 +58,13 @@ FIXED_HEALTH_PORTS = {'house_brain_tang': 8099}
 APP_HEALTH_REASONS = {'DEGRADED': 'APP_HEALTH_DEGRADED', 'FAILED': 'APP_HEALTH_FAILED', 'STALE': 'APP_HEALTH_STALE',
                       'INVALID': 'APP_HEALTH_INVALID', 'UNREACHABLE': 'APP_HEALTH_UNREACHABLE'}
 FAST_S, SLOW_S, HOURLY_S, DAY_S, INSTALLED_REFRESH_S = 60, 300, 3600, 86400, 3600
+# 0.3.21 (alert noise, design review 2026-11-18 + owner pop-up 2026-11-21): a sibling that says FAILED but finished a
+# good cycle no more than this many of its own cycles ago had a blip, not an outage; it reads as a WARNING. A fixed
+# number on purpose (owner: "Version line only"): changing it is a reviewed release. 1 is the behaviour before 0.3.21.
+APP_FAIL_GRACE_CYCLES = 3
+APP_FAIL_GRACE_MAX_INTERVAL_S = 300          # a slow publisher never gets more than 3 x 300 s
+# These reasons mean the App's loop or its own health block is broken; they are never a blip.
+APP_FAIL_HARD = frozenset({'CYCLE_OVERDUE', 'HEALTH_SELF_CHECK_FAILED'})
 ONM_READING_MAX_S = 3 * FAST_S      # 0.3.16: an older kill-switch reading holds the O&M routes (180 s, as the house rule)
 PROPOSE_AFTER_S = 900
 # 0.2.3 (owner pop-up 2026-11-01 "Systems AI 0.2.3 alarm"): AI Access publishes the kill switch. When it stops, the
@@ -109,7 +117,35 @@ def mib(text):
     return float(m.group(1)) * {'KiB': 1 / 1024, 'MiB': 1, 'GiB': 1024, 'TiB': 1024 * 1024}[m.group(2)]
 
 
-def app_problems(name, slug, info, observed):
+def failed_age(observed, core_down_at=None):
+    """0.3.21: seconds since a FAILED sibling was last known good, from its own block; None when that is unknown.
+
+    The clock starts at the App's last good cycle, or at the last moment Systems AI itself could not read Home
+    Assistant when that is later: time Home Assistant was down is not the App's failure. Anything implausible
+    (no doc, a time after the block's own time, a wrong type) is None, which the caller grades as an ERROR."""
+    doc = observed.get('doc')
+    if not isinstance(doc, dict):
+        return None
+    at, good = doc.get('at'), (doc.get('cycle') or {}).get('last_good_at')
+    starts = [v for v in (good, core_down_at) if type(v) in (int, float) and math.isfinite(v)]
+    if type(at) not in (int, float) or not starts:
+        return None
+    age = at - max(starts)
+    return age if age >= 0 else None
+
+
+def failed_is_transient(observed, core_down_at=None):
+    """0.3.21: True only for FAILED with a known, fresh last-good time and no hard reason. Fails toward ERROR."""
+    if observed.get('status') != 'FAILED' or APP_FAIL_HARD & set(observed.get('reasons') or []):
+        return False
+    age = failed_age(observed, core_down_at)
+    interval = ((observed.get('doc') or {}).get('cycle') or {}).get('interval_s')
+    if age is None or type(interval) is not int or interval <= 0:
+        return False
+    return age <= APP_FAIL_GRACE_CYCLES * min(interval, APP_FAIL_GRACE_MAX_INTERVAL_S)
+
+
+def app_problems(name, slug, info, observed, core_down_at=None):
     """Problems for one sibling App from its Supervisor info and its health block."""
     out = {}
     state, boot = info.get('state'), info.get('boot')
@@ -127,9 +163,12 @@ def app_problems(name, slug, info, observed):
                                                'proposal': ('start_app', slug)}
     if state == 'started' and observed is not None and observed['status'] != 'OK':
         status = observed['status']
+        # 0.3.21: a FAILED block whose last good cycle is fresh is graded as the App's DEGRADED (a WARNING); the
+        # App's own reasons stay in detail, and the next read makes it an ERROR by itself if it has not recovered.
+        soft = status == 'DEGRADED' or failed_is_transient(observed, core_down_at)
         out[f'APP:{slug}:HEALTH'] = {
-            'severity': 'WARNING' if status == 'DEGRADED' else 'ERROR',
-            'reason': APP_HEALTH_REASONS[status], 'subject': slug, 'owner': 'systems_ai',
+            'severity': 'WARNING' if soft else 'ERROR',
+            'reason': APP_HEALTH_REASONS['DEGRADED' if soft else status], 'subject': slug, 'owner': 'systems_ai',
             'detail': observed['reasons'][:6],
             'proposal': ('restart_app', slug) if status in ('STALE', 'UNREACHABLE') or (
                 status == 'FAILED' and 'CYCLE_OVERDUE' in observed['reasons']) else None}
@@ -206,6 +245,7 @@ class Runtime:
         self.inputs = {}
         self.states = None
         self.problems_fast = {}
+        self.core_down_at = None      # 0.3.21: last time this App could not read Home Assistant (memory only)
 
     # -- helpers -----------------------------------------------------------------------------
     def _metric(self, name, value, now):
@@ -236,6 +276,7 @@ class Runtime:
         except (OSError, ValueError, TransportError):
             states = None
             self.inputs['core_api'] = False
+            self.core_down_at = now
         self.states = states
         self.hold = self.gate(states, now)
         problems = {}
@@ -388,7 +429,7 @@ class Runtime:
                     observed = app_health.observe(raw, now, expected_app=name)
                 self._change('app_version:' + slug, info.get('version'), now, 'UPDATE')
                 self._change('app_state:' + slug, info.get('state'), now, 'APP_STATE')
-                problems.update(app_problems(name, slug, info, observed))
+                problems.update(app_problems(name, slug, info, observed, self.core_down_at))
                 apps[slug] = {'name': name, 'state': info.get('state'), 'boot': info.get('boot'),
                               'boot_config': info.get('boot_config'),
                               'version': info.get('version'), 'update_available': info.get('update_available'),
@@ -614,6 +655,7 @@ class Runtime:
             'world_changes': {**self.radar.report(now), 'last_read': self.radar_last},
             'findings': self.findings.report(now),               # 0.3.14: the page's "What the house read" only
             'error_budgets': self.incidents.slo_report(now), 'forecasts': forecasts,
+            'alert_noise': self.incidents.noise(now, SLOW_S),      # 0.3.21: how often a case was one read long
             'changes': self.incidents.state['changes'][-30:], 'proposals': self.proposals,
             'proposal_scorecard': self.store.get('proposal_scorecard', {}),
             'archive': {**self.archive.report(now), 'last_read': self.archive_last},
