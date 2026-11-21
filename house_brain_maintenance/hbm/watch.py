@@ -34,6 +34,7 @@ from . import reauth as RA
 from . import problems as PR
 from . import rules as RU
 from . import systemsai as SA
+from . import settingsline as SL                         # 0.9.63: the summary timing line
 from .ha import AI_ACTIVITY_ENTITY, AI_CONNECTORS_ENTITY, AI_TILE_ENTITY, DEPLOYER_STATUS_ENTITY, INSPECTOR_SLUG, LOCAL_OBSERVER, ForbiddenCall, HAError, HomeAssistant, RE_SLUG
 from .journal import Journal
 
@@ -379,6 +380,8 @@ class Watcher:
     # -- one check ---------------------------------------------------------------------
     def check(self) -> dict:
         now = self.clock()
+        # 0.9.63: the previous problem check's time, for the morning summary's timing line (memory only)
+        self._prev_check_at, self._last_check_at = getattr(self, "_last_check_at", None), now
         st = self._state()
         self._since(st)                                         # 0.9.19: before any review is looked at
         first_seen = {k: v["first"] for k, v in st["open"].items()}
@@ -1157,16 +1160,20 @@ class Watcher:
                 settings = self.settings_line()
             except Exception:  # noqa: BLE001 - a status line only
                 settings = ""
+        prev = getattr(self, "_prev_check_at", None)
+        timing = SL.timing_line(now, self.p.digest_hour, prev) if (items or cleared or extra) else ""   # 0.9.63
+        tail = ([settings] if settings else []) + ([timing] if timing else [])
+        due = {"due_hour": int(self.p.digest_hour), "prev_check_s": None if prev is None else int(now - prev)}
         if not items and not cleared:
             if extra:
                 text = self._markdown("morning summary", [], [])
-                for line in extra + ([settings] if settings else []):
+                for line in extra + tail:
                     text = text.replace("\n\n_Posted by", f"\n- {line}\n\n_Posted by", 1)
                 if needs_machine:
                     text += "\n" + needs_machine
                 self._post(text)
                 self.j.audit("issues", "PROBLEM_SUMMARY", items=0, cleared=0, reviewer_silent=bool(silent),
-                             auto_fixed=len(overnight))
+                             auto_fixed=len(overnight), **due)
             return
         lines = [f"- {it['title']}" for it in items[:6]]
         if total > 6:
@@ -1176,7 +1183,7 @@ class Watcher:
         lines += extra
         title = f"Maintenance: {total} to look at" if items else "Maintenance: problems cleared"
         text = self._markdown("morning summary", items, cleared)
-        for line in extra + ([settings] if settings else []):
+        for line in extra + tail:
             text = text.replace("\n\n_Posted by", f"\n- {line}\n\n_Posted by", 1)
         if needs_machine:
             text += "\n" + needs_machine                                     # 0.9.50 B4: never a review line
@@ -1186,7 +1193,7 @@ class Watcher:
                   todo=("Follow each item's steps: each one is linked below.",) if items else (),
                   old_text="\n".join(lines)[:900], link=url or self.issue_url,
                   refs=[str(it.get("key", "")) for it in items])
-        self.j.audit("issues", "PROBLEM_SUMMARY", items=len(items), cleared=len(cleared))
+        self.j.audit("issues", "PROBLEM_SUMMARY", items=len(items), cleared=len(cleared), **due)
 
     def reviewer_silent_line(self, now: float) -> str:
         """0.9.41 (fail-safe chat hand-off): "" while the cloud reviewer posted within REVIEWER_SILENT_SECONDS or its

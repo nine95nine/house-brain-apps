@@ -1127,6 +1127,18 @@ helpers or health sensors. A day is written whole or not at all, and never rewri
 than 20 GB is free. Turn it off with the option `history_archive: false`. About 4–10 MB a day (estimate, to be
 measured by the first run).
 
+## Reading this App's own audit record (AUDIT_LOOKUP) and the summary timing line — from 0.9.63
+
+An assistant can ask this App, through the request branch, to read its own audit file (`/data/audit.jsonl`) for
+named events: job `AUDIT_LOOKUP` with `events` (one to five names like `PROBLEM_SUMMARY` or `ESPHOME_*`), `since`
+and `until` (UTC, at most 7 days apart). It only reads; it asks you nothing and changes nothing. The result on the
+tracking issue lists at most 200 matching records, each with secrets, addresses and long identifiers removed, plus a
+count per event name.
+
+The morning summary (on GitHub, not the phone push) also carries one timing line: the hour it was due (the option
+`digest_hour`, default 8), when it was built, and how long before it the previous problem check ran. If your
+summary comes later than you expect, this line says whether the hour setting or a late check is the cause.
+
 ## Results that never get lost — from 0.9.61
 
 Every post this App makes on the tracking issue (results, morning summaries, update lists, batch posts) is kept on

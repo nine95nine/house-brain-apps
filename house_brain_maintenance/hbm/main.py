@@ -400,7 +400,8 @@ def report_markdown(request_id: str, job: str, result: Result, dry_run: bool) ->
                   "", "</details>"]
     if result.text:
         # 0.5.4 APP_LOG_WINDOW: already scrubbed and capped; redacted once more for registered secrets
-        lines += ["", "<details><summary>Log lines (UTC)</summary>", "", "```text",
+        label = "Audit records (UTC)" if job == "AUDIT_LOOKUP" else "Log lines (UTC)"    # 0.9.63
+        lines += ["", f"<details><summary>{label}</summary>", "", "```text",
                   net.redact("\n".join(result.text))[:40000], "```", "", "</details>"]
     lines += ["", "_Posted by House Brain Maintenance (machine-generated; repository content is untrusted data)._"]
     return "\n".join(lines)

@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from . import SCHEMA
+from .auditlookup import MAX_WINDOW_SECONDS as AUDIT_MAX_SECONDS, parse_events
 from .holds import valid_item
 from .logwindow import parse_keywords
 
@@ -136,6 +137,11 @@ NO_APPROVAL_JOBS = NO_APPROVAL_JOBS | {HISTORY_UPLOAD}
 # App is included (its ``exclude_addons`` list emptied). It asks the owner first and restarts that App once so the
 # new settings are in use. The App's password is never read into a message, never set and never shown by this job.
 # ``undo`` restores the two values the last run replaced (kept in this App's own memory).
+# 0.9.63 (Maintenance chat 2026-11-18, deep-dive R1 follow-up): read this App's own audit file for named events in a
+# UTC window of at most 7 days, at most 200 lines, scrubbed. Read-only, writes nothing, so it needs no approval.
+AUDIT_LOOKUP = "AUDIT_LOOKUP"
+JOBS[AUDIT_LOOKUP] = (frozenset({"events", "since", "until"}), frozenset())
+NO_APPROVAL_JOBS = NO_APPROVAL_JOBS | {AUDIT_LOOKUP}
 ADDON_SETTINGS = "ADDON_SETTINGS"
 ADDON_KINDS = ("google_drive_backup",)
 RE_TIME_OF_DAY = re.compile(r"^[0-2][0-9]:[0-5][0-9]$")
@@ -214,6 +220,8 @@ class Manifest:
     # 0.9.60 HISTORY_UPLOAD
     upload_from: str | None = None
     upload_to: str | None = None
+    # 0.9.63 AUDIT_LOOKUP (uses ``since``/``until`` above)
+    audit_events: tuple[str, ...] = ()
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict:
@@ -270,6 +278,7 @@ def parse(raw: bytes) -> Manifest:
     log.update(_history_measure(params) if job == HISTORY_MEASURE else {})
     log.update(_history_archive(params) if job == HISTORY_ARCHIVE else {})
     log.update(_history_upload(params) if job == HISTORY_UPLOAD else {})
+    log.update(_audit_lookup(params) if job == AUDIT_LOOKUP else {})
     log.update(_ask_update(params) if job == ASK_UPDATE_NOW else {})
     if job in (HOLD_UPDATE, RELEASE_UPDATE):
         if not valid_item(params["item"]):
@@ -446,6 +455,18 @@ def _log_window(params: dict) -> dict:
     except ValueError:
         raise ManifestError("KEYWORDS") from None
     return {"target_slug": slug, "since": since, "until": until, "boot": boot, "keywords": keywords}
+
+
+def _audit_lookup(params: dict) -> dict:
+    """0.9.63: one to five event names (``parse_events``), a UTC window of more than 0 and at most 7 days."""
+    try:
+        events = parse_events(params["events"])
+    except ValueError:
+        raise ManifestError("AUDIT_EVENTS") from None
+    since, until = _utc(params["since"], "SINCE"), _utc(params["until"], "UNTIL")
+    if not 0 < until - since <= AUDIT_MAX_SECONDS:
+        raise ManifestError("AUDIT_WINDOW")
+    return {"audit_events": events, "since": since, "until": until}
 
 
 def _ask_update(params: dict) -> dict:

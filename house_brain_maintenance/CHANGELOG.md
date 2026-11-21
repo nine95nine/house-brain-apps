@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.63
+
+**Read the App's own audit record; a timing line in the morning summary** (Maintenance chat 2026-11-18, follow-up to
+deep-dive review R1 and the 0.9.61 live record; design review
+`docs/validation/HBM_0_9_63_AUDIT_LOOKUP_DESIGN_REVIEW_2026-11-18.md`). Contains 0.9.61 unchanged otherwise.
+0.9.62 is left to the history lane. No new option.
+
+- **New request job `AUDIT_LOOKUP`** (`hbm/auditlookup.py`): reads `/data/audit.jsonl` for one to five event names
+  (`UPPER_CASE`, or a prefix ending in `*` with at least 3 characters) in a UTC window of at most 7 days. Read-only,
+  no approval, writes nothing. At most 200 records shown, each scrubbed (`issues.scrub` plus bare token shapes) and
+  cut to 300 characters, at most 40,000 characters in all; a count per event name always covers every match; unreadable
+  lines are counted, never shown. One result post on the tracking issue ("Audit records (UTC)").
+- **Timing line in the morning summary** (GitHub only): the hour it was due and that it is the option `digest_hour`
+  (and the default when it differs), the time it was built, the minutes late, and the gap since the previous problem
+  check. The `PROBLEM_SUMMARY` audit record gains `due_hour` and `prev_check_s`. Why: the summary has posted about
+  12:00 Arizona every day since 2026-10-20 instead of 08:00, and nothing visible says whether the option or a late
+  check is the cause.
+- $0: no new post, no new network call. `CONTROL_AUTHORITY=NONE`.
+
 ## 0.9.61
 
 **Never lose a result** (deep-dive review R1, slice S1; owner pop-ups 2026-11-16 "build all slices, your order" and

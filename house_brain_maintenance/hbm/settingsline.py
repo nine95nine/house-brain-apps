@@ -39,3 +39,32 @@ def attributes(update_mode: str, owed: dict | None, now: float | None = None) ->
     owed = owed or {}
     return {"update_mode": update_mode, "time_zone": f"{name} (UTC{offset})", "time_zone_ok": ok,
             "posts_owed": int(owed.get("owed", 0)), "posts_owed_oldest_hours": float(owed.get("oldest_hours", 0.0))}
+
+
+# 0.9.63 (Maintenance chat 2026-11-18): the morning summary has posted about 12:00 Arizona every day since 2026-10-20
+# instead of 08:00. From outside nobody can tell whether the hour option says 12 or the problem check did not run in
+# the morning. The summary now says both: the hour it was due (and that the hour is the option ``digest_hour``), when
+# it was built, and how long before it the previous problem check ran. No new post, no network call.
+DEFAULT_DIGEST_HOUR = 8
+
+
+def _span(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    if seconds < 120:
+        return f"{int(seconds)} s"
+    if seconds < 7200:
+        return f"{int(seconds // 60)} min"
+    return f"{seconds / 3600:.1f} h"
+
+
+def timing_line(now: float, digest_hour: int, prev_check: float | None) -> str:
+    """One summary line: due hour (option ``digest_hour``), built time, minutes late, gap since the previous check."""
+    lt = time.localtime(now)
+    name, _, _ = zone(now)
+    late = max(0, (lt.tm_hour - int(digest_hour)) * 60 + lt.tm_min)
+    hour = f"{int(digest_hour):02d}:00 (option `digest_hour`: {int(digest_hour)}"
+    hour += ")" if int(digest_hour) == DEFAULT_DIGEST_HOUR else f"; the default is {DEFAULT_DIGEST_HOUR})"
+    gap = ("this is the first problem check since the App started" if prev_check is None
+           else f"the problem check before this one ran {_span(now - prev_check)} earlier")
+    return (f"Timing: this summary was due at {hour} and was built at {time.strftime('%H:%M', lt)} {name}, "
+            f"{late} min after it was due; {gap}.")

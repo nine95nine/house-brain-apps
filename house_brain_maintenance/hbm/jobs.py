@@ -27,7 +27,7 @@ from . import approval, net
 from .ha import AppView, ForbiddenCall, HAError, HomeAssistant, fingerprint
 from .journal import Journal
 from . import logwindow
-from .manifest import (APP_LOG_WINDOW, CHECK_BROKER, HISTORY_ARCHIVE, HISTORY_MEASURE, HISTORY_UPLOAD, LEGACY_STAGE, RETIRE_LOCAL_APP, ROTATE_SCOUT_KEY,
+from .manifest import (APP_LOG_WINDOW, AUDIT_LOOKUP, CHECK_BROKER, HISTORY_ARCHIVE, HISTORY_MEASURE, HISTORY_UPLOAD, LEGACY_STAGE, RETIRE_LOCAL_APP, ROTATE_SCOUT_KEY,
                        RUN_SCOUT_ONCE, WRITER_PROBE, Manifest)
 from .writer import WriterError
 from .web import ApprovalBoard
@@ -58,7 +58,7 @@ class Result:
     outcome: str
     reasons: list[str] = field(default_factory=list)
     facts: dict = field(default_factory=dict)
-    text: list[str] = field(default_factory=list)   # 0.5.4: scrubbed, capped log lines (APP_LOG_WINDOW only)
+    text: list[str] = field(default_factory=list)   # 0.5.4: scrubbed, capped lines (APP_LOG_WINDOW, AUDIT_LOOKUP)
 
 
 @dataclass
@@ -189,6 +189,9 @@ class Engine:
                 return self._check_broker(m)
             if m.job == APP_LOG_WINDOW:
                 return self._app_log_window(m)
+            if m.job == AUDIT_LOOKUP:                       # 0.9.63: this App's own audit file, read-only
+                from . import auditlookup
+                return auditlookup.run(self.j.audit_path, m)
             if m.job == HISTORY_MEASURE:                    # 0.9.27: read-only, no approval, keeps nothing
                 from . import histmeasure
                 return histmeasure.run(self.ha, m)
