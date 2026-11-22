@@ -1,5 +1,7 @@
 # House Brain Systems AI
 
+Version 0.3.24 (shadow). 0.3.24 is 0.3.23 with the embedded read policy 1.15.0: the family status sensor (`sensor.house_brain_family_status`) joins the history list, so read-only AI connectors can see 24 hours of its state word (OK, WATCH, PROBLEMS and the rest). Its text stays current-only. No code change, no new route, field or entity.
+
 Version 0.3.23 (shadow). 0.3.23 makes the status words in the `apps:` list on the family line (`sensor.house_brain_family_status`) agree with the problem list:
 
 - **A short blip reads `degraded`, not `failed`.** Since 0.3.21 a failed cycle with a good cycle no more than 3 cycles earlier is a warning (`app health degraded`). The `apps:` list now prints the same word. If the App stays failed, both say `failed`.
