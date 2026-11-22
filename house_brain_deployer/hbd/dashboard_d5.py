@@ -24,6 +24,29 @@ custom cards, iframes, strategies and templates stay refused. A created
 subview must be reachable by navigation from a top-level view of the same new
 dashboard. Repoint, removal, replacement, reordering and subview changes on an
 existing dashboard stay refused, as in R1.
+
+0.3.52 (deep dive HOME_CENTER_MAIN_DASHBOARD_DEEP_DIVE_2026-11-22, findings A2-A4):
+- ``house_brain_dashboard_replace_request.v1``: replace the WHOLE config of a
+  dashboard that D5 itself created. A separate schema, not a create option,
+  so create keeps its absolute "target must not exist" rule. The request
+  names the D5 request (``provenance_request_id``) whose recorded result hash
+  must equal the live hash (the Deployer proves this from its own ledger and
+  the request file, see dashboard_d5_owned); an owner edit in the UI changes
+  the hash and the request is refused. The new config passes the same closed
+  R2 guard as a create.
+- ``house_brain_dashboard_transplant_request.v1``: copy whole sections/cards
+  byte-identically from a source dashboard (bound to its live hash) to the
+  end of a D5-created target. Owner decision 2026-11-22 (pop-up "A: copy
+  as-is"): the copied subtrees keep templates/custom cards exactly as they
+  are; they are not generated content. Every house-changing entity in the
+  copy must be declared in ``expect_control_entities`` and is listed on the
+  owner's phone.
+- A4: an ``entities``-card row whose entity can change the house must say
+  ``type: simple-entity`` or ``attribute`` (Home Assistant frontend
+  create-row-element.ts DOMAIN_TO_ELEMENT_TYPE renders a typeless row as a
+  live toggle/slider), and such a card must set ``show_header_toggle: false``
+  (hui-entities-card.ts computeShowHeaderToggle shows a toggle-all switch
+  when a titled card holds two toggleable entities, whatever the row type).
 """
 from __future__ import annotations
 
@@ -38,6 +61,14 @@ from .manifest import RE_REQUEST_ID, REQUESTERS
 
 PATCH_SCHEMA = "house_brain_dashboard_patch_request.v1"
 CREATE_SCHEMA = "house_brain_dashboard_create_request.v1"
+REPLACE_SCHEMA = "house_brain_dashboard_replace_request.v1"        # 0.3.52
+TRANSPLANT_SCHEMA = "house_brain_dashboard_transplant_request.v1"  # 0.3.52
+SCHEMA_KINDS = {PATCH_SCHEMA: "patch", CREATE_SCHEMA: "create",
+                REPLACE_SCHEMA: "replace", TRANSPLANT_SCHEMA: "transplant"}
+# Kinds that rewrite an existing storage dashboard (before/after hash, Undo copy).
+REWRITE_KINDS = frozenset({"patch", "replace", "transplant"})
+# Kinds allowed only on a dashboard D5 itself created (provenance-bound).
+OWNED_KINDS = frozenset({"replace", "transplant"})
 PLAN_SCHEMA = "dashboard_steward_change_plan.v1"
 BINDING_SCOPE = "DASHBOARD_PRESENTATION_ONLY"
 MAX_REQUEST_BYTES = 128 * 1024
@@ -47,6 +78,13 @@ RE_SHA = re.compile(r"^[0-9a-f]{64}$")
 RE_URL = re.compile(r"^[a-z0-9]+-[a-z0-9-]{1,60}$")
 RE_PROPOSAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,100}$")
 RE_VIEW_PATH = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+RE_SOURCE_URL = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")   # any storage/YAML dashboard address (not the default)
+MAX_TRANSPLANT_CONTROLS = 200
+# Domains read when listing the entities a transplant copies (strings, templates included).
+READ_DOMAINS = frozenset({
+    "sensor", "binary_sensor", "weather", "person", "sun", "zone", "device_tracker", "camera", "image",
+    "calendar", "todo", "event", "air_quality", "geo_location", "alert", "conversation", "tts", "stt",
+    "image_processing", "notify", "wake_word", "ai_task", "assist_satellite", "plant", "proximity"})
 # Until independent registry/NDEC qualification exists, the only safe
 # generated card is static Markdown. Graph/gauge cards can introduce
 # unverified entities and implicit controls, so they fail closed.
@@ -99,6 +137,10 @@ class D5Request:
     plan: dict
     digest: str
     allowed_controls: tuple = ()
+    provenance_request_id: str | None = None        # 0.3.52 replace/transplant
+    source_dashboard: str | None = None              # 0.3.52 transplant
+    expect_source_config_sha256: str | None = None   # 0.3.52 transplant
+    expect_controls: tuple = ()                      # 0.3.52 transplant
 
 
 def _refuse_if(condition: bool, reason: str):
@@ -135,7 +177,7 @@ def is_d5(raw: bytes) -> bool:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError, RecursionError):
         return False
-    return isinstance(data, dict) and data.get("schema") in {PATCH_SCHEMA, CREATE_SCHEMA}
+    return isinstance(data, dict) and data.get("schema") in SCHEMA_KINDS
 
 
 def parse(raw: bytes) -> D5Request:
@@ -150,16 +192,23 @@ def parse(raw: bytes) -> D5Request:
         raise D5Refused("REQUEST_JSON") from err
     _refuse_if(not isinstance(data, dict), "REQUEST_SHAPE")
     schema = data.get("schema")
-    _refuse_if(schema not in {PATCH_SCHEMA, CREATE_SCHEMA}, "SCHEMA_REFUSED")
-    kind = "patch" if schema == PATCH_SCHEMA else "create"
+    _refuse_if(schema not in SCHEMA_KINDS, "SCHEMA_REFUSED")
+    kind = SCHEMA_KINDS[schema]
     fields = {"schema", "request_id", "requested_by", "tracking_issue",
               "dashboard", "proposal_id", "expect_candidate_sha256",
               "plan", "owner_binding"}
-    if kind == "patch":
+    if kind in REWRITE_KINDS:
         fields.add("expect_config_sha256")
-    else:
+    if kind == "create":
         fields.add("title")
-    _refuse_if(set(data) - {"allowed_control_entities"} != fields, "REQUEST_FIELDS")
+    if kind in OWNED_KINDS:
+        fields.add("provenance_request_id")
+    if kind == "transplant":
+        fields |= {"source_dashboard", "expect_source_config_sha256", "expect_control_entities"}
+        # The copy's controls are declared and counted, never allowed by a separate list.
+        _refuse_if(set(data) != fields, "REQUEST_FIELDS")
+    else:
+        _refuse_if(set(data) - {"allowed_control_entities"} != fields, "REQUEST_FIELDS")
     allowed = data.get("allowed_control_entities", [])
     _refuse_if(not isinstance(allowed, list) or len(allowed) > MAX_ALLOWED_CONTROLS
                or len(set(map(str, allowed))) != len(allowed)
@@ -183,9 +232,28 @@ def parse(raw: bytes) -> D5Request:
     _refuse_if(not isinstance(expected, str) or not RE_SHA.fullmatch(expected),
                "CANDIDATE_SHA")
     baseline = data.get("expect_config_sha256")
-    if kind == "patch":
+    if kind in REWRITE_KINDS:
         _refuse_if(not isinstance(baseline, str) or not RE_SHA.fullmatch(baseline),
                    "BASELINE_SHA")
+    provenance = data.get("provenance_request_id")
+    if kind in OWNED_KINDS:
+        _refuse_if(not isinstance(provenance, str) or not RE_REQUEST_ID.fullmatch(provenance)
+                   or provenance == rid, "PROVENANCE_REQUEST_ID")
+    source = source_sha = None
+    controls = ()
+    if kind == "transplant":
+        source = data["source_dashboard"]
+        _refuse_if(not isinstance(source, str) or not RE_SOURCE_URL.fullmatch(source)
+                   or source == dashboard, "SOURCE_DASHBOARD")
+        source_sha = data["expect_source_config_sha256"]
+        _refuse_if(not isinstance(source_sha, str) or not RE_SHA.fullmatch(source_sha), "SOURCE_SHA")
+        declared = data["expect_control_entities"]
+        _refuse_if(not isinstance(declared, list) or len(declared) > MAX_TRANSPLANT_CONTROLS
+                   or len(set(map(str, declared))) != len(declared)
+                   or not all(isinstance(e, str) and RE_ENTITY.fullmatch(e)
+                              and e.split(".", 1)[0] in ACTUATOR_DOMAINS for e in declared),
+                   "EXPECT_CONTROL_ENTITIES")
+        controls = tuple(sorted(declared))
     title = data.get("title", "")
     _refuse_if(kind == "create" and (not isinstance(title, str)
                or not 1 <= len(title) <= 80 or any(ord(x) < 32 for x in title)),
@@ -205,15 +273,17 @@ def parse(raw: bytes) -> D5Request:
     ops = plan["operations"]
     _refuse_if(not isinstance(ops, list) or not 1 <= len(ops) <= MAX_OPERATIONS,
                "PLAN_OPERATIONS")
-    kinds = ({"add_card", "add_section", "add_view", "set_view_field"}
-             if kind == "patch" else {"new_dashboard"})
+    kinds = {"patch": {"add_card", "add_section", "add_view", "set_view_field"},
+             "create": {"new_dashboard"}, "replace": {"replace_config"},
+             "transplant": {"copy_section", "copy_card"}}[kind]
     for op in ops:
         _refuse_if(not isinstance(op, dict) or op.get("op") not in kinds,
                    "PLAN_KIND_REFUSED")
     _refuse_if(kind == "create" and len(ops) != 1, "CREATE_ONE_OPERATION")
+    _refuse_if(kind == "replace" and len(ops) != 1, "REPLACE_ONE_OPERATION")
     return D5Request(kind, rid, issue, who, dashboard, title, proposal,
                      baseline, expected, copy.deepcopy(plan), hashlib.sha256(raw).hexdigest(),
-                     tuple(sorted(allowed)))
+                     tuple(sorted(allowed)), provenance, source, source_sha, controls)
 
 
 def _display_only(node, *, root=False, depth=0) -> None:
@@ -319,13 +389,34 @@ def _r2_card(card, allowed: frozenset, depth=0) -> None:
     _r2_entities(card, ents)
     _r2_actions(card, ents, allowed)
     if ctype == "entities":
-        for row in card.get("entities") or []:
+        rows = card.get("entities")
+        _refuse_if(rows is not None and not isinstance(rows, list), "R2_ENTITIES_ROW")
+        control_rows = False
+        for row in rows or []:
             if isinstance(row, dict):
-                _refuse_if(set(row) - {"entity", "name", "type", "icon"}
-                           or row.get("type", "simple-entity") not in ("simple-entity", "attribute"),
+                rtype = row.get("type", "simple-entity")
+                _refuse_if(bool(set(row) - {"entity", "name", "type", "icon", "attribute"})
+                           or rtype not in ("simple-entity", "attribute")
+                           or ("attribute" in row) != (rtype == "attribute")
+                           or ("attribute" in row and (not isinstance(row["attribute"], str)
+                                                       or not 1 <= len(row["attribute"]) <= 64)),
                            "R2_ENTITIES_ROW")
+                ent = row.get("entity")
+                if isinstance(ent, str) and ent.split(".", 1)[0] in ACTUATOR_DOMAINS:
+                    control_rows = True
+                    # 0.3.52 A4: no type = the domain's default row (toggle/slider/run button).
+                    _refuse_if(row.get("type") not in ("simple-entity", "attribute"), "R2_CONTROL_ROW_TYPE")
             elif isinstance(row, str) and row.split(".", 1)[0] in ACTUATOR_DOMAINS:
                 raise D5Refused("R2_INLINE_CONTROL_ROW")   # a plain row renders a toggle
+            elif not isinstance(row, str):
+                raise D5Refused("R2_ENTITIES_ROW")
+        # 0.3.52: the header toggle-all switch acts on every row's entity, whatever the row type.
+        # Frontend computeShowHeaderToggle: shown when show_header_toggle is true, or when the card
+        # has a title and show_header_toggle is unset (and two rows can toggle). Fail closed on both.
+        _refuse_if("show_header_toggle" in card and type(card["show_header_toggle"]) is not bool, "R2_HEADER_TOGGLE")
+        _refuse_if(control_rows and (card.get("show_header_toggle") is True
+                                     or ("title" in card and card.get("show_header_toggle") is not False)),
+                   "R2_HEADER_TOGGLE")
 
 
 def _display_text(node, depth=0) -> None:
@@ -480,17 +571,176 @@ def _additive_patch(plan: dict, before: dict, allowed: frozenset = frozenset()) 
     return cfg
 
 
-def preview(req: D5Request, baseline: dict | None) -> dict:
+def _validated_full_config(result, req: D5Request, *, title: str | None) -> None:
+    """A whole new config (create or replace) passes the closed R2 guard."""
+    _refuse_if(not isinstance(result, dict) or set(result) - {"views", "title"},
+               "CREATE_CONFIG_FIELDS")
+    _refuse_if(not isinstance(result.get("views"), list) or not result["views"],
+               "CREATE_VIEWS")
+    if title is not None:
+        _refuse_if("title" in result and result["title"] != title, "CREATE_TITLE_MISMATCH")
+    elif "title" in result:
+        _refuse_if(not isinstance(result["title"], str) or not 1 <= len(result["title"]) <= 80
+                   or any(ord(x) < 32 for x in result["title"]), "TITLE")
+    _r2_create_views(result["views"], frozenset(req.allowed_controls))
+
+
+# ---------------------------------------------------------------- 0.3.52 transplant (verbatim copy)
+def _source_view(config: dict, ident):
+    """Read-only view lookup (never setdefault on the source)."""
+    _refuse_if(not isinstance(ident, str) or not 1 <= len(ident) <= 64, "TRANSPLANT_POINTER")
+    views = config.get("views")
+    _refuse_if(not isinstance(views, list), "SOURCE_VIEWS_SHAPE")
+    for i, row in enumerate(views if isinstance(views, list) else []):
+        if isinstance(row, dict) and (row.get("path") == ident or str(i) == ident):
+            return i, row
+    raise D5Refused("SOURCE_VIEW_NOT_FOUND")
+
+
+def _index(value, items, code: str) -> int:
+    _refuse_if(type(value) is not int or not isinstance(items, list) or not 0 <= value < len(items), code)
+    return value
+
+
+def _transplant(plan: dict, before, source):
+    """Append verbatim copies; return the candidate and [(destination pointer, source subtree)]."""
+    cfg = copy.deepcopy(before)
+    copied: list = []
+    seen: set = set()
+    key: tuple
+    pointer: tuple
+    for op in plan["operations"]:
+        kind = op["op"]
+        if kind == "copy_section":
+            _refuse_if(set(op) != {"op", "source_view", "source_section", "target_view"}, "OP_FIELDS")
+            _, sview = _source_view(source, op["source_view"])
+            secs = sview.get("sections")
+            si = _index(op["source_section"], secs, "SOURCE_SECTION_NOT_FOUND")
+            key = (kind, op["source_view"], si)
+            subtree = secs[si]
+            _refuse_if(not isinstance(subtree, dict), "SOURCE_SECTION_NOT_FOUND")
+            ti, tview = _source_view(cfg, op["target_view"])
+            tsecs = tview.get("sections")
+            _refuse_if(not isinstance(tsecs, list) or "cards" in tview, "NOT_A_SECTION_VIEW")
+            tsecs.append(copy.deepcopy(subtree))
+            pointer = ("views", ti, "sections", len(tsecs) - 1)
+        elif kind == "copy_card":
+            _refuse_if(set(op) - {"source_section", "target_section"}
+                   != {"op", "source_view", "source_card", "target_view"}, "OP_FIELDS")
+            _, sview = _source_view(source, op["source_view"])
+            if op.get("source_section") is None:
+                _refuse_if("source_section" in op or "sections" in sview, "SOURCE_SECTION_REQUIRED")
+                cards = sview.get("cards")
+            else:
+                secs = sview.get("sections")
+                si = _index(op["source_section"], secs, "SOURCE_SECTION_NOT_FOUND")
+                _refuse_if(not isinstance(secs[si], dict), "SOURCE_SECTION_NOT_FOUND")
+                cards = secs[si].get("cards")
+            ci = _index(op["source_card"], cards, "SOURCE_CARD_NOT_FOUND")
+            key = (kind, op["source_view"], op.get("source_section"), ci)
+            subtree = cards[ci]
+            _refuse_if(not isinstance(subtree, dict), "SOURCE_CARD_NOT_FOUND")
+            ti, tview = _source_view(cfg, op["target_view"])
+            tsec = op.get("target_section")
+            _refuse_if("target_section" in op and tsec is None, "OP_FIELDS")
+            target_cards = _cards(tview, tsec)
+            target_cards.append(copy.deepcopy(subtree))
+            pointer = (("views", ti, "cards", len(target_cards) - 1) if tsec is None
+                       else ("views", ti, "sections", tsec, "cards", len(target_cards) - 1))
+        else:   # parse admits only the two kinds above
+            raise D5Refused("PLAN_KIND_REFUSED")
+        _refuse_if(key in seen, "TRANSPLANT_DUPLICATE")
+        seen.add(key)
+        copied.append((pointer, copy.deepcopy(subtree)))
+    return cfg, copied
+
+
+def at_pointer(config, pointer):
+    node = config
+    for step in pointer:
+        if isinstance(step, int):
+            _refuse_if(not isinstance(node, list) or not 0 <= step < len(node), "POINTER_MISSING")
+        else:
+            _refuse_if(not isinstance(node, dict) or step not in node, "POINTER_MISSING")
+        node = node[step]
+    return node
+
+
+RE_ENTITY_IN_TEXT = re.compile(r"(?<![a-z0-9_.])([a-z_]{2,32})\.([a-z0-9_]{1,96})(?![a-z0-9_])")
+
+
+def inventory(subtrees) -> dict:
+    """What a verbatim copy carries: entity ids, house-changing ids, actions, templates/custom cards.
+
+    Conservative: every string is scanned (templates included), so an entity
+    named only inside a template is still listed.
+    """
+    entities, actions = set(), set()
+    flags = {"templates": False, "custom_cards": False}
+    known = ACTUATOR_DOMAINS | READ_DOMAINS
+
+    def text(value: str) -> None:
+        if "{{" in value or "{%" in value:
+            flags["templates"] = True
+        for m in RE_ENTITY_IN_TEXT.finditer(value):
+            if m.group(1) in known:
+                entities.add(m.group(1) + "." + m.group(2))
+
+    def walk(node, depth=0):
+        _refuse_if(depth > 48, "DEPTH")
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if isinstance(k, str):
+                    text(k)
+                if k == "type" and isinstance(v, str) and v.startswith("custom:"):
+                    flags["custom_cards"] = True
+                if k in ("service", "perform_action", "action") and isinstance(v, str):
+                    if "." in v:
+                        actions.add(v[:96])   # an action name, not an entity id
+                    if "{{" in v or "{%" in v:
+                        flags["templates"] = True
+                    continue
+                walk(v, depth + 1)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, depth + 1)
+        elif isinstance(node, str):
+            text(node)
+    for tree in subtrees:
+        walk(tree)
+    controls = {e for e in entities if e.split(".", 1)[0] in ACTUATOR_DOMAINS}
+    return {"entities": sorted(entities), "controls": sorted(controls), "actions": sorted(actions),
+            "templates": flags["templates"], "custom_cards": flags["custom_cards"]}
+
+
+def preview(req: D5Request, baseline: dict | None, source: dict | None = None) -> dict:
     """Locally recompute the exact candidate; refuses a stale or unreviewed hash."""
-    if req.kind == "patch":
+    if req.kind in ("patch", "transplant"):
         _refuse_if(not isinstance(baseline, dict), "BASELINE_REQUIRED")
         _refuse_if(dashboards.config_sha256(baseline) != req.expect_config_sha256,
-                   "STALE_BASELINE")
-        result = _additive_patch(req.plan, baseline, frozenset(req.allowed_controls))
+                   "STALE_BASELINE" if req.kind == "patch" else "D5_OWNED_CHANGED_SINCE_LAST_WRITE")
+        if req.kind == "patch":
+            result = _additive_patch(req.plan, baseline, frozenset(req.allowed_controls))
+        else:
+            _refuse_if(not isinstance(source, dict), "SOURCE_REQUIRED")
+            _refuse_if(dashboards.config_sha256(source) != req.expect_source_config_sha256,
+                       "SOURCE_CHANGED")
+            result, copied = _transplant(req.plan, baseline, source)
+            inv = inventory([tree for _p, tree in copied])
+            _refuse_if(tuple(inv["controls"]) != req.expect_controls, "TRANSPLANT_CONTROLS_MISMATCH")
         try:
             dashboard_d5_no_loss.prove_additive(baseline, result)
         except dashboard_d5_no_loss.NoLossViolation as err:
             raise D5Refused(str(err)) from err
+        _refuse_if(result == baseline, "NO_CHANGE")
+    elif req.kind == "replace":
+        _refuse_if(not isinstance(baseline, dict), "BASELINE_REQUIRED")
+        _refuse_if(dashboards.config_sha256(baseline) != req.expect_config_sha256,
+                   "D5_OWNED_CHANGED_SINCE_LAST_WRITE")
+        op = req.plan["operations"][0]
+        _refuse_if(set(op) != {"op", "config"}, "OP_FIELDS")
+        result = copy.deepcopy(op["config"])
+        _validated_full_config(result, req, title=None)
         _refuse_if(result == baseline, "NO_CHANGE")
     else:
         _refuse_if(baseline is not None, "CREATE_TARGET_EXISTS")
@@ -499,14 +749,13 @@ def preview(req: D5Request, baseline: dict | None) -> dict:
                    or op["url_path"] != req.dashboard or op["title"] != req.title,
                    "CREATE_PLAN_MISMATCH")
         result = copy.deepcopy(op["config"])
-        _refuse_if(not isinstance(result, dict) or set(result) - {"views", "title"},
-                   "CREATE_CONFIG_FIELDS")
-        _refuse_if(not isinstance(result.get("views"), list) or not result["views"],
-                   "CREATE_VIEWS")
-        _refuse_if("title" in result and result["title"] != req.title,
-                   "CREATE_TITLE_MISMATCH")
-        _r2_create_views(result["views"], frozenset(req.allowed_controls))
+        _validated_full_config(result, req, title=req.title)
     _refuse_if(len(_canonical(result)) > MAX_CONFIG_BYTES, "CONFIG_TOO_LARGE")
     _refuse_if(dashboards.config_sha256(result) != req.expect_candidate_sha256,
                "CANDIDATE_SHA_MISMATCH")
     return result
+
+
+def transplant_copies(req: D5Request, baseline, source):
+    """The (pointer, subtree) list for read-back; only after preview admitted the request."""
+    return _transplant(req.plan, baseline, source)[1]

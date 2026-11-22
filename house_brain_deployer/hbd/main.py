@@ -23,6 +23,7 @@ from . import (
     approval,
     companion_setup,
     dashboard_d5,
+    dashboard_d5_owned,
     dashboard_d5_runner,
     dashboard_d5_recovery,
     dashboards,
@@ -616,7 +617,8 @@ class Service:
         req = dataclasses.replace(req, request_id=request_id, tracking_issue=issue or req.tracking_issue,
                                   digest=digest)
         result = dashboard_d5_runner.run(self.ensure_engine(), req, self._data_dir(), self.o.dry_run,
-                                         ledger_key=self.key(request_id), reask_of=rq.reask_of)
+                                         ledger_key=self.key(request_id), reask_of=rq.reask_of,
+                                         provenance=self._d5_provenance)
         self._finish_reask(request_id, digest, issue, result, rq.reask_of, writer_result=True)
         if result.outcome == FAILED_MANUAL:
             self.j.freeze(request_id)
@@ -695,6 +697,17 @@ class Service:
             result = dashboards.run_undo(engine, req, self._data_dir(), self.o.dry_run)
         self.finish(request_id, req.digest, req.tracking_issue, result, key=key)
 
+    def _d5_provenance(self, provenance_id: str, dashboard: str) -> str:
+        """0.3.52: the hash D5 last wrote to ``dashboard`` (ledger + exact request file), else D5Refused.
+
+        Reads the request files at the current requests-branch head; their SHA-256 must equal the
+        digests this Deployer recorded when it acted on them (dashboard_d5_owned)."""
+        head = self.gh.branch_head(self.o.requests_branch)
+
+        def read(rid: str) -> bytes:
+            return self.gh.read_file(f"{REQUESTS_DIR}/{rid}/manifest.json", head)
+        return dashboard_d5_owned.resolve(self.j.ledger(), read, provenance_id, dashboard)
+
     def _complete_d5_intent(self, rid: str, digest: str) -> None:
         """Ledger has been recorded: clear only our exact fenced D5 intent."""
         if dashboard_d5_recovery.exists(self._data_dir()):
@@ -755,7 +768,7 @@ class Service:
             self._offer_lift()
             return
         result = dashboard_d5_runner.run(self.ensure_engine(), req, self._data_dir(), self.o.dry_run,
-                                         ledger_key=key)
+                                         ledger_key=key, provenance=self._d5_provenance)
         self.finish(request_id, req.digest, req.tracking_issue, result, key=key, writer_result=True)
         if result.outcome == FAILED_MANUAL:
             self.j.freeze(request_id)
@@ -1328,7 +1341,7 @@ class Service:
             legacy = legacy_migrate.kind(raw)       # 0.3.23 (#985 M4/M5): likewise
             companion = companion_setup.kind(raw)   # 0.3.30: "key" (lookup-like) or "setup" (owner-approved change)
             dash = dashboards.kind(raw)              # 0.3.43: "scan" (lookup-like) or "rename"/"undo" (changes)
-            d5 = dashboard_d5.is_d5(raw)            # 0.3.50: closed dashboard create/patch
+            d5 = dashboard_d5.is_d5(raw)            # 0.3.50: closed dashboard create/patch; 0.3.52 replace/transplant
             if selected and legacy != legacy_migrate.UNSELECT:
                 # A selection waits for the next start; new results would not be in the moved history.
                 self.diag.add(diagnose.Reason("LEGACY_SELECTED_WAITING", diagnose.HOLD,

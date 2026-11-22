@@ -85,13 +85,13 @@ def _validated(data: object) -> dict:
         raise D5RecoveryError("D5_PENDING_LEDGER")
     if data["ledger_key"].endswith("#dry"):
         raise D5RecoveryError("D5_PENDING_DRY_WRITE")
-    if data["kind"] not in {"patch", "create"}:
+    if data["kind"] not in {"patch", "create", "replace", "transplant"}:   # 0.3.52 adds the last two
         raise D5RecoveryError("D5_PENDING_KIND")
     if type(data["tracking_issue"]) is not int or not 1 <= data["tracking_issue"] <= 10_000_000:
         raise D5RecoveryError("D5_PENDING_ISSUE")
     if not isinstance(data["dashboard"], str) or not dashboard_d5.RE_URL.fullmatch(data["dashboard"]):
         raise D5RecoveryError("D5_PENDING_DASHBOARD")
-    if data["kind"] == "patch":
+    if data["kind"] in dashboard_d5.REWRITE_KINDS:
         if not isinstance(data["before"], str) or not dashboard_d5.RE_SHA.fullmatch(data["before"]):
             raise D5RecoveryError("D5_PENDING_BEFORE")
     elif data["before"] is not None:
@@ -107,7 +107,7 @@ def _validated(data: object) -> dict:
     cid = data["created_id"]
     if cid is not None and not dashboard_storage_id_matches(cid, data["dashboard"]):
         raise D5RecoveryError("D5_PENDING_CREATED_ID")
-    if data["kind"] == "patch" and cid is not None:
+    if data["kind"] in dashboard_d5.REWRITE_KINDS and cid is not None:
         raise D5RecoveryError("D5_PENDING_PATCH_ID")
     return data
 
@@ -184,11 +184,16 @@ def recover_result(ha, record: dict) -> Result:
     record = _validated(dict(record))
     try:
         row = _existing(ha, record["dashboard"])
-        if record["kind"] == "patch":
+        if record["kind"] in dashboard_d5.REWRITE_KINDS:
             if row is None or row.get("mode") != "storage":
                 return Result(FAILED_MANUAL, ["D5 recovery: original dashboard identity unverified"])
             current = dashboards.config_sha256(dashboards.read_config(ha, record["dashboard"]))
             if current == record["after"]:
+                # Literal outcomes: the startup history guard test resolves every Result(<outcome>) statically.
+                if record["kind"] == "replace":
+                    return Result("D5_DASHBOARD_REPLACED", ["D5 recovered exact postwrite SHA; no replay"])
+                if record["kind"] == "transplant":
+                    return Result("D5_DASHBOARD_TRANSPLANTED", ["D5 recovered exact postwrite SHA; no replay"])
                 return Result("D5_DASHBOARD_PATCHED", ["D5 recovered exact postwrite SHA; no replay"])
             if current == record["before"]:
                 return Result("D5_DASHBOARD_FAILED", ["D5 original unchanged; no replay"])

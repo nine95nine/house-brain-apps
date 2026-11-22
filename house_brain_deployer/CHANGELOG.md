@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.52 — 2026-11-22 (D5 replaces its own dashboard at a stable address, copies old sections verbatim, and a named control row can no longer toggle on one tap; SOURCE ONLY; built on 0.3.50)
+
+**Not merged, published, installed or live qualified merely because this changelog is present.** 0.3.51 stays reserved
+for the Kwikset authenticated PLAN bridge (#1637) and is not part of this build. Deep dive:
+`docs/validation/HOME_CENTER_MAIN_DASHBOARD_DEEP_DIVE_2026-11-22.md` (findings A2, A3, A4; section 6).
+- **Replace own dashboard** (`house_brain_dashboard_replace_request.v1`, A2): replaces the whole config of a dashboard that
+  **D5 itself created**, so `/home-center` keeps its address across revisions. The request names the D5 request whose
+  result the dashboard still holds (`provenance_request_id`); the Deployer proves it from its own ledger (an owning
+  outcome: created, replaced or transplanted, never a dry run or a patch) and the exact request file on
+  `deploy/requests` (its SHA-256 must equal the recorded digest). The live hash must equal what D5 last wrote: an owner
+  edit in the UI refuses it (`D5_OWNED_CHANGED_SINCE_LAST_WRITE`). The 0.3.50 creation of `/home-center`
+  (`2026-11-22-home-center-r2-create-01`, hash `3b17e874…c12d`) is proven this way; no adoption step is needed. The new
+  config passes the same closed R2 card guard as a create. Same owner tap, Core fence, partial backup, hash-bound Undo
+  copy (the existing dashboard undo request), exact read-back, `FAILED_MANUAL` on uncertainty, read-only restart reconcile.
+- **Verbatim transplant** (`house_brain_dashboard_transplant_request.v1`, A3): appends whole sections or cards, byte for
+  byte, from a source dashboard bound to `expect_source_config_sha256` (re-read live, never written) to the end of a
+  D5-created target bound to its current hash. Owner decision 2026-11-22 (pop-up "A: copy as-is"): copied subtrees keep
+  their templates and custom cards as they are. Every house-changing entity in the copy (templates scanned too) must be
+  declared in `expect_control_entities` and is listed on the owner's phone with the actions it can run and whether it
+  holds templates/custom cards; a list too long for one tap is refused, never cut. Read-back checks the target hash, the
+  canonical JSON of every copied part, and reports whether the source is unchanged. The result (copied control and
+  entity ids) is posted on the tracking issue.
+- **A4 fix**: in an `entities` card, a row whose entity can change the house must say `type: simple-entity` or
+  `attribute` (Home Assistant frontend `create-row-element.ts` `DOMAIN_TO_ELEMENT_TYPE` renders a typeless row as a
+  live toggle/slider/run button), and such a card may not show the header toggle-all switch (`hui-entities-card.ts`
+  `computeShowHeaderToggle`: on when `show_header_toggle` is true, or when titled and unset). Frontend `dev` `9eb51a8c`.
+- New outcomes `D5_DASHBOARD_REPLACED` and `D5_DASHBOARD_TRANSPLANTED` are admitted by the startup history check.
+  Custody list gains 0.3.50 (published and installed 2026-11-22).
+- Mutants M52-01…M52-26 (25 run, all killed; M52-18 dropped as equivalent), `tests/house_brain_deployer/mutation_d5_0352.py`.
+
 ## 0.3.50 — 2026-11-18 (Dashboard Steward D5 owner-approved dashboard create/patch, native display cards; SOURCE ONLY; built on 0.3.49)
 
 **Not merged, published, installed or live qualified merely because this changelog is present.** First written as

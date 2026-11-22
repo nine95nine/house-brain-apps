@@ -17,6 +17,19 @@ lease (and, if Home Assistant was already restarted, it is restarted once more o
 If the write lease is lost, it stops touching files and keeps the recovery intent for a fresh,
 authorized recovery. You get a result notification.
 
+## D5 replace-own and verbatim transplant (source v0.3.52)
+
+Not available on 0.3.50 or older. Two more closed request types, both only for a dashboard **D5 itself created** and only
+while it still holds exactly what D5 last wrote (`provenance_request_id` names that D5 request; the Deployer checks its
+own ledger and the request file's SHA-256; an owner edit in the UI makes the request fail with
+`D5_OWNED_CHANGED_SINCE_LAST_WRITE`). `house_brain_dashboard_replace_request.v1` replaces the whole config (same closed
+card rules as a create). `house_brain_dashboard_transplant_request.v1` appends whole sections/cards copied byte for byte
+from another dashboard bound to its live hash; the source is never written; templates and custom cards are copied as
+they are (owner decision 2026-11-22), and every copied control is declared and shown on the owner's phone. Both take a
+partial backup and keep an Undo copy (the existing dashboard undo request puts the previous D5 state back). In an
+`entities` card a row of a house-changing entity must say `type: simple-entity` (or `attribute`), and such a card may
+not show the header toggle.
+
 ## Dashboard Steward D5 create/patch (source v0.3.50)
 
 This new feature is **not available on a still-running 0.3.49 or older App**. Source v0.3.50 adds two closed request types: `house_brain_dashboard_patch_request.v1` and `house_brain_dashboard_create_request.v1`. After a genuine owner-authenticated **Approve Deploy** action, it can append presentation cards/sections/views from one closed set of **native display cards** (R2: heading, tile, entities, glance, button, sensor, gauge, history-graph, weather-forecast, markdown, conditional, grid and stacks; tap/hold actions only open more-info, do nothing, or navigate) or create a new hidden/admin-only storage dashboard. It does not remove or replace existing controls, retarget sensors, hide views, change PIN/Z-Wave/locks, restart HA, or change package files. Existing Dashboard scan/rename/undo request types remain supported separately.

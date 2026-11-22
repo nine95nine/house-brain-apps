@@ -1,4 +1,4 @@
-"""Isolated fake-HA-qualified Dashboard D5 transaction runner (NOT wired into live main).
+"""Fake-HA-qualified Dashboard D5 transaction runner (wired into main since 0.3.50; replace/transplant 0.3.52).
 
 It reuses Deployer's authenticated owner _ask, partial backup, dashboard
 read/save, and Undo custody; it never accepts a model's claim as a
@@ -12,12 +12,16 @@ dashboard, changes a YAML-mode dashboard, or restarts Home Assistant.
 """
 from __future__ import annotations
 
-from . import approval, dashboard_d5, dashboard_d5_recovery, dashboards
+from . import approval, dashboard_d5, dashboard_d5_owned, dashboard_d5_recovery, dashboards
 from .engine import Result, REJECTED, TIMED_OUT, FAILED_MANUAL
 from .ha import HAError, dashboard_storage_id_matches
 
 PATCHED = "D5_DASHBOARD_PATCHED"
 CREATED = "D5_DASHBOARD_CREATED"
+REPLACED = dashboard_d5_owned.REPLACED          # 0.3.52
+TRANSPLANTED = dashboard_d5_owned.TRANSPLANTED  # 0.3.52
+DONE = {"patch": PATCHED, "replace": REPLACED, "transplant": TRANSPLANTED}
+APPROVAL_MESSAGE_LIMIT = 900   # approval.ask shows at most 900 characters; a cut list is never shown
 FAILED = "D5_DASHBOARD_FAILED"
 ROLLBACK_FAILED = "D5_DASHBOARD_MANUAL_RECOVERY"
 
@@ -66,17 +70,78 @@ def _existing(ha, path: str):
     return found[0] if found else None
 
 
-def _preview_live(engine, req):
+def _preview_live(engine, req, owned_sha=None):
+    """Read live state and recompute the exact candidate. Returns (before, candidate, source)."""
     current = _existing(engine.ha, req.dashboard)
-    if req.kind == "patch":
+    if req.kind in dashboard_d5.REWRITE_KINDS:
         if current is None or current.get("mode") != "storage":
             raise dashboard_d5.D5Refused("STORAGE_DASHBOARD_REQUIRED")
+        if req.kind in dashboard_d5.OWNED_KINDS:
+            # 0.3.52: only a dashboard D5 itself created, still exactly as D5 last wrote it.
+            if owned_sha is None:
+                raise dashboard_d5.D5Refused("NOT_D5_OWNED")
+            if owned_sha != req.expect_config_sha256:
+                raise dashboard_d5.D5Refused("PROVENANCE_HASH_MISMATCH")
         before = dashboards.read_config(engine.ha, req.dashboard)
-        candidate = dashboard_d5.preview(req, before)
-        return before, candidate
+        source = None
+        if req.kind == "transplant":
+            if _existing(engine.ha, req.source_dashboard) is None:
+                raise dashboard_d5.D5Refused("SOURCE_DASHBOARD_MISSING")
+            source = dashboards.read_config(engine.ha, req.source_dashboard)
+        candidate = dashboard_d5.preview(req, before, source)
+        return before, candidate, source
     if current is not None:
         raise dashboard_d5.D5Refused("CREATE_TARGET_EXISTS")
-    return None, dashboard_d5.preview(req, None)
+    return None, dashboard_d5.preview(req, None), None
+
+
+def _message(req, before, source) -> str:
+    """The owner's phone text. A transplant lists every copied control; too long = refused, never cut."""
+    head = f"{req.request_id} by {req.requested_by}\nDashboard: {req.dashboard}\n"
+    tail = ("This changes ONLY the chosen storage dashboard after a backup"
+            + ("; Undo is kept. " if req.kind in dashboard_d5.REWRITE_KINDS else ". ")
+            + "No Home Assistant restart, package install or physical control. "
+            "An AI's claimed approval is not trusted.")
+    if req.kind == "transplant":
+        inv = dashboard_d5.inventory([t for _p, t in dashboard_d5.transplant_copies(req, before, source)])
+        n = len(req.plan["operations"])
+        body = (f"Operation: COPY {n} section/card(s) verbatim from {req.source_dashboard} "
+                f"(unchanged, {req.expect_source_config_sha256[:12]}), appended at the end. Source not changed.\n"
+                f"Templates: {'yes' if inv['templates'] else 'no'}; custom cards: "
+                f"{'yes' if inv['custom_cards'] else 'no'}; entities: {len(inv['entities'])}.\n"
+                + (("Copied controls that can change the house: " + ", ".join(inv["controls"]) + "\n")
+                   if inv["controls"] else "It copies nothing that can change the house.\n")
+                + (("Actions it can run: " + ", ".join(inv["actions"]) + "\n") if inv["actions"] else ""))
+        text = head + body + tail
+        if len(text) > APPROVAL_MESSAGE_LIMIT:
+            raise dashboard_d5.D5Refused("TRANSPLANT_TOO_MANY_FOR_ONE_TAP")
+        return text
+    op = {"replace": "REPLACE whole dashboard (D5-created, unchanged since "
+                     f"{req.provenance_request_id})"}.get(req.kind, req.kind.upper() + " display-only")
+    text = (head + f"Operation: {op}\nProposal: {req.proposal_id}\nCandidate SHA: {req.expect_candidate_sha256}\n"
+            + (("It can show these, which can change the house (their own Home Assistant controls): "
+                + ", ".join(req.allowed_controls) + "\n") if req.allowed_controls
+               else "It adds nothing that can change the house.\n")
+            + tail)
+    if len(text) > APPROVAL_MESSAGE_LIMIT:
+        raise dashboard_d5.D5Refused("APPROVAL_TEXT_TOO_LONG")
+    return text
+
+
+def _canon(value) -> bytes:
+    return dashboards.config_sha256(value).encode()
+
+
+def _transplant_readback(ha, req, before, source):
+    """After the target hash matched: every copied subtree equals its source (canonical JSON)
+    and the source dashboard still has its bound hash (it was never written)."""
+    copies = dashboard_d5.transplant_copies(req, before, source)
+    after = dashboards.read_config(ha, req.dashboard)
+    for pointer, tree in copies:
+        if _canon(dashboard_d5.at_pointer(after, pointer)) != _canon(tree):
+            return False, None
+    source_now = dashboards.config_sha256(dashboards.read_config(ha, req.source_dashboard))
+    return True, source_now == req.expect_source_config_sha256
 
 
 def _errcode(err):
@@ -115,30 +180,26 @@ def _rollback_created(ha, dashboard_id: str | None, url_path: str) -> bool:
 
 
 def run(engine, req: dashboard_d5.D5Request, data_dir: str, dry_run: bool, *,
-        ledger_key: str | None = None, reask_of: str | None = None) -> Result:
-    """Call only under the Deployer's exclusive writer lease when wired.
+        ledger_key: str | None = None, reask_of: str | None = None, provenance=None) -> Result:
+    """Call only under the Deployer's exclusive writer lease (main wires it so).
 
-    Source-only test runner: no runtime dispatcher imports or calls this.
+    ``provenance(provenance_request_id, dashboard) -> sha`` (main: the ledger +
+    request-file proof in dashboard_d5_owned) is required for replace/transplant.
     """
     engine.j.audit(req.request_id, "RECEIVED", digest=req.digest,
                    requested_by=req.requested_by, kind="dashboard_d5_" + req.kind)
+    owned_sha = None
     try:
         _qualified_core(engine.ha)
-        before, candidate = _preview_live(engine, req)
+        if req.kind in dashboard_d5.OWNED_KINDS:
+            if provenance is None:
+                raise dashboard_d5.D5Refused("NOT_D5_OWNED")
+            owned_sha = provenance(req.provenance_request_id, req.dashboard)
+        before, candidate, source = _preview_live(engine, req, owned_sha)
+        message = _message(req, before, source)
     except Exception as err:  # noqa: BLE001 - fail closed before owner prompt
         return Result(FAILED, ["D5 preliminary validation: " + str(_errcode(err))[:80]])
     target = req.dashboard
-    message = (
-        f"{req.request_id} by {req.requested_by}\n"
-        f"Dashboard: {target}\nOperation: {req.kind.upper()} display-only\n"
-        f"Proposal: {req.proposal_id}\nCandidate SHA: {req.expect_candidate_sha256}\n"
-        + (("It can show these, which can change the house (their own Home Assistant controls): "
-            + ", ".join(req.allowed_controls) + "\n") if req.allowed_controls
-           else "It adds nothing that can change the house.\n")
-        + "This changes ONLY the chosen storage dashboard after a backup. "
-        "No Home Assistant restart, package install or physical control. "
-        "An AI's claimed approval is not trusted."
-    )
     outcome = engine._ask(req.request_id, "DEPLOY", "House Brain: apply D5 dashboard?",
                           message, engine.s.timing.approval_timeout)
     if outcome != approval.APPROVE:
@@ -148,8 +209,8 @@ def run(engine, req: dashboard_d5.D5Request, data_dir: str, dry_run: bool, *,
     # TOCTOU: always verify current config and exact candidate AGAIN after owner action.
     try:
         _qualified_core(engine.ha)
-        next_before, next_candidate = _preview_live(engine, req)
-        if next_before != before or next_candidate != candidate:
+        next_before, next_candidate, next_source = _preview_live(engine, req, owned_sha)
+        if next_before != before or next_candidate != candidate or next_source != source:
             raise dashboard_d5.D5Refused("LIVE_CHANGED_AFTER_APPROVAL")
     except Exception as err:  # noqa: BLE001
         return Result(FAILED, ["D5 post-approval drift: " + str(_errcode(err))[:80]])
@@ -157,7 +218,7 @@ def run(engine, req: dashboard_d5.D5Request, data_dir: str, dry_run: bool, *,
         engine.ha.backup_partial(f"house-brain-d5-{req.request_id}"[:60])
     except Exception as err:  # noqa: BLE001
         return Result(FAILED, ["D5 backup not proven: " + str(_errcode(err))[:80]])
-    if req.kind == "patch":
+    if req.kind in dashboard_d5.REWRITE_KINDS:
         # Undo is an exact before/after hash, compatible with the older
         # separately owner-approved dashboard undo request type.
         try:
@@ -195,8 +256,30 @@ def run(engine, req: dashboard_d5.D5Request, data_dir: str, dry_run: bool, *,
             return Result(FAILED_MANUAL, [
                 "D5 save acknowledgement failed; preserve current dashboard and inspect manually."])
         if current_hash == req.expect_candidate_sha256:
-            return Result(PATCHED, ["D5 patched exact dashboard; Undo is available."],
-                          {"dashboard": target, "config_sha256_after": req.expect_candidate_sha256})
+            facts: dict[str, object] = {"dashboard": target, "config_sha256_after": req.expect_candidate_sha256}
+            if req.kind == "patch":
+                return Result(PATCHED, ["D5 patched exact dashboard; Undo is available."], facts)
+            facts["config_sha256_before"] = req.expect_config_sha256
+            if req.kind == "replace":
+                return Result(REPLACED, ["D5 replaced its own dashboard exactly; Undo is available."], facts)
+            try:
+                same, source_unchanged = _transplant_readback(engine.ha, req, before, source)
+            except Exception:  # noqa: BLE001 - target hash matched, but the copy proof is unknown
+                same, source_unchanged = None, None
+            if not same:
+                return Result(FAILED_MANUAL, [
+                    "D5 transplant read-back of the copied parts not proven; inspect manually (Undo kept)."], facts)
+            inv = dashboard_d5.inventory([t for _p, t in dashboard_d5.transplant_copies(req, before, source)])
+            facts.update({"source_dashboard": req.source_dashboard,
+                          "source_config_sha256": req.expect_source_config_sha256,
+                          "source_unchanged_after": source_unchanged,
+                          "copied_count": len(req.plan["operations"]),
+                          "copied_controls": inv["controls"][:60],
+                          "copied_entities_total": len(inv["entities"]),
+                          "copied_entities": inv["entities"][:60],
+                          "copied_actions": inv["actions"][:20],
+                          "templates": inv["templates"], "custom_cards": inv["custom_cards"]})
+            return Result(TRANSPLANTED, ["D5 copied the sections/cards verbatim; Undo is available."], facts)
         if current_hash == req.expect_config_sha256:
             return Result(FAILED, ["D5 write not applied; original remains unchanged."])
         return Result(FAILED_MANUAL, [
