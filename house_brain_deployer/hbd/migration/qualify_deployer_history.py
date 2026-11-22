@@ -30,7 +30,10 @@ OUTCOMES = {"SUCCEEDED", "DRY_RUN_OK", "DRY_RUN_BLOCKED", "ALREADY_APPLIED", "RE
             # 0.3.44: the 0.3.43 dashboard requests record these; without them the first dashboard result would hold
             # every later start (the 0.3.33 failure again).
             "DASHBOARD_SCAN_OK", "DASHBOARD_SCAN_FAILED", "DASHBOARD_RENAMED", "DASHBOARD_RENAME_FAILED",
-            "DASHBOARD_UNDONE", "DASHBOARD_UNDO_FAILED"}
+            "DASHBOARD_UNDONE", "DASHBOARD_UNDO_FAILED",
+            # 0.3.50 D5: keep every actual dashboard outcome in migrated history.
+            # This is historical admission only; it grants no owner approval.
+            "D5_DASHBOARD_PATCHED", "D5_DASHBOARD_CREATED", "D5_DASHBOARD_FAILED"}
 STAGES = {"DEPLOY", "DRYRUN", "RESTART", "ROLLBACK", "LOOKUP"}
 UNKNOWN_DIGEST = "unknown"   # main.recover / _raw_digest when the request could not be read again
 

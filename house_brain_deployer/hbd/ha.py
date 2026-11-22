@@ -75,7 +75,9 @@ _WS_ALLOW = frozenset({"subscribe_events", "unsubscribe_events", "system_log/lis
                        "assist_pipeline/pipeline/list", "assist_pipeline/pipeline/create",
                        # 0.3.43: dashboards (hbd/dashboards.py). Reads for the owner-approved scan; one save per
                        # owner-approved rename or undo, after a backup and with a read-back.
-                       "lovelace/dashboards/list", "lovelace/config", "lovelace/config/save", "search/related"})
+                       "lovelace/dashboards/list", "lovelace/dashboards/create",
+                       "lovelace/dashboards/delete", "lovelace/config", "lovelace/config/save",
+                       "search/related"})
 RE_DASHBOARD_URL = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 RE_RELATED_ENTITY = re.compile(r"^[a-z_]{2,32}\.[a-z0-9_]{1,96}$")
 MAX_DASHBOARD_SAVE_BYTES = 3 * 1024 * 1024
@@ -154,6 +156,19 @@ def _body_guard(method: str, path: str, body: Any) -> None:
         raise ForbiddenCall("delete takes no body")
 
 
+def dashboard_storage_id_is_valid(value: object) -> bool:
+    return (type(value) is str and RE_DASHBOARD_URL.fullmatch(value) is not None
+            and ("-" in value or "_" in value))
+
+
+def dashboard_storage_id_matches(value: object, url_path: str) -> bool:
+    # Core slugifies the URL to the storage ID. Keep support for old hyphenated
+    # IDs, but never substitute a derived ID for the one Core actually returned.
+    return dashboard_storage_id_is_valid(value) and value in {
+        url_path, re.sub(r"-+", "_", url_path).rstrip("_"),
+    }
+
+
 def _ws_guard(msg: dict) -> None:
     kind = msg.get("type")
     if kind not in _WS_ALLOW:
@@ -175,6 +190,25 @@ def _ws_guard(msg: dict) -> None:
         raise ForbiddenCall("ws subentry list takes exactly one entry id")
     if kind == "lovelace/dashboards/list" and set(msg) != {"type"}:
         raise ForbiddenCall("ws read takes no parameters")
+    # 0.3.50 D5: two narrowly scoped storage-dashboard mutations. Core's
+    # collection WebSocket create/delete endpoints require admin and return a
+    # string item id. Higher-level D5 code independently enforces a genuine
+    # owner approval, backup, exact registry ID, no-loss and manual recovery.
+    if kind == "lovelace/dashboards/create":
+        url, title = msg.get("url_path"), msg.get("title")
+        if (set(msg) != {"type", "title", "url_path", "mode", "require_admin", "show_in_sidebar"}
+                or not isinstance(url, str) or not RE_DASHBOARD_URL.fullmatch(url) or "-" not in url
+                or not isinstance(title, str) or not 1 <= len(title) <= 80
+                or any(ord(c) < 32 or ord(c) == 127 for c in title)
+                or msg.get("mode") != "storage"
+                or msg.get("require_admin") is not True
+                or msg.get("show_in_sidebar") is not False):
+            raise ForbiddenCall("ws dashboard D5 create must be admin-only, hidden, storage, exact fields")
+    if kind == "lovelace/dashboards/delete":
+        did = msg.get("dashboard_id")
+        if (set(msg) != {"type", "dashboard_id"}
+                or not dashboard_storage_id_is_valid(did)):
+            raise ForbiddenCall("ws dashboard D5 delete requires a verified string dashboard id")
     if kind in ("lovelace/config", "lovelace/config/save"):
         url = msg.get("url_path")
         if url is not None and not (isinstance(url, str) and RE_DASHBOARD_URL.fullmatch(url)):
@@ -499,7 +533,12 @@ class CoreSocket:
             data = self._recv(remaining)
             if data.get("id") == msg_id and data.get("type") == "result":
                 if not data.get("success"):
-                    raise HAError("WS_COMMAND", str(data.get("error"))[:200])
+                    error = data.get("error")
+                    if msg.get("type") == "lovelace/config" and error == {
+                        "code": "config_not_found", "message": "No config found."
+                    }:
+                        raise HAError("WS_LOVELACE_CONFIG_EMPTY")
+                    raise HAError("WS_COMMAND", str(error)[:200])
                 return data.get("result")
 
     def next_event(self, timeout: float) -> dict | None:

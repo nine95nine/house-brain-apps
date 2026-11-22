@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.50 — 2026-11-18 (Dashboard Steward D5 owner-approved dashboard create/patch, native display cards; SOURCE ONLY; built on 0.3.49)
+
+**Not merged, published, installed or live qualified merely because this changelog is present.** First written as
+0.3.47 (ChatGPT, 2026-11-13) and re-stamped 0.3.50 after the owner moved the 0.3.49 hang fix first (2026-11-17/18).
+The original Dashboard Steward D0–D3 App PR #1605 stays separate and unmodified.
+
+- Closed create/patch schemas for storage-mode dashboards. **R1** admitted only additive static Markdown; **R2** (ported
+  from the Dashboard Steward lane, 2026-11-14) admits one closed set of native display cards (heading, tile, entities,
+  glance, button, sensor, gauge, history-graph, weather-forecast, markdown, conditional, grid, vertical/horizontal stack)
+  and **sections** views on create. Card actions may only open more-info, do nothing, or navigate to an absolute path.
+  An entity whose domain can change the house is refused unless the request names it in `allowed_control_entities`
+  (the owner's phone shows those names) and its tap/hold actions are explicit; service calls, targets, url actions,
+  custom cards, iframes, strategies and templates stay refused. A created subview must be reachable by navigation.
+  On an existing dashboard repoint, removal, replacement, reordering and subview changes stay refused.
+- Candidate plan compiled deterministically against a SHA-256-pinned exact baseline. A model-supplied
+  `owner_binding` is an untrusted consistency claim, NOT owner consent. Deployer's genuine owner-authenticated
+  `DEPLOY` action, a partial backup, post-approval drift checks and the global writer lock are required.
+- Fail-closed writes, exact readback, undo snapshot and conservative no-clobber rollback; uncertain post-write
+  state triggers `FAILED_MANUAL` and preserves any concurrent owner's edits. New-dashboard cleanup requires
+  a matching exact raw registry ID and unchanged empty configuration.
+- Durable post-approval D5 intent enables *read-only* restart reconciliation. No write is replayed after
+  interruption; unknown content/identity freezes the workflow for recovery. Original dashboard scan/rename/
+  undo and history migration are maintained.
+- Runs on 0.3.49: the page, snapshot, loop bound and last-run verdict are unchanged by D5; a D5 owner tap waits through
+  the same `should_stop` heartbeat as every other approval.
+- **Native target-HA WebSocket qualification (the installed Core's version), ARM64 app release, full 12-point Dashboard Steward
+  NDEC/registry-backed validation and owner exact-head merge/install signoff remain separate release gates.**
+- Sequence: 0.3.49 hang fix, then this D5 source (0.3.50), then the Kwikset authenticated PLAN bridge as 0.3.51.
+  Each upgrade requires its own approval. Kitchen installation still requires distinct Plan, Deploy, and Restart owner actions.
+
 ## 0.3.49 — 2026-11-18 (the Deployer never leaves an empty page again; a stuck start or loop is visible and bounded)
 
 Live on 2026-11-17 the Deployer's page showed 502 and the App looked dead. Cause read from code: the page was the last
