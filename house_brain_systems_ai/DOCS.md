@@ -1,5 +1,17 @@
 # House Brain Systems AI
 
+Version 0.3.22 (shadow). 0.3.22 makes the version list on the family line (`sensor.house_brain_family_status`) about versions again:
+
+- **`apps:`** lists the Apps whose **version changed in the last 72 hours**, newest first, each with its status word if it is not OK. Then it lists **every App that is not OK now**. Example: `apps: Systems 0.3.22, Maintenance 0.9.63, Pool 0.1.1 degraded`.
+- An App whose health went bad and is **OK again** is no longer listed. On 2026-11-21 such Apps filled the list (`apps 24h: Pool 0.1.1, Cooling 0.3.0, +4 more`) and hid the version news.
+- **72 hours instead of 24.** The 0.3.19 readback was missed because every chat was paused for about 64 hours; a release can now still be confirmed after a long weekend.
+- Unchanged:
+  - the top reason still names the App (`top: app health failed: Cooling`);
+  - the list still uses only the room the 255-character line leaves;
+  - only checked words reach the line;
+  - no new route, field, schema or entity.
+- Rows written by 0.3.19–0.3.21 carry no version time, so after this update only `Systems 0.3.22` is listed until another App changes version.
+
 Version 0.3.21 (shadow). 0.3.21 makes the family line quieter about short blips in another House Brain App (0.3.20 is reserved for the MacBook House Link and is not this release):
 
 - **A short blip is a warning, not a problem.** When another App says its last cycle failed but it finished a good cycle no more than 3 of its own cycles ago (3 minutes for today's Apps), Systems AI shows it as `app health degraded` (WATCH), not `app health failed` (PROBLEMS). The App's own reasons are still listed.

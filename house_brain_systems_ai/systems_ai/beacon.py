@@ -6,10 +6,10 @@ Systems AI already reads every House Brain App's Supervisor info (installed vers
 publishers, house_brain_app_health.v1 (running version). This module keeps one small row per App in the App's own
 store and renders a bounded fragment for the digest text:
 
-    apps 24h: Systems 0.3.19, Cooling 0.3.0 failed, Energy 0.1.9 (running 0.1.8), +2 more
+    apps: Systems 0.3.22, Energy 0.1.9 (running 0.1.8), Cooling 0.3.0 failed, +2 more
 
-* Apps whose version or status changed in the last 24 h, plus every App not OK now (any age), not-OK first, then
-  newest change first.
+* 0.3.22: Apps whose version changed in the last 72 h (newest first, with their status word), then every App not
+  OK now. (0.3.19-0.3.21 listed any version or status change within 24 h, not-OK first.)
 * The fragment is fitted to the room the rest of the line leaves: whole entries only, then "+N more"; nothing when
   not even that fits. It never shortens any other part of the line (the caller passes the room).
 * Versions are printed only when they match the health schema's version pattern, else "?"; names come from a fixed
@@ -25,10 +25,13 @@ import re
 from .app_health import VERSION_RE
 
 STORE_KEY = 'beacon'
-WINDOW_S = 86400
+# 0.3.22 (review run 9, owner pop-ups 2026-11-21 "All of them", "N1 takes 0.3.22"): versions first, for 72 h
+# (the 2026-11-18 readback missed a 24 h window during a 64 h account pause); "status changed, OK now" is no
+# longer listed (it crowded out the version news live: "apps 24h: Pool 0.1.1, Cooling 0.3.0, +4 more").
+VERSION_WINDOW_S = 3 * 86400
 MAX_ROWS = 64
 SELF = 'house_brain_systems_ai'
-PREFIX = 'apps 24h: '
+PREFIX = 'apps: '
 NAMES = {'house_brain_energy_ai': 'Energy', 'house_brain_maintenance': 'Maintenance', 'house_brain_deployer': 'Deployer',
          'house_brain_ai_access': 'AI Access', 'house_brain_engineering_inspector': 'Inspector',
          'house_brain_engineering_observer': 'Observer', 'house_brain_maintenance_inventory_scout': 'Scout',
@@ -93,35 +96,42 @@ def update(store, apps, now, self_version, seed=None, always_on=()):
         running = version((row.get('running_version')))
         status = status_of(row, always_on)
         if prev is None and first and seed:
-            prev = {'version': version(seed.get(slug)), 'status': 'OK', 'changed_at': None}
+            prev = {'version': version(seed.get(slug)), 'status': 'OK', 'changed_at': None, 'version_at': None}
         if prev is None:
             changed = None if first else now         # an App installed while Systems AI runs is a change
-        elif prev.get('version') != installed and prev.get('version') is not None or prev.get('status') != status:
-            changed = now
+            version_at = changed
         else:
-            changed = prev.get('changed_at')
-        seen[name] = {'version': installed, 'running': running, 'status': status, 'changed_at': changed}
+            moved = prev.get('version') != installed and prev.get('version') is not None
+            changed = now if moved or prev.get('status') != status else prev.get('changed_at')
+            version_at = now if moved else prev.get('version_at')     # rows from 0.3.19-0.3.21 have none
+        seen[name] = {'version': installed, 'running': running, 'status': status, 'changed_at': changed,
+                      'version_at': version_at}
     prev = old.get(SELF) if isinstance(old.get(SELF), dict) else None
     mine = version(self_version)
-    seen[SELF] = {'version': mine, 'running': mine, 'status': 'OK',
-                  'changed_at': now if prev is None or prev.get('version') != mine else prev.get('changed_at')}
+    at = now if prev is None or prev.get('version') != mine else prev.get('version_at')
+    seen[SELF] = {'version': mine, 'running': mine, 'status': 'OK', 'changed_at': at, 'version_at': at}
     rows = dict(sorted(seen.items())[:MAX_ROWS])
     if rows != old:
         store.put(STORE_KEY, rows)
     return rows
 
 
+def _at(value, now):
+    return min(float(value), now) if isinstance(value, (int, float)) and math.isfinite(value) else None
+
+
 def entries(rows, now):
-    """Rows to show, best first: not OK now (any age), then changed within 24 h, newest first."""
+    """Rows to show, best first: a version changed within 72 h (newest first, any status), then not OK now
+    (newest change first). An App whose status changed and is OK again is not listed (0.3.22)."""
     out = []
     for name, r in (rows or {}).items():
         if not isinstance(r, dict):
             continue
-        at = r.get('changed_at')
-        at = min(float(at), now) if isinstance(at, (int, float)) and math.isfinite(at) else None
-        bad = r.get('status') != 'OK'
-        if bad or (at is not None and now - at <= WINDOW_S):
-            out.append((not bad, -(at or 0), name, r))
+        v_at = _at(r.get('version_at'), now)
+        if v_at is not None and now - v_at <= VERSION_WINDOW_S:
+            out.append((0, -v_at, name, r))
+        elif r.get('status') != 'OK':
+            out.append((1, -(_at(r.get('changed_at'), now) or 0), name, r))
     return [(name, r) for _, _, name, r in sorted(out, key=lambda e: e[:3])]
 
 
