@@ -1,5 +1,5 @@
 name: House Brain Dashboard Steward
-version: "0.1.1"
+version: "0.1.2"
 slug: house_brain_dashboard_steward
 description: Read-only dashboard specialist. Audits dashboards, notices new and renamed devices, and drafts
   owner-reviewed Lovelace YAML with a local model; no dashboard writes, no commands, no state writes.

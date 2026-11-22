@@ -22,11 +22,20 @@ HELD_PATHS = ("/coverage", "/data-health", "/usage", "/export")
 _E = html.escape
 
 
+# 0.1.2: explicit colors, the house Apps' dark style. Without them the page is transparent inside Home Assistant's
+# dark ingress panel and its default black text is invisible (owner report 2026-11-22, iPhone app).
+STYLE = ("<meta name=color-scheme content=dark><style>:root{color-scheme:dark}"
+         "html,body{background:#111;color:#eee}"
+         "body{font-family:-apple-system,system-ui,sans-serif;margin:0;padding:16px}"
+         "a{color:#90caf9}h1{font-size:20px}h2{font-size:17px;margin-top:22px}summary{cursor:pointer}"
+         "td,th{padding:4px 6px;text-align:left;vertical-align:top}table{border-collapse:collapse}"
+         "tr{border-bottom:1px solid #333}small{color:#aaa}</style>")
+HTML_PATHS = ("/", "", "/coverage", "/data-health", "/usage", "/export")
+
+
 def _page(title: str, body: str) -> bytes:
     return (f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
-            f"<title>{_E(title)}</title><style>body{{font-family:sans-serif;margin:1em}}td,th{{padding:2px 6px;"
-            f"text-align:left;vertical-align:top}}table{{border-collapse:collapse}}tr{{border-bottom:1px solid #ccc}}"
-            f"</style><p><a href='./'>Steward</a> · <a href='coverage'>Coverage</a> · <a href='data-health'>Data "
+            f"<title>{_E(title)}</title>{STYLE}<p><a href='./'>Steward</a> · <a href='coverage'>Coverage</a> · <a href='data-health'>Data "
             f"health</a> · <a href='usage'>Usage</a> · <a href='export'>Export</a></p><h1>{_E(title)}</h1>{body}"
             f"<p><small>Read only. Control authority: NONE.</small></p>").encode("utf-8")
 
@@ -120,6 +129,9 @@ def make_handler(steward):
             path = self.path.split("?", 1)[0]
             pub = steward.public()             # published snapshot; this thread never opens the database
             if not pub:
+                if path in HTML_PATHS:       # a styled page: plain text is as invisible as an unstyled page
+                    return self._send(503, _page("Dashboard Steward", "<p>Starting. Reload in a minute.</p>"),
+                                      "text/html; charset=utf-8")
                 return self._send(503, b"starting", "text/plain")
             if path == "/health":                   # house_brain_app_health.v1 (Systems AI reads this)
                 return self._send(200, json.dumps(pub["app_health"], sort_keys=True).encode(), "application/json")
@@ -133,6 +145,9 @@ def make_handler(steward):
                     return self._send(404, b"not found", "text/plain")
                 return self._send(200, y.encode(), "text/plain; charset=utf-8")
             if path.startswith(HELD_PATHS) and pub.get("hold"):
+                if path in HTML_PATHS:
+                    return self._send(503, _page("Held", f"<p>HELD: {_E(str(pub['hold']))}. The kill switch holds "
+                                                 "this page.</p>"), "text/html; charset=utf-8")
                 return self._send(503, f"HELD: {pub['hold']}".encode(), "text/plain")
             js = "application/json"
             if path == "/coverage.json":
@@ -168,13 +183,9 @@ def make_handler(steward):
                 h = pub["health"]
                 rows = "".join(f"<tr><th>{html.escape(k)}</th><td>{html.escape(str(h[k].get('status')))}</td></tr>"
                                for k in ("service", "observation", "inference", "deployment"))
-                body = (f"<!doctype html><meta charset=utf-8><title>Dashboard Steward</title>"
-                        f"<h1>Dashboard Steward</h1><p>Overall: <b>{html.escape(h['overall'])}</b></p>"
-                        f"<table>{rows}</table><p>Pending proposals: {h['proposals']['pending']}</p>"
-                        f"<p><a href='coverage'>Coverage</a> · <a href='data-health'>Data health</a> · "
-                        f"<a href='usage'>Usage</a> · <a href='export'>Export</a></p>"
-                        f"<p>Read only. Control authority: NONE.</p>")
-                return self._send(200, body.encode(), "text/html; charset=utf-8")
+                body = (f"<p>Overall: <b>{html.escape(h['overall'])}</b></p>"
+                        f"<table>{rows}</table><p>Pending proposals: {h['proposals']['pending']}</p>")
+                return self._send(200, _page("Dashboard Steward", body), "text/html; charset=utf-8")
             return self._send(404, b"not found", "text/plain")
 
         def do_POST(self):

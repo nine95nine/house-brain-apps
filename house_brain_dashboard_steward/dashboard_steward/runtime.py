@@ -28,7 +28,7 @@ from . import approval, coverage as COV, discovery, generator, lovelace as L, nd
 from .haclient import EVENT_TYPES, HaError, Session
 from .inference import ModelUnavailable
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 HEALTH_SCHEMA = "dashboard_steward_health.v1"
 
 
