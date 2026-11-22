@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.49 — 2026-11-18 (the Deployer never leaves an empty page again; a stuck start or loop is visible and bounded)
+
+Live on 2026-11-17 the Deployer's page showed 502 and the App looked dead. Cause read from code: the page was the last
+thing started (after the Journal and the startup recovery, which can wait hours for a phone tap), a held start exited
+without ever serving it, the loop's last-resort handler read the Journal unguarded, and every page view read the Journal
+on the page thread. No install or Journal format changed; Deploy and Restart still need their own two taps.
+- **Page first.** The page starts before anything else. While the App starts it says "Starting" (with the retry count if a
+  start failed); if the start is deliberately held (`STARTUP_*` / `FORWARD_*`) the App now **stays up** with the page
+  saying "Held" and the code (status `HELD` and one push are still sent once; Stop or Restart the App to leave). The page
+  shows no approval control for a start. An unexpected start failure is tried 3 times, 60 s apart, then the App exits
+  (code 2) as before; a refused configuration still exits at once.
+- **The loop cannot die silently, and cannot spin.** The last-resort handler can no longer raise (an unreadable
+  Journal is logged instead). A loop-level error backs off 5 / 15 / 30 / 60 s; 20 in a row exit with code 3 so the
+  Supervisor or the owner restarts it. A poll that fails is handled as before.
+- **The page reads a snapshot.** The main loop reads the Journal (open install? release status) and the page only shows
+  the last answer, so a slow or locked Journal can no longer stall the page. If the loop has not reported for 15
+  minutes the page says so. Page connections time out after 30 s.
+- **Liveness without opening the page.** The status entity (while no install is open) gains `heartbeat_at`, `started_at`,
+  `loop_errors`, `page_ok` (the page thread answers a loopback connection) and `previous_run`.
+- **How the last run ended.** `/data/last_run.json` says `clean_stop`, `held:CODE`, `refused:...`, `loop_failed:...`,
+  `crashed:Class[:CODE]` or `killed_or_power_loss` (the file still said "running" at the next start). A bad ending
+  is audited (`PREVIOUS_RUN_UNCLEAN`) and pushed at most once per 6 hours. `crash_trace.txt` (fatal signals) and
+  `hang_trace.txt` (all thread stacks after 15 minutes without a heartbeat; it only writes, it never restarts anything)
+  are kept in the data folder; they hold no values, only code locations.
+- A page that cannot start (port taken, denied) is logged and never stops the App. `HBD_ONCE=1` still makes a held start
+  report and exit 2 at once. A held start's only new writes are the three diagnostic files above.
+- Not in this version: no Maintenance change (it still lists only stopped Apps as held; owner gate), no GitHub comment at
+  startup, no page-side approval of the startup recovery question (it stays on the phone), no `watchdog:` URL.
+- Tests `test_page_first.py` (22; all fail on 0.3.46); changed: `test_page_banner_and_busy_probe`, `test_release_status.py`
+  (3), `test_startup_held_report.py` and `test_l4_legacy_migrate.py` (a held start now stays up); mutants P01–P14, R20 re-anchored.
+
 ## 0.3.46 — 2026-11-02 (Try again works for a dashboard rename or undo)
 
 Live on 2026-11-02 (#561 6578409740), the page's **Try again** for a timed-out dashboard rename was REFUSED

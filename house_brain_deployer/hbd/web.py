@@ -17,18 +17,22 @@ from __future__ import annotations
 import html
 import re
 import secrets
+import socket
 import threading
 import time
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 from . import ghpage
 
 INGRESS_PEER = "172.30.32.2"
 MAX_BODY = 2048
 MAX_QUEUED_SHOWN = 10                # 0.3.40: requests listed under "Coming up"
+LOOP_STALE_SECONDS = 900             # 0.3.49: the page says so when the loop has been silent this long
+HANDLER_TIMEOUT = 30                 # 0.3.49: seconds; a stalled connection no longer keeps a thread for ever
 RE_INGRESS_PATH = re.compile(r"/api/hassio_ingress/[A-Za-z0-9_\-]{1,200}")
 
 
@@ -76,21 +80,89 @@ class ApprovalBoard:
         # 0.3.5 (P4): True while an install transaction is open (set by the service)
         self.busy_probe: Callable[[], bool] | None = None
         self.release_probe: Callable[[], tuple[tuple[str, str], ...]] | None = None
+        # 0.3.49: the page thread never calls the probes (they read the Journal and can take the shared writer
+        # lease). The main thread calls refresh_snapshot(); the page only reads the last snapshot and its age.
+        self._snap_busy: bool | None = None
+        self._snap_release: tuple[tuple[str, str], ...] | None = None
+        self._beat = time.monotonic()
+        self._beat_stale_after: float = float(LOOP_STALE_SECONDS)
+        # 0.3.49: the page is up before the service exists. STARTING / HELD / "" (running).
+        self._startup: tuple[str, str] = ("", "")
+        self.connector: Any = None       # set by the main thread when the service exists (GitHub connection page)
+
+    def refresh_busy(self) -> None:
+        """Main thread only. One small Journal read: is an install transaction open? Stamps the beat."""
+        busy: bool | None
+        try:
+            busy = bool(self.busy_probe and self.busy_probe())
+        except Exception:  # noqa: BLE001 - an unreadable journal shows the warning (safer)
+            busy = True
+        with self._lock:
+            self._snap_busy = busy
+            self._beat = time.monotonic()
+
+    def refresh_snapshot(self) -> None:
+        """Main thread only. Run the two probes and keep the answers for the page; stamp the beat."""
+        self.refresh_busy()
+        rows: tuple[tuple[str, str], ...] | None
+        try:
+            rows = None
+            if self.release_probe is not None:
+                rows = tuple((str(label)[:120], str(value)[:256]) for label, value in self.release_probe()[:10])
+        except Exception:  # noqa: BLE001 -- an observation failure cannot create qualification
+            rows = (("Release status", "UNKNOWN — observations unavailable"),)
+        with self._lock:
+            self._snap_release = rows
+            self._beat = time.monotonic()
+
+    def beat(self) -> None:
+        """The main loop is alive (cheap; no Journal read)."""
+        with self._lock:
+            self._beat = time.monotonic()
+
+    def beat_age(self) -> float:
+        with self._lock:
+            return time.monotonic() - self._beat
+
+    def set_stale_after(self, seconds: float) -> None:
+        with self._lock:
+            self._beat_stale_after = max(60.0, float(seconds))
+
+    def stale_note(self) -> str:
+        """Plain words when the loop has not reported for a long time. Empty while it is fine or still starting."""
+        with self._lock:
+            state, _line = self._startup
+            age = time.monotonic() - self._beat
+            limit = self._beat_stale_after
+        if state or age <= limit:
+            return ""
+        minutes = int(age // 60)
+        return (f"The Deployer's loop has not reported for {minutes} minutes. It may be waiting for an answer, or "
+                "stuck. This page changes nothing; the Maintenance App and the status sensor show the same.")
+
+    def set_startup(self, state: str, line: str = "") -> None:
+        """STARTING or HELD (with a short plain line), or "" once the service runs."""
+        with self._lock:
+            self._startup = (state[:16], line[:600])
+            self._beat = time.monotonic()
+
+    def startup_state(self) -> tuple[str, str]:
+        with self._lock:
+            return self._startup
 
     def release_status(self) -> tuple[tuple[str, str], ...]:
-        try:
-            if self.release_probe is not None:
-                return tuple((str(label)[:120], str(value)[:256])
-                             for label, value in self.release_probe()[:10])
-        except Exception:  # noqa: BLE001, S110 -- an observation failure cannot create qualification
-            pass
+        with self._lock:
+            rows = self._snap_release
+        if rows is not None:
+            return rows
         return (("Release status", "UNKNOWN — observations unavailable"),)
 
     def busy(self) -> bool:
-        try:
-            return bool(self.busy_probe and self.busy_probe())
-        except Exception:  # noqa: BLE001 - an unreadable journal shows the warning (safer)
-            return True
+        with self._lock:
+            snap = self._snap_busy
+        if snap is None:
+            return self.busy_probe is not None      # wired but not read yet: show the warning (safer)
+        return snap
 
     def open(self, pending: Pending) -> None:
         with self._lock:
@@ -309,8 +381,14 @@ def render(pending: Pending | None, last: str, action: str, note: str = "",
            health: tuple[str, list[str], str] = ("", [], ""), lift: tuple[str, str] = ("", ""),
            undo_offer: tuple[str, list[dict]] = ("", []), busy: bool = False,
            release_status: tuple[tuple[str, str], ...] = (), history: tuple[str, str] = ("", ""),
-           again_offer: tuple[str, list[dict]] = ("", []), queued: list[str] | tuple = ()) -> str:
+           again_offer: tuple[str, list[dict]] = ("", []), queued: list[str] | tuple = (),
+           startup: tuple[str, str] = ("", ""), stale: str = "") -> str:
     banner = BUSY_BANNER if busy else ""
+    if startup[0]:    # 0.3.49: STARTING / HELD. Plain words first; nothing here can approve anything.
+        label = {"STARTING": "Starting", "HELD": "Held"}.get(startup[0], startup[0].title())
+        banner = (f'<p class="w"><b>{html.escape(label)}.</b> {html.escape(startup[1])}</p>' + banner)
+    if stale:
+        banner += f'<p class="w">{html.escape(stale)}</p>'
     coming = ""
     if queued:                                      # 0.3.40: read-only; the Deployer asks them one at a time
         coming = ('<h2>Coming up</h2><p class="m">New requests on GitHub, asked one at a time after this one '
@@ -408,6 +486,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "hbd"
         sys_version = ""
+        timeout = HANDLER_TIMEOUT      # 0.3.49: a stalled connection frees its thread
 
         def log_message(self, *args):  # noqa: D401 - no request logging (no secrets, no noise)
             return
@@ -434,13 +513,20 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                 base = ""
             return f"{base}/decide"
 
+        def _connector(self):
+            return connector if connector is not None else board.connector   # 0.3.49: the page starts first
+
         def _github_line(self, base: str) -> str:
+            connector = self._connector()
             if connector is None:
                 return ""
             return (f'<p class="m"><a href="{html.escape(base)}/github">GitHub connection</a>: '
                     f"{html.escape(connector.status_line())}</p>")
 
         def _github_page(self, status: int, note: str = "") -> None:
+            connector = self._connector()
+            if connector is None:
+                return self._send(503, PAGE.format(body="<h1>House Brain Deployer</h1><p>Still starting.</p>"))
             body = connector.render(self.headers.get("X-Remote-User-Id", ""), self.headers.get("X-Ingress-Path", ""),
                                     self.headers.get("X-Forwarded-Host", ""),
                                     self.headers.get("X-Forwarded-Proto", ""), note)
@@ -448,12 +534,13 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
 
         def _github_get(self, route: str) -> bool:
             """GET /github (Credential Autopilot). R2: GitHub returns to the hand-off address, not here."""
-            if connector is None or route != "/github":
+            if self._connector() is None or route != "/github":
                 return False
             self._github_page(200)
             return True
 
         def _github_post(self, route: str) -> bool:
+            connector = self._connector()
             if connector is None or route not in ("/github/upload", "/github/forget"):
                 return False
             try:
@@ -487,7 +574,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                 return self._send(404, "not found")
             pending, last = board.snapshot()
             page = render(pending, last, self._action(), health=board.health(), lift=board.lift_state(),
-                          undo_offer=board.undo_state(), busy=board.busy(), release_status=board.release_status(),
+                          undo_offer=board.undo_state(), busy=board.busy(), startup=board.startup_state(), stale=board.stale_note(), release_status=board.release_status(),
                           history=board.history_state(), **_extras(board))
             base = self._action().rsplit("/", 1)[0]
             self._send(200, page.replace("</body>", self._github_line(base) + "</body>", 1))
@@ -522,7 +609,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                          "reload the page.", 400: "Unknown choice."}
                 return self._send(status, render(pending, last, self._action(), notes.get(status, ""),
                                                  health=board.health(), lift=board.lift_state(),
-                                                 undo_offer=board.undo_state(), busy=board.busy(),
+                                                 undo_offer=board.undo_state(), busy=board.busy(), startup=board.startup_state(), stale=board.stale_note(),
                                                  release_status=board.release_status(),
                                                  history=board.history_state(), **_extras(board)))
             if route == "/try-again":                  # 0.3.40: owner-only; asks again, approves nothing
@@ -535,7 +622,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                          400: "Unknown choice."}
                 return self._send(status, render(pending, last, self._action(), notes.get(status, ""),
                                                  health=board.health(), lift=board.lift_state(),
-                                                 undo_offer=board.undo_state(), busy=board.busy(),
+                                                 undo_offer=board.undo_state(), busy=board.busy(), startup=board.startup_state(), stale=board.stale_note(),
                                                  release_status=board.release_status(),
                                                  history=board.history_state(), **_extras(board)))
             if route == "/go-back":
@@ -547,7 +634,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                          400: "Unknown choice."}
                 return self._send(status, render(pending, last, self._action(), notes.get(status, ""),
                                                  health=board.health(), lift=board.lift_state(),
-                                                 undo_offer=board.undo_state(), busy=board.busy(),
+                                                 undo_offer=board.undo_state(), busy=board.busy(), startup=board.startup_state(), stale=board.stale_note(),
                                                  release_status=board.release_status(),
                                                  history=board.history_state(), **_extras(board)))
             if route == "/allow-more":
@@ -559,7 +646,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
                          400: "Unknown choice."}
                 return self._send(status, render(pending, last, self._action(), notes.get(status, ""),
                                                  health=board.health(), lift=board.lift_state(),
-                                                 undo_offer=board.undo_state(), busy=board.busy(),
+                                                 undo_offer=board.undo_state(), busy=board.busy(), startup=board.startup_state(), stale=board.stale_note(),
                                                  release_status=board.release_status(),
                                                  history=board.history_state(), **_extras(board)))
             status = board.decide(nonce, user, choice)
@@ -570,7 +657,7 @@ def make_handler(board: ApprovalBoard, allowed_peer: str, connector=None):
             self._send(200 if status == 200 else status,
                        render(None if status == 200 else pending, last, self._action(), notes.get(status, ""),
                               health=board.health(), lift=board.lift_state(), undo_offer=board.undo_state(),
-                              busy=board.busy(), release_status=board.release_status(),
+                              busy=board.busy(), startup=board.startup_state(), stale=board.stale_note(), release_status=board.release_status(),
                           history=board.history_state(), **_extras(board)))
 
         def do_PUT(self):  # noqa: N802
@@ -591,6 +678,16 @@ class IngressServer:
 
     def start(self) -> None:
         self.thread.start()
+
+    def page_ok(self, timeout: float = 2.0) -> bool:
+        """0.3.49: the page thread is alive and accepts a loopback connection. Bounded, never raises."""
+        if not self.thread.is_alive():
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", self.port), timeout=timeout):
+                return True
+        except OSError:
+            return False
 
     def stop(self) -> None:
         self.httpd.shutdown()

@@ -318,7 +318,8 @@ writes `STOPPED`, so the other takes over at once.
 ## Startup held — from 0.3.16 (draft #985, not install-ready)
 
 If the Deployer finds a migration start file (`MIGRATED_STARTUP.json` in its data folder) that it cannot use, it
-**does not start** and does nothing else: no install, no restart, no migration. You see:
+**does not start** and does nothing else: no install, no restart, no migration. From 0.3.49 the App stays running only
+to show the page ("Held" and the code, no buttons); Stop or Restart it after you have acted on the reason. You see:
 
 - the status entity `sensor.house_brain_deployer_status` = `HELD` with the reason (only if no install is open; an open
   install's marker is never overwritten, because recovery needs it), and
@@ -330,8 +331,8 @@ What to do: tell the Deployer chat. The file belongs to the history migration an
 not delete files by hand. Nothing in Home Assistant was changed.
 
 **An install interrupted on the moved history (from 0.3.42).** If the Deployer restarts in the middle of an install, its
-next start asks you once on your phone to recover it. That ask has **no page** (the page shows 502 while it waits): press
-and hold the notification, or drag it down, and tap **Approve**. The Deployer reads the original request, puts the old
+next start asks you once on your phone to recover it. That ask has **no approval on the page** (from 0.3.49 the page is
+up and says "Starting" while it waits): press and hold the notification, or drag it down, and tap **Approve**. The Deployer reads the original request, puts the old
 files back and stops. Press **Start** once more and it runs normally. Ask the chat that filed the install to file it again.
 
 ## Install history size — from 0.3.16
@@ -351,3 +352,19 @@ native migration/Undo/restore qualification are still required. The approval pag
 qualification and migration status separate from local test results. Keep the stopped legacy
 Deployer installed until migration and restore have been accepted.
 
+## Liveness and traces — from 0.3.49
+
+The page is the first thing the Deployer starts. If something is wrong you see words, not a blank page or 502:
+
+- **Starting** while the Journal and any startup recovery question are being handled (and "attempt 2 of 3" after a failed
+  start); **Held** with the code for a deliberately held start; a line "The Deployer's loop has not reported for N
+  minutes" if the main loop is silent for 15 minutes or three poll intervals. The page only shows; it approves nothing
+  except the usual Deploy and Restart taps, which stay two separate taps.
+- `sensor.house_brain_deployer_status` (while no install is open) also carries `heartbeat_at`, `started_at`,
+  `loop_errors`, `page_ok` and `previous_run` (`clean_stop`, `held:CODE`, `refused:...`, `loop_failed:...`,
+  `crashed:Class`, `killed_or_power_loss` or `first_start`).
+- If the last run ended badly you get one push (at most every 6 hours) and an audit line `PREVIOUS_RUN_UNCLEAN`.
+- The App's data folder keeps `last_run.json`, `crash_trace.txt` and `hang_trace.txt`. Code locations only; no values,
+  no token, no path of yours. Give them to the chat if the Deployer ever stops answering.
+- Twenty loop errors in a row stop the App with exit code 3 (a Supervisor or manual restart then starts it again);
+  an unexpected start failure is tried three times and then stops with exit code 2.

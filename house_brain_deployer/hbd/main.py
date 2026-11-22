@@ -9,6 +9,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -23,6 +24,7 @@ from . import (
     companion_setup,
     dashboards,
     diagnose,
+    forensics,
     ghauth,
     ghpage,
     http_cleanup,
@@ -277,11 +279,43 @@ class Service:
         self.boot_id = read_boot_id(os.environ.get("HBD_BOOT_ID_PATH", BOOT_ID_PATH)
                                     if os.environ.get("HBD_TEST_MODE") == "1" else BOOT_ID_PATH)
         self.started_at = time.time()
+        # 0.3.49: set by main(); None in unit tests that build a Service directly
+        self.forensics: forensics.Forensics | None = None
+        self.page: IngressServer | None = None
+        self.loop_errors = 0
+        self._last_snapshot = 0.0
+        self._last_busy = 0.0
         if self.board is not None:
             self.board.busy_probe = lambda: bool(self.j.load_txn())   # 0.3.5 (P4): page warning
             manifest_digest = release_status.manifest_identity()
             self.board.release_probe = lambda: release_status.observations(
                 self.j, manifest_digest, self.in_standby)
+
+    SNAPSHOT_EVERY = 15.0      # seconds between page snapshots while waiting (0.3.49)
+
+    def _should_stop(self) -> bool:
+        """Every wait (owner approval, Core restart, probes) asks this about once a second. 0.3.49: it is also the
+        heartbeat: it re-arms the hang dump and refreshes the page's snapshot, so a legitimate long wait never looks
+        like a hang and the page never reads the Journal itself."""
+        self.beat()
+        return self.stop
+
+    def beat(self, *, force: bool = False) -> None:
+        if self.forensics is not None:
+            self.forensics.tick()
+        board = self.board
+        if board is None:
+            return
+        now = time.monotonic()
+        if force or now - self._last_snapshot >= self.SNAPSHOT_EVERY:
+            self._last_snapshot = now
+            self._last_busy = now
+            board.refresh_snapshot()
+        elif now - self._last_busy >= 0.5:      # the install warning must not lag: one small Journal read
+            self._last_busy = now
+            board.refresh_busy()
+        else:
+            board.beat()
 
     def ensure_engine(self) -> Engine:
         if self.engine is None:
@@ -291,7 +325,7 @@ class Service:
             settings = Settings(notify_service=self.o.notify_service, owner_user_id=owner_id,
                                 dry_run=self.o.dry_run, require_auth=self.o.require_phone_unlock,
                                 timing=self.timing, board=self.board, open_url=self.open_url,
-                                should_stop=lambda: self.stop, run_id=self.run_id, boot_id=self.boot_id,
+                                should_stop=self._should_stop, run_id=self.run_id, boot_id=self.boot_id,
                                 started_at=self.started_at)
             self.engine = Engine(self.ha, self.gh, self.pk, self.j, settings)
         return self.engine
@@ -716,7 +750,7 @@ class Service:
             result = Result("REJECTED" if decision == approval.REJECT else "TIMED_OUT", [decision])
         else:
             try:
-                evidence = writer_probe.run(writer_enroll.root(), operation, should_stop=lambda: self.stop)
+                evidence = writer_probe.run(writer_enroll.root(), operation, should_stop=self._should_stop)
                 if evidence["result"] == "ACQUIRED":
                     LOG.info("HBD-NATIVE writer_probe op=%s result=ACQUIRED held=%s ino=%s dev=%s.%s", operation,
                              evidence["held_seconds"], evidence["ino"], os.major(evidence["dev"]),
@@ -813,14 +847,14 @@ class Service:
                     facts = legacy_migrate.run_prepare(data_dir=data_dir, packages_root=self.pk.root,
                                                        request_id=request_id, stage=fields["stage"],
                                                        snapshot_sha256=fields["snapshot_sha256"], shown=shown,
-                                                       owner_id=owner, should_stop=lambda: self.stop)
+                                                       owner_id=owner, should_stop=self._should_stop)
                     result = Result("LEGACY_PREPARED", [], {"legacy_prepare": facts})
                 elif schema == legacy_migrate.SELECT:
                     facts = legacy_migrate.run_select(data_dir=data_dir, packages_root=self.pk.root,
                                                       request_id=request_id,
                                                       prepared_request_id=fields["prepared_request_id"],
                                                       result_sha256=fields["result_sha256"], shown=shown,
-                                                      owner_id=owner, should_stop=lambda: self.stop)
+                                                      owner_id=owner, should_stop=self._should_stop)
                     result = Result("LEGACY_SELECTED", [], {"legacy_select": facts})
                 elif schema == legacy_migrate.RESET:
                     facts = legacy_migrate.run_reset(data_dir=data_dir)
@@ -1050,9 +1084,14 @@ class Service:
             # 0.3.24 (#985): previous | prepared | selected | moved
             "history": legacy_migrate.history_state(self._data_dir(),
                                                     running_moved=getattr(self, "migrated_runtime", None) is not None),
+            # 0.3.49: liveness the Maintenance App and the owner can read without opening the page
+            "heartbeat_at": int(time.time()), "started_at": int(self.started_at), "loop_errors": self.loop_errors,
+            "page_ok": self.page.page_ok() if self.page is not None else None,
+            "previous_run": self.forensics.previous.get("verdict") if self.forensics is not None else None,
         }
 
     def _close_poll(self) -> None:
+        self.beat(force=True)       # 0.3.49: the page snapshot reflects the poll that just ended
         due = self.diag.end(time.time())
         h = self.health()
         if self.writer_busy:
@@ -1101,6 +1140,7 @@ class Service:
                 "minutes after that one stops (the Maintenance App's switch-over does that).")
 
     def poll_once(self) -> None:
+        self.beat(force=True)       # 0.3.49: fresh page snapshot at the start of every poll
         self._apply_back()
         if self.contained:
             # D6(a): nothing more runs in this App run; no Journal, status or GitHub effect.
@@ -1271,7 +1311,8 @@ def handoff_port() -> int:
     return HANDOFF_PORT
 
 
-def build_service(options_path: str, data_dir: str, *, startup_provider=None) -> Service:
+def build_service(options_path: str, data_dir: str, *, startup_provider=None,
+                  board: ApprovalBoard | None = None) -> Service:
     opts = load_options(options_path)
     token = os.environ.get("SUPERVISOR_TOKEN", "")
     if not token:
@@ -1307,6 +1348,9 @@ def build_service(options_path: str, data_dir: str, *, startup_provider=None) ->
             return approval.ask(ha, opts.notify_service, approval.resolve_owner(ha, opts.owner_username),
                                 stage=stage, title=title, message=message, timeout=timing.approval_timeout,
                                 require_auth=opts.require_phone_unlock)
+        if board is not None:    # 0.3.49: the page is already up; say what the long wait could be
+            board.set_startup("STARTING", "Checking the previous run. If your phone shows a recovery question, "
+                                          "answer it there; the Deployer starts after that.")
         owner_context = installed_owner_provider(data_dir, ask,
                                                  manifest_for=startup_manifest_reader(opts, api, data_dir))
         owner_provider = owner_context.__enter__()
@@ -1321,7 +1365,7 @@ def build_service(options_path: str, data_dir: str, *, startup_provider=None) ->
             # 0.3.23: the moved history runs normally; the runtime keeps the bound folders for its life.
             owner_context.keep_for_runtime()
     if runtime is None:
-        service = _construct_service(opts, ha, api, packages, data_dir, timing)
+        service = _construct_service(opts, ha, api, packages, data_dir, timing, board=board)
         service.data_dir = data_dir
         return service
     try:
@@ -1330,7 +1374,7 @@ def build_service(options_path: str, data_dir: str, *, startup_provider=None) ->
                 raise ValueError('FORWARD_PACKAGES_CHANGED')
             if approval.resolve_owner(ha, opts.owner_username) != runtime.scope.owner_id:
                 raise ValueError('FORWARD_OWNER_CHANGED')
-            service = _construct_service(opts, ha, api, packages, data_dir, timing, runtime=runtime)
+            service = _construct_service(opts, ha, api, packages, data_dir, timing, runtime=runtime, board=board)
             runtime.bind_service(service)
         service.migrated_runtime = runtime
         service.data_dir = data_dir
@@ -1379,7 +1423,7 @@ def startup_manifest_reader(opts, api, data_dir):
     return read
 
 
-def _construct_service(opts, ha, api, packages, data_dir, timing, *, runtime=None):
+def _construct_service(opts, ha, api, packages, data_dir, timing, *, runtime=None, board=None):
     store = ghauth.KeyStore(data_dir)
     provider = ghauth.TokenProvider(store, opts.github_repo, GITHUB_PERMISSIONS, api, f"house-brain-deployer/{VERSION}")
     auth = ghauth.Auth(opts.github_auth, opts.github_token, provider, retire=opts.retire_old_token, api=api,
@@ -1404,7 +1448,7 @@ def _construct_service(opts, ha, api, packages, data_dir, timing, *, runtime=Non
     if runtime is not None:
         ha, gh, journal = runtime.wrap(ha), runtime.wrap(gh), runtime.wrap(journal)
     service = Service(opts, ha, gh, package_client, journal, timing,
-                      board=ApprovalBoard(), open_url=open_url,
+                      board=board if board is not None else ApprovalBoard(), open_url=open_url,
                       writer_factory=runtime.writer_factory if runtime is not None else None,
                       expected_owner_id=runtime.scope.owner_id if runtime is not None else None)
     service.connector = ghpage.Connector(
@@ -1418,18 +1462,24 @@ def _construct_service(opts, ha, api, packages, data_dir, timing, *, runtime=Non
     return service
 
 
-def start_ingress(service: Service) -> IngressServer | None:
-    """Serve the approval page to the Supervisor ingress proxy only."""
-    if service.board is None:
-        return None
+def start_page(board: ApprovalBoard, connector=None) -> IngressServer | None:
+    """Serve the approval page to the Supervisor ingress proxy only. 0.3.49: started FIRST, before the service exists,
+    so a long startup wait or a failed start still has a page that says why (2026-11-17: the page was the last thing
+    started and a stuck start left an empty ingress)."""
     port, peer = 8099, INGRESS_PEER
     if os.environ.get("HBD_TEST_MODE") == "1":
         port = int(os.environ.get("HBD_INGRESS_PORT", "8099"))
         peer = os.environ.get("HBD_INGRESS_PEER", INGRESS_PEER)
-    server = IngressServer(service.board, port=port, allowed_peer=peer,
-                           connector=getattr(service, "connector", None))
+    server = IngressServer(board, port=port, allowed_peer=peer, connector=connector)
     server.start()
     return server
+
+
+def start_ingress(service: Service) -> IngressServer | None:
+    """Kept for callers that already hold a service (tests)."""
+    if service.board is None:
+        return None
+    return start_page(service.board, getattr(service, "connector", None))
 
 
 def poll_safely(service: Service, last_error: list[str]) -> bool:
@@ -1442,10 +1492,13 @@ def poll_safely(service: Service, last_error: list[str]) -> bool:
         LOG.warning("stop requested while waiting (%s); the transaction is left for recovery on next start", err)
         return False
     except Exception as err:  # noqa: BLE001 - loop must survive transient faults
-        txn = service.j.load_txn()
-        if txn:   # 0.3.5 (P2): the next poll's recovery names this as an internal error
-            service.j.audit(str(txn.get("request_id") or "-"), "TXN_EXCEPTION", type=type(err).__name__,
-                            phase=txn.get("phase"), run=service.run_id)
+        try:
+            txn = service.j.load_txn()
+            if txn:   # 0.3.5 (P2): the next poll's recovery names this as an internal error
+                service.j.audit(str(txn.get("request_id") or "-"), "TXN_EXCEPTION", type=type(err).__name__,
+                                phase=txn.get("phase"), run=service.run_id)
+        except Exception as note_err:  # noqa: BLE001 - 0.3.49 (A2): the last-resort handler itself must never raise
+            LOG.warning("poll failure could not be recorded (%s)", type(note_err).__name__)
         # The plain-English reason is logged by the tracker (on change) and published in the status.
         message = net.redact(f"{type(err).__name__}: {err}")[:300]
         if message != last_error[0]:
@@ -1489,45 +1542,164 @@ def report_startup_held(code: str, options_path: str) -> None:
     approval.inform(ha, notify, "House Brain Deployer: startup held", f"{code}. {STARTUP_HELD_NOTE}")
 
 
-def main() -> int:
+STARTUP_ATTEMPTS = 3                  # 0.3.49: an unexpected start failure is tried this many times, then exit 2
+STARTUP_RETRY_SECONDS = 60.0
+LOOP_FAILURES_BEFORE_EXIT = 20        # 0.3.49: consecutive loop-level errors (not poll failures) before exit 3
+LOOP_BACKOFF_SECONDS = (5.0, 15.0, 30.0, 60.0)
+STOP = threading.Event()              # set by SIGTERM/SIGINT once the handlers are installed; tests pass their own
+
+
+def _wait(stop: threading.Event, note: forensics.Forensics, board: ApprovalBoard, seconds: float) -> bool:
+    """Sleep ``seconds`` in one-second slices, ticking the hang dump and the page. True when stop was requested."""
+    deadline = time.monotonic() + seconds
+    while not stop.is_set() and time.monotonic() < deadline:
+        note.tick()
+        board.beat()
+        stop.wait(min(1.0, max(0.0, deadline - time.monotonic())))
+    return stop.is_set()
+
+
+def main(stop: threading.Event | None = None) -> int:
+    stop = STOP if stop is None else stop
     handler = logging.StreamHandler(sys.stdout)
     handler.addFilter(net.RedactingFilter())
     logging.basicConfig(level=logging.INFO, handlers=[handler],
                         format="%(asctime)s %(levelname)s %(message)s")
     options_path = os.environ.get("HBD_OPTIONS", "/data/options.json")
     data_dir = os.environ.get("HBD_DATA", "/data")
-    try:
-        service = build_service(options_path, data_dir)
-    except WorkingError as err:
-        if str(err).startswith(("STARTUP_", "FORWARD_")):   # 0.3.23: a moved-history start that fails holds too
-            LOG.error("startup held: %s (no service, no migration; see 'Startup held' in DOCS)", err)
-            report_startup_held(str(err), options_path)
-            return 2
-        LOG.error("configuration refused: %s", err)
-        return 2
-    except (OptionsError, ValueError, OSError) as err:
-        if str(err).startswith("FORWARD_"):
-            LOG.error("startup held: %s", err)
-            report_startup_held(str(err), options_path)
-            return 2
-        LOG.error("configuration refused: %s", err)
-        return 2
-    try:
-        start_ingress(service)
-    except OSError as err:  # the push buttons still work without the page
-        LOG.warning("approval page unavailable: %s", err)
-    LOG.info("House Brain Deployer %s started (dry_run=%s)", VERSION, service.o.dry_run)
-    selfreport.log_report(LOG)  # 0.3.16: read-only native facts for the shared-writer layout; never raises
-    o = service.o
-    LOG.info("settings: repo=%s branch=%s sources=%s notify=%s owner=%s check every %ss; daily limit: "
-             "%s of %s installs asked in the last 24 h", o.github_repo, o.requests_branch,
-             ",".join(o.source_ref_allowlist), o.notify_service, o.owner_username, o.poll_seconds,
-             len(service.j.approval_times_since(86400, INSTALL_STAGES)), o.max_approval_requests_per_day)
-    service.status("STARTED", {"version": VERSION, "dry_run": service.o.dry_run})
-    service.j.audit("-", "APP_STARTED", version=VERSION, boot_id=service.boot_id, run=service.run_id)
+    note = forensics.Forensics(data_dir)
+    previous = note.begin(VERSION)
+    note.install_traces()
+    if previous.get("verdict") not in ("clean_stop", "first_start"):
+        LOG.warning("the previous run ended: %s", previous.get("verdict"))
 
+    def finish(rc: int, verdict: str) -> int:
+        note.end(verdict)
+        note.close()
+        return rc
+
+    def hold(board: ApprovalBoard, code: str) -> int:
+        """A deliberate hold (STARTUP_*/FORWARD_*): stay up so the page can say why; HELD was reported once."""
+        board.set_startup("HELD", f"{code}. {STARTUP_HELD_NOTE}")
+        _install_stop_handlers(stop, None)
+        if os.environ.get("HBD_ONCE") != "1":      # HBD_ONCE=1 (test and one-shot runs): report and exit, as before
+            _wait(stop, note, board, float("inf"))
+        return finish(2, f"held:{code}")
+
+    board = ApprovalBoard()
+    board.set_startup("STARTING", "The Deployer is starting.")
+    page: IngressServer | None = None
+    try:
+        try:
+            page = start_page(board)
+        except Exception as err:  # noqa: BLE001 - the push buttons still work without the page; it must never stop the App
+            LOG.warning("approval page unavailable: %s", err if isinstance(err, OSError) else type(err).__name__)
+        service = None
+        attempt = 0
+        while service is None:
+            attempt += 1
+            failure: BaseException
+            try:
+                service = build_service(options_path, data_dir, board=board)
+                break
+            except WorkingError as err:
+                if str(err).startswith(("STARTUP_", "FORWARD_")):   # 0.3.23: a moved-history start that fails holds too
+                    LOG.error("startup held: %s (no service, no migration; see 'Startup held' in DOCS)", err)
+                    report_startup_held(str(err), options_path)
+                    return hold(board, str(err))
+                LOG.error("configuration refused: %s", err)
+                return finish(2, f"refused:{type(err).__name__}")
+            except (OptionsError, ValueError) as err:
+                if str(err).startswith("FORWARD_"):
+                    LOG.error("startup held: %s", err)
+                    report_startup_held(str(err), options_path)
+                    return hold(board, str(err))
+                LOG.error("configuration refused: %s", err)
+                return finish(2, f"refused:{type(err).__name__}")
+            except Exception as err:  # noqa: BLE001 - 0.3.49: OSError and anything unexpected: a bounded retry, never silence
+                failure = err
+            LOG.error("start failed (attempt %s of %s): %s: %s", attempt, STARTUP_ATTEMPTS, type(failure).__name__,
+                      net.redact(str(failure))[:200], exc_info=failure)
+            if attempt >= STARTUP_ATTEMPTS:
+                return finish(2, crashed_start_verdict(failure))
+            board.set_startup("STARTING", f"The start failed ({type(failure).__name__}); trying again in "
+                                          f"{int(STARTUP_RETRY_SECONDS)} seconds (attempt {attempt + 1} of "
+                                          f"{STARTUP_ATTEMPTS}).")
+            if _wait(stop, note, board, STARTUP_RETRY_SECONDS):
+                return finish(0, "clean_stop")
+        service.forensics = note
+        service.page = page
+        board.connector = service.connector
+        board.set_stale_after(max(forensics.HANG_SECONDS, 3 * service.o.poll_seconds))
+        board.set_startup("", "")
+        LOG.info("House Brain Deployer %s started (dry_run=%s)", VERSION, service.o.dry_run)
+        selfreport.log_report(LOG)  # 0.3.16: read-only native facts for the shared-writer layout; never raises
+        o = service.o
+        LOG.info("settings: repo=%s branch=%s sources=%s notify=%s owner=%s check every %ss; daily limit: "
+                 "%s of %s installs asked in the last 24 h", o.github_repo, o.requests_branch,
+                 ",".join(o.source_ref_allowlist), o.notify_service, o.owner_username, o.poll_seconds,
+                 len(service.j.approval_times_since(86400, INSTALL_STAGES)), o.max_approval_requests_per_day)
+        service.status("STARTED", {"version": VERSION, "dry_run": service.o.dry_run})
+        service.j.audit("-", "APP_STARTED", version=VERSION, boot_id=service.boot_id, run=service.run_id,
+                        previous_run=str(previous.get("verdict", ""))[:80])
+        service.beat(force=True)
+        report_previous_run(service, note)
+        _install_stop_handlers(stop, service)
+        once = os.environ.get("HBD_ONCE") == "1"
+        last_error = [""]
+        consecutive = 0
+        rc, verdict = 0, "clean_stop"
+        while not service.stop:
+            try:
+                alive = poll_safely(service, last_error)
+            except Exception as err:  # noqa: BLE001 - poll_safely's own guard failed: back off, never spin, never hide
+                consecutive += 1
+                service.loop_errors += 1
+                LOG.error("loop error %s of %s: %s: %s", consecutive, LOOP_FAILURES_BEFORE_EXIT,
+                          type(err).__name__, net.redact(str(err))[:200])
+                if consecutive >= LOOP_FAILURES_BEFORE_EXIT:
+                    rc, verdict = 3, f"loop_failed:{type(err).__name__}"
+                    break
+                if _wait(stop, note, board, LOOP_BACKOFF_SECONDS[min(consecutive - 1, len(LOOP_BACKOFF_SECONDS) - 1)]):
+                    break
+                continue
+            consecutive = 0
+            if not alive or once:
+                break
+            deadline = time.monotonic() + service.o.poll_seconds
+            while not service.stop and time.monotonic() < deadline:
+                time.sleep(1)
+                service.beat()
+        if not service.in_standby:
+            # 0.3.7: say STOPPED (never while a transaction is pending: status() keeps the marker), so a store
+            # Deployer waiting in standby takes over at once instead of after 15 minutes.
+            service.status("STOPPED", {"version": VERSION, "dry_run": service.o.dry_run})
+        pending = service.engine is not None and bool(service.j.load_txn())
+        runtime = getattr(service, 'migrated_runtime', None)
+        if runtime is not None:
+            runtime.close()
+        if rc == 3:
+            LOG.error("stopping after %s consecutive loop errors; the Supervisor or the owner restarts the App",
+                      consecutive)
+        elif not pending:
+            LOG.info("stopped")
+        else:
+            LOG.warning("stopped with a transaction pending; it will be recovered on next start")
+        return finish(rc, verdict)
+    except Exception as err:
+        LOG.exception("the Deployer stopped on an unexpected error")
+        note.end(forensics.crashed_verdict(err))
+        note.close()
+        raise
+
+
+def crashed_start_verdict(err: BaseException) -> str:
+    return "refused_start:" + forensics.crashed_verdict(err).split(":", 1)[1].split(":", 1)[0]
+
+
+def _install_stop_handlers(stop: threading.Event, service: Service | None) -> None:
     def _term(signum, frame):  # noqa: ARG001
-        if not service.stop:
+        if service is not None and not service.stop:
             # 0.3.5 (P1): record the stop and the phase it hit, so a later recovery can say why
             try:
                 txn = service.j.load_txn() or {}
@@ -1535,33 +1707,30 @@ def main() -> int:
                                 phase=txn.get("phase"), run=service.run_id)
             except Exception:  # noqa: BLE001, S110 - a stop must never fail on its own record
                 pass
-        service.stop = True
+        if service is not None:
+            service.stop = True
+        stop.set()
 
-    signal.signal(signal.SIGTERM, _term)
-    signal.signal(signal.SIGINT, _term)
-    once = os.environ.get("HBD_ONCE") == "1"
-    last_error = [""]
-    while not service.stop:
-        if not poll_safely(service, last_error):
-            break
-        if once:
-            break
-        deadline = time.monotonic() + service.o.poll_seconds
-        while not service.stop and time.monotonic() < deadline:
-            time.sleep(1)
-    if not service.in_standby:
-        # 0.3.7: say STOPPED (never while a transaction is pending: status() keeps the marker), so a store
-        # Deployer waiting in standby takes over at once instead of after 15 minutes.
-        service.status("STOPPED", {"version": VERSION, "dry_run": service.o.dry_run})
-    pending = service.engine is not None and bool(service.j.load_txn())
-    runtime = getattr(service, 'migrated_runtime', None)
-    if runtime is not None:
-        runtime.close()
-    if not pending:
-        LOG.info("stopped")
-        return 0
-    LOG.warning("stopped with a transaction pending; it will be recovered on next start")
-    return 0
+    try:
+        signal.signal(signal.SIGTERM, _term)
+        signal.signal(signal.SIGINT, _term)
+    except ValueError:      # not the main thread (a test): the caller's event is the stop
+        pass
+
+
+def report_previous_run(service: Service, note: forensics.Forensics) -> None:
+    """0.3.49: when the last run ended badly, say so once in the audit and (at most every 6 hours) one push."""
+    verdict = str(note.previous.get("verdict", ""))
+    try:
+        if note.previous_was_clean():
+            return
+        service.j.audit("-", "PREVIOUS_RUN_UNCLEAN", verdict=verdict[:120], run=service.run_id)
+        if note.should_push_unclean():
+            approval.inform(service.ha, service.o.notify_service, "House Brain Deployer: restarted after a bad stop",
+                            f"The last run ended with: {verdict}. Nothing was changed by this notice. The "
+                            "Deployer's data folder keeps crash_trace.txt and hang_trace.txt if a trace was made.")
+    except Exception as err:  # noqa: BLE001 - a notice must never stop the start
+        LOG.warning("previous-run notice failed (%s)", type(err).__name__)
 
 
 if __name__ == "__main__":
