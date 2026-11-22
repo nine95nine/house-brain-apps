@@ -1,5 +1,13 @@
 # House Brain Systems AI
 
+Version 0.3.23 (shadow). 0.3.23 makes the status words in the `apps:` list on the family line (`sensor.house_brain_family_status`) agree with the problem list:
+
+- **A short blip reads `degraded`, not `failed`.** Since 0.3.21 a failed cycle with a good cycle no more than 3 cycles earlier is a warning (`app health degraded`). The `apps:` list now prints the same word. If the App stays failed, both say `failed`.
+- **A stopped App you had running reads `stopped`.** An App seen started at least once and now stopped is listed as `stopped`, whatever its Start on boot setting (House Health, Water, Pool and Cooling start manually, so before this a stop was invisible). It is display only: no new problem, no new alert and no start proposal. An App that was never seen running stays quiet. After the update, an App counts as seen started if Systems AI's change log shows it started.
+- **Since when.** An entry that is not OK adds ` since HH:MMZ` (UTC; ` since MM-DD` after 24 hours), the time it first went bad. The times are left out when they would push an App into `+N more`.
+- Example: `apps: Systems 0.3.23, House Health 0.1.1 stopped since 14:05Z`.
+- Unchanged: the 255-character line, the order (versions changed in 72 hours first), checked words only, no new route, field, schema or entity.
+
 Version 0.3.22 (shadow). 0.3.22 makes the version list on the family line (`sensor.house_brain_family_status`) about versions again:
 
 - **`apps:`** lists the Apps whose **version changed in the last 72 hours**, newest first, each with its status word if it is not OK. Then it lists **every App that is not OK now**. Example: `apps: Systems 0.3.22, Maintenance 0.9.63, Pool 0.1.1 degraded`.

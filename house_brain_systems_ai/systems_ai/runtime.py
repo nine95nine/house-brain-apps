@@ -376,6 +376,7 @@ class Runtime:
         apps = {}
         targets = {}
         seed = None
+        transient = set()
         try:
             self.discover(now)
             sup = self.client.info('/info')
@@ -430,6 +431,9 @@ class Runtime:
                 self._change('app_version:' + slug, info.get('version'), now, 'UPDATE')
                 self._change('app_state:' + slug, info.get('state'), now, 'APP_STATE')
                 problems.update(app_problems(name, slug, info, observed, self.core_down_at))
+                if info.get('state') == 'started' and observed is not None \
+                        and failed_is_transient(observed, self.core_down_at):
+                    transient.add(name)          # 0.3.23: the beacon grades this blip like the problem list does
                 apps[slug] = {'name': name, 'state': info.get('state'), 'boot': info.get('boot'),
                               'boot_config': info.get('boot_config'),
                               'version': info.get('version'), 'update_available': info.get('update_available'),
@@ -443,7 +447,12 @@ class Runtime:
                                        and (observed is None or observed['status'] == 'OK'), now)
         self.view['apps'] = apps
         if self.inputs.get('supervisor_api') and sup is not None:
+            # 0.3.23: an App the change log shows started counts as seen started for a row from before 0.3.23.
+            ever = {str(c.get('subject'))[len('app_state:'):] for c in self.incidents.state.get('changes') or []
+                    if isinstance(c, dict) and c.get('kind') == 'APP_STATE'
+                    and 'started' in (c.get('before'), c.get('after'))}
             self.view['beacon'] = beacon.update(self.store, apps, now, __version__, seed=seed,
+                                                transient=transient, ever_started=ever,
                                                 always_on=playbooks.ALWAYS_ON)
         self.targets = targets
         try:

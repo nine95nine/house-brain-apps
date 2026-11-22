@@ -17,10 +17,17 @@ store and renders a bounded fragment for the digest text:
 * The rows survive a restart (store key "beacon"), so Systems AI's own update is the first change it reports. On
   the first start with a beacon, Apps are seeded from the existing last:app_version: keys.
 
+* 0.3.23 (#942 7080080195 P1; audit 7079933085 A1, A2, S2): the status word follows the problem list. A FAILED that
+  Systems AI grades as a short blip (runtime.failed_is_transient, 0.3.21) prints "degraded", like its WARNING; an
+  App seen started at least once and now stopped prints "stopped" whatever its boot setting (display only: no new
+  problem, severity or proposal); a not-OK entry adds " since HH:MMZ" (UTC; " since MM-DD" after 24 h) when that
+  costs no entry.
+
 Read only: no new route, field, schema or entity. The rows are not exported as such; only the fragment text is.
 """
 import math
 import re
+import time
 
 from .app_health import VERSION_RE
 
@@ -40,6 +47,7 @@ NAMES = {'house_brain_energy_ai': 'Energy', 'house_brain_maintenance': 'Maintena
          SELF: 'Systems'}
 RE_NAME = re.compile(r'house_brain_[a-z0-9_]{1,48}')
 RE_SLUG_NAME = re.compile(r'(?:local|[0-9a-f]{8})_(house_brain_[a-z0-9_]{1,48})')
+SINCE_DAY_S = 86400
 STATUS_WORDS = ('OK', 'DEGRADED', 'FAILED', 'STALE', 'INVALID', 'UNREACHABLE', 'ERROR', 'STOPPED', 'UNREADABLE')
 
 
@@ -62,24 +70,31 @@ def name_of(subject):
     return m.group(1) if m else None
 
 
-def status_of(row, always_on=()):
+def status_of(row, always_on=(), seen_started=False, transient=False):
     """One status word per App: its own /health word when it publishes one; else from the Supervisor state, with
-    the same rules as the App problems (error; stopped with Start on boot; an always-on App stopped)."""
+    the same rules as the App problems (error; stopped with Start on boot; an always-on App stopped).
+
+    0.3.23: a FAILED the problem list grades as a blip (transient) is DEGRADED here too, and an App seen started
+    before (seen_started) is STOPPED when it is stopped now, whatever its boot setting."""
     state = row.get('state')
     if state == 'UNREADABLE':
         return 'UNREADABLE'
     health = row.get('health')
     if state == 'started' and health in STATUS_WORDS:
-        return health
+        return 'DEGRADED' if health == 'FAILED' and transient is True else health
     if state == 'error':
         return 'ERROR'
-    if state not in ('started', None) and (row.get('boot') == 'auto' or row.get('name') in always_on):
+    if state not in ('started', None) and (row.get('boot') == 'auto' or row.get('name') in always_on
+                                           or seen_started is True):
         return 'STOPPED'
     return 'OK'
 
 
-def update(store, apps, now, self_version, seed=None, always_on=()):
-    """Fold this cycle's App view into the stored rows; return the rows. apps = runtime view['apps'] (slug -> row)."""
+def update(store, apps, now, self_version, seed=None, always_on=(), transient=(), ever_started=()):
+    """Fold this cycle's App view into the stored rows; return the rows. apps = runtime view['apps'] (slug -> row).
+
+    0.3.23: transient = App names whose FAILED is a blip this cycle (runtime.failed_is_transient); ever_started =
+    slugs the change log shows started, used once for a row written before 0.3.23 (no seen_started yet)."""
     now = float(now) if isinstance(now, (int, float)) and math.isfinite(now) else 0.0
     old = store.get(STORE_KEY) or {}
     old = old if isinstance(old, dict) else {}
@@ -94,7 +109,16 @@ def update(store, apps, now, self_version, seed=None, always_on=()):
         if installed is None and row.get('state') == 'UNREADABLE' and prev:
             installed = prev.get('version')         # an unreadable info keeps the last known version
         running = version((row.get('running_version')))
-        status = status_of(row, always_on)
+        legacy = prev is None or 'seen_started' not in prev
+        was_up = (prev or {}).get('seen_started') is True or (legacy and slug in ever_started)
+        status = status_of(row, always_on, seen_started=was_up, transient=name in transient)
+        seen_started = was_up or row.get('state') == 'started'
+        if status == 'OK':
+            bad_since = None
+        elif prev is not None and prev.get('status') not in (None, 'OK'):
+            bad_since = prev.get('bad_since', prev.get('changed_at'))   # still not OK: keep when it went bad
+        else:
+            bad_since = now
         if prev is None and first and seed:
             prev = {'version': version(seed.get(slug)), 'status': 'OK', 'changed_at': None, 'version_at': None}
         if prev is None:
@@ -105,11 +129,12 @@ def update(store, apps, now, self_version, seed=None, always_on=()):
             changed = now if moved or prev.get('status') != status else prev.get('changed_at')
             version_at = now if moved else prev.get('version_at')     # rows from 0.3.19-0.3.21 have none
         seen[name] = {'version': installed, 'running': running, 'status': status, 'changed_at': changed,
-                      'version_at': version_at}
+                      'version_at': version_at, 'seen_started': seen_started, 'bad_since': bad_since}
     prev = old.get(SELF) if isinstance(old.get(SELF), dict) else None
     mine = version(self_version)
     at = now if prev is None or prev.get('version') != mine else prev.get('version_at')
-    seen[SELF] = {'version': mine, 'running': mine, 'status': 'OK', 'changed_at': at, 'version_at': at}
+    seen[SELF] = {'version': mine, 'running': mine, 'status': 'OK', 'changed_at': at, 'version_at': at,
+                  'seen_started': True, 'bad_since': None}
     rows = dict(sorted(seen.items())[:MAX_ROWS])
     if rows != old:
         store.put(STORE_KEY, rows)
@@ -135,7 +160,16 @@ def entries(rows, now):
     return [(name, r) for _, _, name, r in sorted(out, key=lambda e: e[:3])]
 
 
-def text(name, r):
+def since(r, now):
+    """0.3.23: " since HH:MMZ" (UTC) for a not-OK row that went bad in the last 24 h, " since MM-DD" before; else ''."""
+    at = _at(r.get('bad_since'), now)
+    if r.get('status') == 'OK' or at is None or at <= 0:
+        return ''
+    t = time.gmtime(at)
+    return time.strftime(' since %H:%MZ' if now - at < SINCE_DAY_S else ' since %m-%d', t)
+
+
+def text(name, r, now=None):
     v = version(r.get('version'))
     run = version(r.get('running'))
     word = f"{label(name)} {v or '?'}"
@@ -144,17 +178,27 @@ def text(name, r):
     status = r.get('status')
     if status != 'OK':
         word += ' ' + (status.lower() if status in STATUS_WORDS else 'unknown')
+        if now is not None:
+            word += since(r, now)
     return word
 
 
-def fragment(rows, now, room):
-    """The fragment, at most `room` characters: whole entries, then "+N more"; '' when nothing fits or is due."""
-    shown = [text(n, r) for n, r in entries(rows, now)]
-    if not shown or room <= 0:
-        return ''
+def _fit(shown, room):
+    """(line, entries kept): whole entries, then "+N more"; ('', -1) when not even that fits."""
     for keep in range(len(shown), -1, -1):
         parts = shown[:keep] + ([f"+{len(shown) - keep} more"] if keep < len(shown) else [])
         line = PREFIX + ', '.join(parts)
         if len(line) <= room:
-            return line
-    return ''
+            return line, keep
+    return '', -1
+
+
+def fragment(rows, now, room):
+    """The fragment, at most `room` characters: whole entries, then "+N more"; '' when nothing fits or is due.
+    0.3.23: the " since" times are added only when they cost no whole entry."""
+    due = entries(rows, now)
+    if not due or room <= 0:
+        return ''
+    plain, kept = _fit([text(n, r) for n, r in due], room)
+    timed, kept_timed = _fit([text(n, r, now) for n, r in due], room)
+    return timed if kept_timed >= kept and kept_timed >= 0 else plain
