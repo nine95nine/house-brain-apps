@@ -1,0 +1,12 @@
+**
+!Dockerfile
+!.dockerignore
+!DOCS.md
+!README.md
+!config.yaml
+!requirements.txt
+!SOURCE_MANIFEST.sha256
+!dashboard_steward/
+!dashboard_steward/**
+**/__pycache__/
+**/*.pyc
