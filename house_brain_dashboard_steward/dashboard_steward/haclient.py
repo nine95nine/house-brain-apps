@@ -13,8 +13,10 @@ import json
 import os
 import socket
 import struct
+import re
 import time
 
+ENTITY_ID_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z0-9_]+$")  # same as lovelace.RE_ENTITY_ID
 MAX_WS_BYTES = 8 * 1024 * 1024
 MAX_EVENT_BUFFER = 2000
 # command type -> exact key set (besides "id")
@@ -30,7 +32,11 @@ ALLOWED = {
     "get_config": {"type"},
     "subscribe_events": {"type", "event_type"},
     "ping": {"type"},
+    # 0.1.1 (M3): read-only usage signal; Home Assistant 2026.11.2 schema is {type, limit?: int >= 1} and the answer
+    # is {"entities": [entity_id, ...]} for the calling user and the current time of day. No admin needed.
+    "usage_prediction/common_control": {"type", "limit"},
 }
+USAGE_LIMIT_MAX = 50
 EVENT_TYPES = frozenset({"entity_registry_updated", "device_registry_updated", "area_registry_updated",
                          "lovelace_updated", "lovelace_dashboards_updated"})
 
@@ -49,6 +55,10 @@ def check_command(msg: dict) -> None:
         raise HaError("COMMAND_SHAPE_REFUSED", t)
     if t == "lovelace/config":
         if msg["force"] is not False or not (msg["url_path"] is None or isinstance(msg["url_path"], str)):
+            raise HaError("COMMAND_SHAPE_REFUSED", t)
+    if t == "usage_prediction/common_control":
+        lim = msg["limit"]
+        if isinstance(lim, bool) or not isinstance(lim, int) or not 1 <= lim <= USAGE_LIMIT_MAX:
             raise HaError("COMMAND_SHAPE_REFUSED", t)
     if t == "subscribe_events" and msg["event_type"] not in EVENT_TYPES:
         raise HaError("SUBSCRIPTION_REFUSED", str(msg["event_type"])[:60])
@@ -235,6 +245,17 @@ class Session:
 
     def dashboard_config(self, url_path):
         return self.command({"type": "lovelace/config", "url_path": url_path, "force": False})
+
+    def core_config(self) -> dict:
+        res = self.command({"type": "get_config"})
+        return res if isinstance(res, dict) else {}
+
+    def common_control(self, limit: int = 20) -> list:
+        res = self.command({"type": "usage_prediction/common_control", "limit": limit})
+        ents = res.get("entities") if isinstance(res, dict) else None
+        if not isinstance(ents, list):
+            raise HaError("WS_SHAPE", "usage_prediction")
+        return [e for e in ents if isinstance(e, str) and ENTITY_ID_RE.match(e)][:USAGE_LIMIT_MAX]
 
     def close(self):
         self.t.close()

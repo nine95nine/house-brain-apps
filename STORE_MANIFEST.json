@@ -13,10 +13,10 @@
       "version": "0.3.0"
     },
     "house_brain_dashboard_steward": {
-      "files": 27,
-      "source_commit": "7f24f1038499fc7b82399da69eb5549234a6dd6e",
-      "source_manifest_sha256": "4ef705017623cbd85ce45899b36130935e64be1215081831c3d767e673f1fec9",
-      "version": "0.1.0"
+      "files": 28,
+      "source_commit": "ba50d20448af1cf7fde8184862cbc4df1362a8c6",
+      "source_manifest_sha256": "28e2990c8075c9e322c363b85dc84b5553cf2bc6e8823d35ee32f59133e20e38",
+      "version": "0.1.1"
     },
     "house_brain_deployer": {
       "files": 70,
@@ -89,6 +89,6 @@
     "house_brain_dashboard_steward"
   ],
   "schema_version": "house_brain_apps_store_manifest.v1",
-  "source_commit": "7f24f1038499fc7b82399da69eb5549234a6dd6e",
+  "source_commit": "ba50d20448af1cf7fde8184862cbc4df1362a8c6",
   "source_repository": "private engineering repository"
 }

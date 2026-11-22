@@ -98,13 +98,15 @@ def run(options_path: str, db_path: str) -> int:
         model = NoModel(str(e))        # e.g. INFERENCE_HOST_NOT_LOCAL: report it, never call out
     cfg = Config(generation_targets=tuple(opts.get("generation_targets") or ()),
                  model_calls_per_day=int(opts.get("model_calls_per_day") or 48),
+                 main_dashboard=str(opts.get("main_dashboard") or "home-center"),
                  heartbeat_path=os.path.join(os.path.dirname(db_path), "heartbeat.json"), db_path=db_path)
     store = Store(db_path)
     steward = Steward(store, lambda: CoreSocket(token, connect=socket.create_connection), model, config=cfg,
                       gate=gate)
     print(json.dumps({"event": "start", "app": "house_brain_dashboard_steward", "model": model.name,
                       "safety_interlock": "gate injected: READ for reads, ADVISORY for model calls and proposals",
-                      "generation_targets": list(cfg.generation_targets), "control_authority": "NONE"}), flush=True)
+                      "generation_targets": list(cfg.generation_targets), "main_dashboard": cfg.main_dashboard,
+                      "control_authority": "NONE"}), flush=True)
     srv = serve(steward, port=int(opts.get("port") or 8099))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     stop = threading.Event()

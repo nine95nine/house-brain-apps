@@ -34,7 +34,17 @@ python3 -m dashboard_steward check  <baseline.yaml> <candidate.yaml> --url <dash
 | `model_name` | The model to call. |
 | `model_calls_per_day` | Default 48. |
 | `generation_targets` | Empty by default. Each entry needs the owner's pre-YAML approval. |
+| `main_dashboard` | 0.1.1. The owner's main dashboard, default `home-center`. Coverage, data health and pins are measured against it. |
 | `port` | Read-only status page, default 8099. |
+
+**Pages (0.1.1, all GET only, all 503 while the kill switch holds; they show the last gated live read):**
+
+| Page | What it shows |
+|---|---|
+| `coverage` (`coverage.json`) | For every other dashboard: refs, dead, covered, missing, missing controls, ready, against the main dashboard. Dead = not in the registry and not in states, or unavailable/unknown for over 24 h. Ready is necessary, not sufficient: deleting still needs the owner's pop-up and an archive copy first. |
+| `data-health` (`data-health.json`) | Entities on the main dashboard that are unavailable, unknown or missing, longest first, with how long (from states; the recorder database is never opened). |
+| `usage` (`usage.json`) | Home Assistant's `usage_prediction/common_control` list per time of day, each marked pinned, on main or not on main. It is the App's Supervisor identity's usage, not the owner's; display only. One read per hour. |
+| `export` | Download any dashboard's full config (`export/<url_path>.json` or `.yaml`) as last read. Secret-looking values become `<set>`; the file carries `live_config_sha256` to check a repository copy against Deployer scans. Saved only where the owner chooses. |
 
 **Tests:**
 - `python3 -m pytest tests/house_brain_dashboard_steward`

@@ -1,5 +1,5 @@
 name: House Brain Dashboard Steward
-version: "0.1.0"
+version: "0.1.1"
 slug: house_brain_dashboard_steward
 description: Read-only dashboard specialist. Audits dashboards, notices new and renamed devices, and drafts
   owner-reviewed Lovelace YAML with a local model; no dashboard writes, no commands, no state writes.
@@ -23,9 +23,11 @@ options:
   model_name: ""
   model_calls_per_day: 48
   generation_targets: []
+  main_dashboard: home-center
 schema:
   model_url: str?
   model_name: str?
   model_calls_per_day: int(0,200)
   generation_targets:
   - match(^[a-z0-9][a-z0-9_-]{0,62}$)?
+  main_dashboard: match(^[a-z0-9][a-z0-9_-]{0,62}$)?

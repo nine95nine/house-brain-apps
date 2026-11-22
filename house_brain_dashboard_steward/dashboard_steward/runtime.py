@@ -24,11 +24,11 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from . import approval, discovery, generator, lovelace as L, ndec, plan as P, validate as V
+from . import approval, coverage as COV, discovery, generator, lovelace as L, ndec, plan as P, validate as V
 from .haclient import EVENT_TYPES, HaError, Session
 from .inference import ModelUnavailable
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 HEALTH_SCHEMA = "dashboard_steward_health.v1"
 
 
@@ -50,6 +50,9 @@ class Config:
     heartbeat_path: str = ""
     db_path: str = ""
     max_dashboards: int = 64
+    main_dashboard: str = "home-center"   # 0.1.1: the owner's main dashboard (coverage, data health, pins)
+    usage_every_s: float = 3600.0         # usage_prediction is cached 24 h in Core; one read an hour is plenty
+    usage_limit: int = 20
 
 
 def _day(ts: float) -> str:
@@ -86,6 +89,11 @@ class Steward:
         self.inference = {"status": "AI_DEGRADED", "reason": "NOT_PROBED", "last_ok": None}
         self.observation = {"status": "UNKNOWN", "connected": False, "last_reconcile": None, "last_error": ""}
         self.started_at = clock()
+        self.configs: dict = {}               # last live read, memory only (export page); never written anywhere
+        self.configs_at: float | None = None
+        self.views: dict = {"coverage": None, "data_health": None}
+        self.usage: dict = store.get("usage") or {"status": "NOT_READ", "reason": "", "by_category": {}}
+        self.last_usage = -1e18
         self.recovered = store.recover()
         if hasattr(model, "budget") and model.budget is None:
             model.budget = lambda: self.store.spend("model_call", self.cfg.model_calls_per_day, _day(self.clock()))
@@ -197,6 +205,7 @@ class Steward:
                          "cards": sum(1 for e in rep.model.elements if e.level == "card")}
             self.store.put(f"dash:{key}", cfg)
         self.store.put("dashboard_hashes", hashes)
+        self._read_views(s, reg, configs)
         self.store.put("dashboard_debt", debt)
         self.store.put("snapshot", snap)
         self._derive_tasks(events, snap, configs)
@@ -208,6 +217,42 @@ class Steward:
                                 dashboards=len(configs), events_last=len(events))
         self.dirty_since = None
         self._changed = True
+
+    def _read_views(self, s, reg, configs):
+        """0.1.1 M1/M2/M3: coverage, data health and usage from this (already gated) read. Display only."""
+        now = self.clock()
+        main_key = self.cfg.main_dashboard
+        main = configs.get(main_key)
+        registry_ids = [e.get("entity_id") for e in reg["entities"] or [] if isinstance(e, dict)]
+        live = COV.liveness(registry_ids, reg["states"], now)
+        if main is None:
+            cov = {"schema": COV.LEDGER_SCHEMA, "status": "MAIN_DASHBOARD_NOT_FOUND", "main": main_key,
+                   "dashboards": {}, "at": now}
+            dh = {"schema": COV.DATA_HEALTH_SCHEMA, "status": "MAIN_DASHBOARD_NOT_FOUND", "dashboard": main_key,
+                  "at": now, "entities": []}
+        else:
+            old = {k: c for k, c in configs.items() if k != main_key}
+            cov = {**COV.ledger(main, old, live), "status": "OK", "main": main_key, "at": now,
+                   "dead_rule": "not in the entity registry and not in states, or unavailable/unknown > 24 h",
+                   "retired_list_used": False}
+            dh = {**COV.data_health(main, registry_ids, reg["states"], now, main_key), "status": "OK"}
+        self.views = {"coverage": cov, "data_health": dh}
+        self.configs = dict(configs)
+        self.configs_at = now
+        if now - self.last_usage >= self.cfg.usage_every_s:
+            self.last_usage = now
+            try:
+                ents = s.common_control(self.cfg.usage_limit)
+                tz = s.core_config().get("time_zone")
+                cat = COV.local_category(now, tz)
+                by = dict(self.usage.get("by_category") or {})
+                by[cat] = {"entities": ents, "at": now}
+                self.usage = {"status": "OK", "reason": "", "by_category": by}
+                self.store.put("usage", self.usage)
+            except HaError as e:
+                if e.code not in ("WS_COMMAND_FAILED", "WS_SHAPE"):
+                    raise                         # transport faults drop the session as before
+                self.usage = {**self.usage, "status": "UNAVAILABLE", "reason": str(e)[:120]}
 
     def _derive_tasks(self, events, snap, configs):
         new_ids = [e.entity_id for e in events if e.kind == "ENTITY_NEW"]
@@ -420,7 +465,10 @@ class Steward:
         snap = {"health": health, "app_health": app_health(self, self.clock(), self.cfg.db_path),
                 "digest": approval.digest(self.store), "proposal_yaml": props,
                 "debt": {"debt": self.store.get("dashboard_debt", {}),
-                         "opportunities": self.store.get("opportunities", [])}}
+                         "opportunities": self.store.get("opportunities", [])},
+                "hold": self.hold, "coverage": self.views["coverage"], "data_health": self.views["data_health"],
+                "usage": COV.usage_view(self.usage, self.configs.get(self.cfg.main_dashboard)),
+                "configs": self.configs, "configs_at": self.configs_at, "version": VERSION}
         with self._lock:
             self._public = snap
 
