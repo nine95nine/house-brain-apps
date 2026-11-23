@@ -29,7 +29,8 @@ SHORT = {'house_brain_energy_ai': 'Energy AI', 'house_brain_maintenance': 'Maint
          'house_brain_engineering_inspector': 'Inspector', 'house_brain_engineering_observer': 'Observer',
          'house_brain_maintenance_inventory_scout': 'Scout', 'house_brain_cooling_ai': 'Cooling AI',
          'house_brain_water_ai': 'Water AI', 'house_brain_house_health_ai': 'House Health AI',
-         'house_brain_pool_ai': 'Pool AI', 'house_brain_tang': 'Tang'}
+         'house_brain_pool_ai': 'Pool AI', 'house_brain_tang': 'Tang',
+         'house_brain_dashboard_steward': 'Dashboard Steward'}
 
 
 def build(runtime, now):

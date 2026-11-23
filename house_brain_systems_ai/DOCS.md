@@ -1,5 +1,11 @@
 # House Brain Systems AI
 
+Version 0.3.25 (shadow). 0.3.25 watches the **Dashboard Steward** (installed 2026-11-22), which it did not see at all before:
+- It is in the App family and is read like Water AI: `house_brain_app_health.v1` at `/health` on its ingress port.
+- Without a local model, the Steward's own block is DEGRADED with exactly `AI_DEGRADED`. The owner has not set up a model yet, so that one reason set is an **INFO** problem and reads `OK` on the family line (`apps:`). Any other reason, an extra reason, or a failed, stale, invalid or unreachable block keeps the normal warning or error.
+- The rule is one fixed table (`ACCEPTED_HEALTH_REASONS`), for this App only. Changing it is a reviewed release.
+- **Rule before configuring a Steward model (owner pop-up 2026-11-23 "Keep as built + rule", R3 finding F1):** first remove `house_brain_dashboard_steward` from Systems AI `ACCEPTED_HEALTH_REASONS` in a reviewed Systems AI release. Only then set the Steward's `model_url`/`model_name`. The Steward reports `AI_DEGRADED` both with no model and with a broken model, so while the entry exists a broken model would read as INFO and `OK`.
+
 Version 0.3.24 (shadow). 0.3.24 is 0.3.23 with the embedded read policy 1.15.0: the family status sensor (`sensor.house_brain_family_status`) joins the history list, so read-only AI connectors can see 24 hours of its state word (OK, WATCH, PROBLEMS and the rest). Its text stays current-only. No code change, no new route, field or entity.
 
 Version 0.3.23 (shadow). 0.3.23 makes the status words in the `apps:` list on the family line (`sensor.house_brain_family_status`) agree with the problem list:

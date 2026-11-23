@@ -44,6 +44,7 @@ NAMES = {'house_brain_energy_ai': 'Energy', 'house_brain_maintenance': 'Maintena
          'house_brain_engineering_observer': 'Observer', 'house_brain_maintenance_inventory_scout': 'Scout',
          'house_brain_cooling_ai': 'Cooling', 'house_brain_water_ai': 'Water',
          'house_brain_house_health_ai': 'House Health', 'house_brain_pool_ai': 'Pool', 'house_brain_tang': 'Tang',
+         'house_brain_dashboard_steward': 'Steward',
          SELF: 'Systems'}
 RE_NAME = re.compile(r'house_brain_[a-z0-9_]{1,48}')
 RE_SLUG_NAME = re.compile(r'(?:local|[0-9a-f]{8})_(house_brain_[a-z0-9_]{1,48})')
@@ -81,6 +82,8 @@ def status_of(row, always_on=(), seen_started=False, transient=False):
         return 'UNREADABLE'
     health = row.get('health')
     if state == 'started' and health in STATUS_WORDS:
+        if health == 'DEGRADED' and row.get('health_accepted') is True:
+            return 'OK'                  # 0.3.25: an owner-accepted reason (runtime.ACCEPTED_HEALTH_REASONS) is not news
         return 'DEGRADED' if health == 'FAILED' and transient is True else health
     if state == 'error':
         return 'ERROR'

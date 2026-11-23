@@ -45,13 +45,19 @@ RE_SELF = re.compile(r'([0-9a-f]{8})_house_brain_systems_ai')
 FAMILY = ('house_brain_energy_ai', 'house_brain_maintenance', 'house_brain_deployer', 'house_brain_ai_access',
           'house_brain_engineering_inspector', 'house_brain_engineering_observer',
           'house_brain_maintenance_inventory_scout', 'house_brain_cooling_ai', 'house_brain_water_ai',
-          'house_brain_house_health_ai', 'house_brain_pool_ai', 'house_brain_tang')
+          'house_brain_house_health_ai', 'house_brain_pool_ai', 'house_brain_tang', 'house_brain_dashboard_steward')
 # Apps that serve house_brain_app_health.v1 at GET /health on their ingress port. 0.1.2: Cooling AI
 # (design R1, owner pop-up 2026-10-25 "Approve design") serves it from its first release. 0.1.4: Water AI (owner
 # pop-up 2026-10-31 "Yes, build 0.1.4"), which has served it since 0.1.0. 0.3.10: House Health AI and Pool AI (both
 # installed 2026-11-08, serving it since 0.1.0; owner "All right, what's next? Let's continue").
 HEALTH_PUBLISHERS = frozenset({'house_brain_energy_ai', 'house_brain_cooling_ai', 'house_brain_water_ai',
-                               'house_brain_house_health_ai', 'house_brain_pool_ai', 'house_brain_tang'})
+                               'house_brain_house_health_ai', 'house_brain_pool_ai', 'house_brain_tang',
+                               'house_brain_dashboard_steward'})
+# 0.3.25 (Home Center deep dive R2 finding B2, owner pop-up 2026-11-23 "Both, in parallel"): the Dashboard Steward
+# (installed 2026-11-22) was not watched at all. Without a local model its block is DEGRADED with exactly AI_DEGRADED by
+# its own contract (owner: no model yet), so that one reason set reads as INFO for that one App; any other reason, or
+# that reason together with another, keeps the normal WARNING/ERROR. A fixed table: changing it is a reviewed release.
+ACCEPTED_HEALTH_REASONS = {'house_brain_dashboard_steward': frozenset({'AI_DEGRADED'})}
 # 0.3.11: the Tang key server (installed 2026-11-08, boot on) has no ingress; its /health is on internal port 8099,
 # reachable only from the Supervisor network. Apps with ingress keep using their ingress port.
 FIXED_HEALTH_PORTS = {'house_brain_tang': 8099}
@@ -166,8 +172,10 @@ def app_problems(name, slug, info, observed, core_down_at=None):
         # 0.3.21: a FAILED block whose last good cycle is fresh is graded as the App's DEGRADED (a WARNING); the
         # App's own reasons stay in detail, and the next read makes it an ERROR by itself if it has not recovered.
         soft = status == 'DEGRADED' or failed_is_transient(observed, core_down_at)
+        reasons = set(observed.get('reasons') or [])
+        accepted = status == 'DEGRADED' and bool(reasons) and reasons <= ACCEPTED_HEALTH_REASONS.get(name, frozenset())
         out[f'APP:{slug}:HEALTH'] = {
-            'severity': 'WARNING' if soft else 'ERROR',
+            'severity': 'INFO' if accepted else 'WARNING' if soft else 'ERROR', 'accepted': accepted,
             'reason': APP_HEALTH_REASONS['DEGRADED' if soft else status], 'subject': slug, 'owner': 'systems_ai',
             'detail': observed['reasons'][:6],
             'proposal': ('restart_app', slug) if status in ('STALE', 'UNREACHABLE') or (
@@ -438,6 +446,7 @@ class Runtime:
                               'boot_config': info.get('boot_config'),
                               'version': info.get('version'), 'update_available': info.get('update_available'),
                               'health': observed['status'] if observed else None,
+                              'health_accepted': (problems.get(f'APP:{slug}:HEALTH') or {}).get('accepted') is True,
                               'health_reasons': observed['reasons'][:6] if observed else [],
                               'activity': (observed.get('doc') or {}).get('activity') if observed else None,
                               'running_version': (observed.get('doc') or {}).get('version') if observed else None}
