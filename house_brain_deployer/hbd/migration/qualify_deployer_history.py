@@ -35,7 +35,9 @@ OUTCOMES = {"SUCCEEDED", "DRY_RUN_OK", "DRY_RUN_BLOCKED", "ALREADY_APPLIED", "RE
             # This is historical admission only; it grants no owner approval.
             "D5_DASHBOARD_PATCHED", "D5_DASHBOARD_CREATED", "D5_DASHBOARD_FAILED",
             # 0.3.52: D5 replace of its own dashboard and verbatim transplant.
-            "D5_DASHBOARD_REPLACED", "D5_DASHBOARD_TRANSPLANTED"}
+            "D5_DASHBOARD_REPLACED", "D5_DASHBOARD_TRANSPLANTED",
+            # 0.3.53: promote (byte-for-byte copy between D5-owned dashboards) and adopt (no write).
+            "D5_DASHBOARD_PROMOTED", "D5_DASHBOARD_ADOPTED"}
 STAGES = {"DEPLOY", "DRYRUN", "RESTART", "ROLLBACK", "LOOKUP"}
 UNKNOWN_DIGEST = "unknown"   # main.recover / _raw_digest when the request could not be read again
 

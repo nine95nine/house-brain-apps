@@ -85,7 +85,7 @@ def _validated(data: object) -> dict:
         raise D5RecoveryError("D5_PENDING_LEDGER")
     if data["ledger_key"].endswith("#dry"):
         raise D5RecoveryError("D5_PENDING_DRY_WRITE")
-    if data["kind"] not in {"patch", "create", "replace", "transplant"}:   # 0.3.52 adds the last two
+    if data["kind"] not in {"patch", "create", "replace", "transplant", "promote"}:   # 0.3.52/0.3.53 add the last three
         raise D5RecoveryError("D5_PENDING_KIND")
     if type(data["tracking_issue"]) is not int or not 1 <= data["tracking_issue"] <= 10_000_000:
         raise D5RecoveryError("D5_PENDING_ISSUE")
@@ -194,6 +194,8 @@ def recover_result(ha, record: dict) -> Result:
                     return Result("D5_DASHBOARD_REPLACED", ["D5 recovered exact postwrite SHA; no replay"])
                 if record["kind"] == "transplant":
                     return Result("D5_DASHBOARD_TRANSPLANTED", ["D5 recovered exact postwrite SHA; no replay"])
+                if record["kind"] == "promote":
+                    return Result("D5_DASHBOARD_PROMOTED", ["D5 recovered exact postwrite SHA; no replay"])
                 return Result("D5_DASHBOARD_PATCHED", ["D5 recovered exact postwrite SHA; no replay"])
             if current == record["before"]:
                 return Result("D5_DASHBOARD_FAILED", ["D5 original unchanged; no replay"])

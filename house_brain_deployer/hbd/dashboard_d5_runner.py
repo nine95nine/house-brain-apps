@@ -20,7 +20,9 @@ PATCHED = "D5_DASHBOARD_PATCHED"
 CREATED = "D5_DASHBOARD_CREATED"
 REPLACED = dashboard_d5_owned.REPLACED          # 0.3.52
 TRANSPLANTED = dashboard_d5_owned.TRANSPLANTED  # 0.3.52
-DONE = {"patch": PATCHED, "replace": REPLACED, "transplant": TRANSPLANTED}
+PROMOTED = dashboard_d5_owned.PROMOTED          # 0.3.53
+ADOPTED = dashboard_d5_owned.ADOPTED            # 0.3.53
+DONE = {"patch": PATCHED, "replace": REPLACED, "transplant": TRANSPLANTED, "promote": PROMOTED}
 APPROVAL_MESSAGE_LIMIT = 900   # approval.ask shows at most 900 characters; a cut list is never shown
 FAILED = "D5_DASHBOARD_FAILED"
 ROLLBACK_FAILED = "D5_DASHBOARD_MANUAL_RECOVERY"
@@ -70,23 +72,36 @@ def _existing(ha, path: str):
     return found[0] if found else None
 
 
-def _preview_live(engine, req, owned_sha=None):
+def _preview_live(engine, req, owned_sha=None, source_owned_sha=None):
     """Read live state and recompute the exact candidate. Returns (before, candidate, source)."""
     current = _existing(engine.ha, req.dashboard)
-    if req.kind in dashboard_d5.REWRITE_KINDS:
+    if req.kind in dashboard_d5.REWRITE_KINDS or req.kind == "adopt":
         if current is None or current.get("mode") != "storage":
             raise dashboard_d5.D5Refused("STORAGE_DASHBOARD_REQUIRED")
         if req.kind in dashboard_d5.OWNED_KINDS:
             # 0.3.52: only a dashboard D5 itself created, still exactly as D5 last wrote it.
             if owned_sha is None:
                 raise dashboard_d5.D5Refused("NOT_D5_OWNED")
-            if owned_sha != req.expect_config_sha256:
+            if req.kind == "adopt":
+                # 0.3.53: adopt is only for a D5 address whose live config is NOT what D5 last wrote.
+                if owned_sha == req.expect_config_sha256:
+                    raise dashboard_d5.D5Refused("ADOPT_ALREADY_OWNED")
+            elif owned_sha != req.expect_config_sha256:
                 raise dashboard_d5.D5Refused("PROVENANCE_HASH_MISMATCH")
         before = dashboards.read_config(engine.ha, req.dashboard)
         source = None
-        if req.kind == "transplant":
-            if _existing(engine.ha, req.source_dashboard) is None:
+        if req.kind in ("transplant", "promote"):
+            row = _existing(engine.ha, req.source_dashboard)
+            if row is None:
                 raise dashboard_d5.D5Refused("SOURCE_DASHBOARD_MISSING")
+            if req.kind == "promote":
+                # 0.3.53: the source must be D5-owned too, and still exactly as D5 last wrote it.
+                if row.get("mode") != "storage":
+                    raise dashboard_d5.D5Refused("SOURCE_NOT_STORAGE")
+                if source_owned_sha is None:
+                    raise dashboard_d5.D5Refused("SOURCE_NOT_D5_OWNED")
+                if source_owned_sha != req.expect_source_config_sha256:
+                    raise dashboard_d5.D5Refused("SOURCE_PROVENANCE_HASH_MISMATCH")
             source = dashboards.read_config(engine.ha, req.source_dashboard)
         candidate = dashboard_d5.preview(req, before, source)
         return before, candidate, source
@@ -95,26 +110,61 @@ def _preview_live(engine, req, owned_sha=None):
     return None, dashboard_d5.preview(req, None), None
 
 
+def _compact(ids) -> str:
+    """0.3.53: entity ids grouped by domain ("input_number: a, b; script: c") so more fit one tap."""
+    groups: dict[str, list[str]] = {}
+    for e in sorted(ids):
+        dom, _, obj = e.partition(".")
+        groups.setdefault(dom, []).append(obj)
+    return "; ".join(f"{d}: {', '.join(v)}" for d, v in groups.items())
+
+
 def _message(req, before, source) -> str:
-    """The owner's phone text. A transplant lists every copied control; too long = refused, never cut."""
+    """The owner's phone text. Every control the change brings is listed; too long = refused, never cut."""
     head = f"{req.request_id} by {req.requested_by}\nDashboard: {req.dashboard}\n"
-    tail = ("This changes ONLY the chosen storage dashboard after a backup"
-            + ("; Undo is kept. " if req.kind in dashboard_d5.REWRITE_KINDS else ". ")
-            + "No Home Assistant restart, package install or physical control. "
-            "An AI's claimed approval is not trusted.")
+    tail = (("Backup first; Undo kept. " if req.kind in dashboard_d5.REWRITE_KINDS
+             else "" if req.kind == "adopt" else "Backup first. ")
+            + "No restart, package install or device control. An AI's claimed approval is not trusted.")
     if req.kind == "transplant":
         inv = dashboard_d5.inventory([t for _p, t in dashboard_d5.transplant_copies(req, before, source)])
+        have = set(dashboard_d5.inventory([before])["controls"])
+        new = [c for c in inv["controls"] if c not in have]
         n = len(req.plan["operations"])
-        body = (f"Operation: COPY {n} section/card(s) verbatim from {req.source_dashboard} "
-                f"(unchanged, {req.expect_source_config_sha256[:12]}), appended at the end. Source not changed.\n"
+        body = (f"COPY {n} section/card(s) verbatim from {req.source_dashboard} "
+                f"({req.expect_source_config_sha256[:12]}) to the end. Source not changed.\n"
                 f"Templates: {'yes' if inv['templates'] else 'no'}; custom cards: "
                 f"{'yes' if inv['custom_cards'] else 'no'}; entities: {len(inv['entities'])}.\n"
-                + (("Copied controls that can change the house: " + ", ".join(inv["controls"]) + "\n")
-                   if inv["controls"] else "It copies nothing that can change the house.\n")
+                + (("New controls that can change the house: " + _compact(new) + "\n") if new
+                   else "No new control that can change the house.\n")
+                + (f"Controls already on this dashboard: {len(inv['controls']) - len(new)}\n"
+                   if len(inv["controls"]) > len(new) else "")
                 + (("Actions it can run: " + ", ".join(inv["actions"]) + "\n") if inv["actions"] else ""))
         text = head + body + tail
         if len(text) > APPROVAL_MESSAGE_LIMIT:
             raise dashboard_d5.D5Refused("TRANSPLANT_TOO_MANY_FOR_ONE_TAP")
+        return text
+    if req.kind == "promote":
+        result, rebased, other = dashboard_d5.promote_result(req, source)
+        diff = dashboard_d5.control_diff(before, result)
+        body = (f"PROMOTE: make it {'a' if req.rebase_navigation else 'a byte-for-byte'} copy of {req.source_dashboard} "
+                f"({req.expect_source_config_sha256[:12]}), which D5 owns. Source not changed.\n"
+                + (f"Navigation rebased to this dashboard: {rebased} paths"
+                   + (f" ({other} other mentions of {req.source_dashboard} kept)" if other else "") + ".\n"
+                   if req.rebase_navigation else "")
+                + (("Adds controls: " + _compact(diff["added"]) + "\n") if diff["added"] else "Adds no control.\n")
+                + (("Removes controls: " + _compact(diff["removed"]) + "\n") if diff["removed"]
+                   else "Removes no control.\n")
+                + (("New actions: " + ", ".join(diff["actions_added"]) + "\n") if diff["actions_added"] else ""))
+        text = head + body + tail
+        if len(text) > APPROVAL_MESSAGE_LIMIT:
+            raise dashboard_d5.D5Refused("PROMOTE_DIFF_TOO_LONG_FOR_ONE_TAP")
+        return text
+    if req.kind == "adopt":
+        text = (head + f"ADOPT: it was edited after D5's last write ({req.provenance_request_id}). "
+                f"Keep it exactly as it is now ({req.expect_config_sha256[:12]}) and let D5 revise it again "
+                "later. Nothing is changed now.\n" + tail)
+        if len(text) > APPROVAL_MESSAGE_LIMIT:
+            raise dashboard_d5.D5Refused("APPROVAL_TEXT_TOO_LONG")
         return text
     op = {"replace": "REPLACE whole dashboard (D5-created, unchanged since "
                      f"{req.provenance_request_id})"}.get(req.kind, req.kind.upper() + " display-only")
@@ -188,14 +238,16 @@ def run(engine, req: dashboard_d5.D5Request, data_dir: str, dry_run: bool, *,
     """
     engine.j.audit(req.request_id, "RECEIVED", digest=req.digest,
                    requested_by=req.requested_by, kind="dashboard_d5_" + req.kind)
-    owned_sha = None
+    owned_sha = source_owned_sha = None
     try:
         _qualified_core(engine.ha)
         if req.kind in dashboard_d5.OWNED_KINDS:
             if provenance is None:
                 raise dashboard_d5.D5Refused("NOT_D5_OWNED")
             owned_sha = provenance(req.provenance_request_id, req.dashboard)
-        before, candidate, source = _preview_live(engine, req, owned_sha)
+            if req.kind == "promote":
+                source_owned_sha = provenance(req.source_provenance_request_id, req.source_dashboard)
+        before, candidate, source = _preview_live(engine, req, owned_sha, source_owned_sha)
         message = _message(req, before, source)
     except Exception as err:  # noqa: BLE001 - fail closed before owner prompt
         return Result(FAILED, ["D5 preliminary validation: " + str(_errcode(err))[:80]])
@@ -209,11 +261,16 @@ def run(engine, req: dashboard_d5.D5Request, data_dir: str, dry_run: bool, *,
     # TOCTOU: always verify current config and exact candidate AGAIN after owner action.
     try:
         _qualified_core(engine.ha)
-        next_before, next_candidate, next_source = _preview_live(engine, req, owned_sha)
+        next_before, next_candidate, next_source = _preview_live(engine, req, owned_sha, source_owned_sha)
         if next_before != before or next_candidate != candidate or next_source != source:
             raise dashboard_d5.D5Refused("LIVE_CHANGED_AFTER_APPROVAL")
     except Exception as err:  # noqa: BLE001
         return Result(FAILED, ["D5 post-approval drift: " + str(_errcode(err))[:80]])
+    if req.kind == "adopt":
+        # 0.3.53: no write, no backup needed. The ledger outcome (owning) is the whole effect.
+        return Result(ADOPTED, ["D5 adopted the dashboard as it is now; nothing was changed."],
+                      {"dashboard": target, "config_sha256_after": req.expect_config_sha256,
+                       "adopted_over": owned_sha})
     try:
         engine.ha.backup_partial(f"house-brain-d5-{req.request_id}"[:60])
     except Exception as err:  # noqa: BLE001
@@ -262,6 +319,13 @@ def run(engine, req: dashboard_d5.D5Request, data_dir: str, dry_run: bool, *,
             facts["config_sha256_before"] = req.expect_config_sha256
             if req.kind == "replace":
                 return Result(REPLACED, ["D5 replaced its own dashboard exactly; Undo is available."], facts)
+            if req.kind == "promote":
+                result, rebased, _other = dashboard_d5.promote_result(req, source)
+                diff = dashboard_d5.control_diff(before, result)
+                facts["navigation_rebased"] = rebased
+                facts.update({"source_dashboard": req.source_dashboard,
+                              "controls_added": diff["added"][:60], "controls_removed": diff["removed"][:60]})
+                return Result(PROMOTED, ["D5 promoted its own dashboard byte for byte; Undo is available."], facts)
             try:
                 same, source_unchanged = _transplant_readback(engine.ha, req, before, source)
             except Exception:  # noqa: BLE001 - target hash matched, but the copy proof is unknown

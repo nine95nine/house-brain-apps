@@ -34,8 +34,10 @@ from .reask import is_reask, parse_reask
 CREATED = "D5_DASHBOARD_CREATED"
 REPLACED = "D5_DASHBOARD_REPLACED"
 TRANSPLANTED = "D5_DASHBOARD_TRANSPLANTED"
-OWNING_OUTCOMES = frozenset({CREATED, REPLACED, TRANSPLANTED})
-OWNING_KINDS = frozenset({"create", "replace", "transplant"})
+PROMOTED = "D5_DASHBOARD_PROMOTED"   # 0.3.53: the target now holds the D5-owned source byte for byte
+ADOPTED = "D5_DASHBOARD_ADOPTED"     # 0.3.53: the owner re-owned an edited D5 dashboard (no write)
+OWNING_OUTCOMES = frozenset({CREATED, REPLACED, TRANSPLANTED, PROMOTED, ADOPTED})
+OWNING_KINDS = frozenset({"create", "replace", "transplant", "promote", "adopt"})
 
 
 def _refuse(reason: str):

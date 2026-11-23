@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.53 — 2026-11-23 (D5 promote and adopt: revise a dashboard that holds copied sections, and let the owner's own edits back in; SOURCE ONLY; built on 0.3.52)
+
+**Not merged, published, installed or live qualified merely because this changelog is present.** Design review run 2,
+`docs/validation/HOME_CENTER_DESIGN_REVIEW_2026-11-23.md` (B1, B2, B3). Owner pop-up "All of the above" (2026-11-23).
+- **Promote** (`house_brain_dashboard_promote_request.v1`, B1): makes a D5-owned dashboard a byte-for-byte copy of another
+  D5-owned dashboard (typically the test dashboard `/home-command-center` → `/home-center`). Both ownerships are proven
+  as in 0.3.52 and both live hashes must equal what D5 last wrote; the result hash must equal the source hash. Every byte
+  of a D5-owned dashboard was either checked by the R2 card guard (create/replace) or approved by the owner's tap
+  (transplant/adopt), so promote admits nothing new; the tap shows the **control difference** (controls added and
+  removed, new actions), which must equal the request's declared lists. Backup, hash-bound Undo, exact read-back,
+  `FAILED_MANUAL` on uncertainty, read-only restart reconcile. Needed because 0.3.52 replace re-checks the whole new
+  config with the R2 guard and so refuses any dashboard that holds transplanted content (reproduced).
+- **Navigation rebase in promote** (R3 worker finding, 2026-11-23): the test dashboard's own buttons and `back_path`s must
+  point at the test dashboard while the owner reviews it, and at the main address after promote. An optional
+  `rebase_navigation` may only be `{"from": "/<source>/", "to": "/<target>/"}`; it rewrites only `navigation_path` and
+  `back_path` values under that prefix (never text, templates or other keys), must be exactly reversible
+  (`REBASE_AMBIGUOUS` otherwise) and must rewrite something. The tap says how many paths were rebased and how many other
+  mentions of the source address were kept. The candidate hash is the rebased config.
+- **Adopt** (`house_brain_dashboard_adopt_request.v1`, B2): after the owner edits a D5 dashboard in the UI, one tap records
+  the live config as D5's own. **No write, no backup needed.** Only for an address the ledger proves D5 owned, only when
+  the live hash differs from D5's last write, and bound to the exact live hash.
+- **Shorter, denser phone text (B3):** controls grouped by domain (`input_number: a, b; script: c`); a transplant lists only
+  the controls **new** to the target (the rest are counted); fixed text shortened. Long lists are still refused, never cut.
+- Startup history admits `D5_DASHBOARD_PROMOTED` and `D5_DASHBOARD_ADOPTED`; custody list gains 0.3.52.
+- **Workflow composition test** (`tests/test_hbd_dashboard_d5_promote_adopt.py::WorkflowComposition`): the planned sequence
+  transplant → (replace refused) → promote → owner edit → (replace refused) → adopt → replace → Undo, end to end.
+- Mutants M53-01…M53-14 added to `tests/house_brain_deployer/mutation_d5_0352.py` (43 in total, all killed).
+
 ## 0.3.52 — 2026-11-22 (D5 replaces its own dashboard at a stable address, copies old sections verbatim, and a named control row can no longer toggle on one tap; SOURCE ONLY; built on 0.3.50)
 
 **Not merged, published, installed or live qualified merely because this changelog is present.** 0.3.51 stays reserved

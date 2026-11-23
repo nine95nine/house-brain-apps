@@ -17,6 +17,15 @@ lease (and, if Home Assistant was already restarted, it is restarted once more o
 If the write lease is lost, it stops touching files and keeps the recovery intent for a fresh,
 authorized recovery. You get a result notification.
 
+## D5 promote and adopt (source v0.3.53)
+
+`house_brain_dashboard_promote_request.v1` makes one D5-created dashboard an exact copy of another D5-created dashboard
+(both must still be exactly as D5 last wrote them); the phone shows which controls the copy adds or removes. Use it to
+revise a dashboard that holds copied sections: build the next version at the test dashboard, look at it, then promote.
+With `rebase_navigation` the test dashboard's own links (`/home-command-center/...`) become `/home-center/...` on promote.
+`house_brain_dashboard_adopt_request.v1` is for after you edit a D5 dashboard yourself: one tap keeps your version and
+lets D5 revise it again later. Adopt changes nothing.
+
 ## D5 replace-own and verbatim transplant (source v0.3.52)
 
 Not available on 0.3.50 or older. Two more closed request types, both only for a dashboard **D5 itself created** and only

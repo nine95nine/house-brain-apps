@@ -63,12 +63,15 @@ PATCH_SCHEMA = "house_brain_dashboard_patch_request.v1"
 CREATE_SCHEMA = "house_brain_dashboard_create_request.v1"
 REPLACE_SCHEMA = "house_brain_dashboard_replace_request.v1"        # 0.3.52
 TRANSPLANT_SCHEMA = "house_brain_dashboard_transplant_request.v1"  # 0.3.52
+PROMOTE_SCHEMA = "house_brain_dashboard_promote_request.v1"        # 0.3.53
+ADOPT_SCHEMA = "house_brain_dashboard_adopt_request.v1"            # 0.3.53
 SCHEMA_KINDS = {PATCH_SCHEMA: "patch", CREATE_SCHEMA: "create",
-                REPLACE_SCHEMA: "replace", TRANSPLANT_SCHEMA: "transplant"}
+                REPLACE_SCHEMA: "replace", TRANSPLANT_SCHEMA: "transplant",
+                PROMOTE_SCHEMA: "promote", ADOPT_SCHEMA: "adopt"}
 # Kinds that rewrite an existing storage dashboard (before/after hash, Undo copy).
-REWRITE_KINDS = frozenset({"patch", "replace", "transplant"})
-# Kinds allowed only on a dashboard D5 itself created (provenance-bound).
-OWNED_KINDS = frozenset({"replace", "transplant"})
+REWRITE_KINDS = frozenset({"patch", "replace", "transplant", "promote"})
+# Kinds allowed only on a dashboard D5 itself created (provenance-bound). Adopt writes nothing.
+OWNED_KINDS = frozenset({"replace", "transplant", "promote", "adopt"})
 PLAN_SCHEMA = "dashboard_steward_change_plan.v1"
 BINDING_SCOPE = "DASHBOARD_PRESENTATION_ONLY"
 MAX_REQUEST_BYTES = 128 * 1024
@@ -141,6 +144,10 @@ class D5Request:
     source_dashboard: str | None = None              # 0.3.52 transplant
     expect_source_config_sha256: str | None = None   # 0.3.52 transplant
     expect_controls: tuple = ()                      # 0.3.52 transplant
+    source_provenance_request_id: str | None = None  # 0.3.53 promote
+    expect_added_controls: tuple = ()                # 0.3.53 promote
+    expect_removed_controls: tuple = ()              # 0.3.53 promote
+    rebase_navigation: bool = False                  # 0.3.53 promote: /<source>/ -> /<target>/ in nav paths
 
 
 def _refuse_if(condition: bool, reason: str):
@@ -197,16 +204,21 @@ def parse(raw: bytes) -> D5Request:
     fields = {"schema", "request_id", "requested_by", "tracking_issue",
               "dashboard", "proposal_id", "expect_candidate_sha256",
               "plan", "owner_binding"}
-    if kind in REWRITE_KINDS:
+    if kind in REWRITE_KINDS or kind == "adopt":
         fields.add("expect_config_sha256")
     if kind == "create":
         fields.add("title")
     if kind in OWNED_KINDS:
         fields.add("provenance_request_id")
+    if kind == "promote":
+        fields |= {"source_dashboard", "source_provenance_request_id", "expect_source_config_sha256",
+                   "expect_added_controls", "expect_removed_controls"}
     if kind == "transplant":
         fields |= {"source_dashboard", "expect_source_config_sha256", "expect_control_entities"}
-        # The copy's controls are declared and counted, never allowed by a separate list.
-        _refuse_if(set(data) != fields, "REQUEST_FIELDS")
+    if kind in ("transplant", "promote", "adopt"):
+        # Copied/adopted controls are declared and counted, never allowed by a separate list.
+        _refuse_if(set(data) - ({"rebase_navigation"} if kind == "promote" else set()) != fields,
+                   "REQUEST_FIELDS")
     else:
         _refuse_if(set(data) - {"allowed_control_entities"} != fields, "REQUEST_FIELDS")
     allowed = data.get("allowed_control_entities", [])
@@ -232,7 +244,7 @@ def parse(raw: bytes) -> D5Request:
     _refuse_if(not isinstance(expected, str) or not RE_SHA.fullmatch(expected),
                "CANDIDATE_SHA")
     baseline = data.get("expect_config_sha256")
-    if kind in REWRITE_KINDS:
+    if kind in REWRITE_KINDS or kind == "adopt":
         _refuse_if(not isinstance(baseline, str) or not RE_SHA.fullmatch(baseline),
                    "BASELINE_SHA")
     provenance = data.get("provenance_request_id")
@@ -254,6 +266,38 @@ def parse(raw: bytes) -> D5Request:
                               and e.split(".", 1)[0] in ACTUATOR_DOMAINS for e in declared),
                    "EXPECT_CONTROL_ENTITIES")
         controls = tuple(sorted(declared))
+    source_prov = None
+    added = removed = ()
+    if kind == "promote":
+        source = data["source_dashboard"]
+        _refuse_if(not isinstance(source, str) or not RE_URL.fullmatch(source)
+                   or source == dashboard, "SOURCE_DASHBOARD")
+        source_prov = data["source_provenance_request_id"]
+        _refuse_if(not isinstance(source_prov, str) or not RE_REQUEST_ID.fullmatch(source_prov)
+                   or source_prov in (rid, provenance), "SOURCE_PROVENANCE_REQUEST_ID")
+        source_sha = data["expect_source_config_sha256"]
+        _refuse_if(not isinstance(source_sha, str) or not RE_SHA.fullmatch(source_sha), "SOURCE_SHA")
+        rebase = data.get("rebase_navigation")
+        if rebase is not None:
+            # 0.3.53 (R3 worker finding): the test dashboard's own navigation points at itself. The ONLY
+            # allowed rewrite maps "/<source>/" to "/<target>/" in navigation_path/back_path values.
+            _refuse_if(rebase != {"from": f"/{source}/", "to": f"/{dashboard}/"}, "REBASE_NAVIGATION")
+        else:
+            # The result IS the source, byte for byte.
+            _refuse_if(source_sha != expected, "PROMOTE_CANDIDATE_IS_SOURCE")
+        lists = []
+        for key in ("expect_added_controls", "expect_removed_controls"):
+            got = data[key]
+            _refuse_if(not isinstance(got, list) or len(got) > MAX_TRANSPLANT_CONTROLS
+                       or len(set(map(str, got))) != len(got)
+                       or not all(isinstance(e, str) and RE_ENTITY.fullmatch(e)
+                                  and e.split(".", 1)[0] in ACTUATOR_DOMAINS for e in got),
+                       "EXPECT_CONTROL_DIFF")
+            lists.append(tuple(sorted(got)))
+        added, removed = lists
+    if kind == "adopt":
+        # Adopt writes nothing: the "candidate" is the live config being adopted.
+        _refuse_if(expected != baseline, "ADOPT_CANDIDATE_IS_LIVE")
     title = data.get("title", "")
     _refuse_if(kind == "create" and (not isinstance(title, str)
                or not 1 <= len(title) <= 80 or any(ord(x) < 32 for x in title)),
@@ -275,15 +319,19 @@ def parse(raw: bytes) -> D5Request:
                "PLAN_OPERATIONS")
     kinds = {"patch": {"add_card", "add_section", "add_view", "set_view_field"},
              "create": {"new_dashboard"}, "replace": {"replace_config"},
-             "transplant": {"copy_section", "copy_card"}}[kind]
+             "transplant": {"copy_section", "copy_card"},
+             "promote": {"promote"}, "adopt": {"adopt"}}[kind]
     for op in ops:
         _refuse_if(not isinstance(op, dict) or op.get("op") not in kinds,
                    "PLAN_KIND_REFUSED")
     _refuse_if(kind == "create" and len(ops) != 1, "CREATE_ONE_OPERATION")
     _refuse_if(kind == "replace" and len(ops) != 1, "REPLACE_ONE_OPERATION")
+    _refuse_if(kind in ("promote", "adopt") and (len(ops) != 1 or set(ops[0]) != {"op"}),
+               "ONE_BARE_OPERATION")
     return D5Request(kind, rid, issue, who, dashboard, title, proposal,
                      baseline, expected, copy.deepcopy(plan), hashlib.sha256(raw).hexdigest(),
-                     tuple(sorted(allowed)), provenance, source, source_sha, controls)
+                     tuple(sorted(allowed)), provenance, source, source_sha, controls,
+                     source_prov, added, removed, kind == "promote" and data.get("rebase_navigation") is not None)
 
 
 def _display_only(node, *, root=False, depth=0) -> None:
@@ -713,9 +761,79 @@ def inventory(subtrees) -> dict:
             "templates": flags["templates"], "custom_cards": flags["custom_cards"]}
 
 
+NAV_KEYS = ("navigation_path", "back_path")
+
+
+def rebase_navigation(config, old: str, new: str):
+    """0.3.53: rewrite navigation_path/back_path values under ``old`` ("/<source>/", or exactly "/<source>")
+    to ``new``. Returns (config, rewritten count, other mentions of the old address left unchanged)."""
+    count = [0, 0]
+    bare_old, bare_new = old.rstrip("/"), new.rstrip("/")
+
+    def fix(node, depth=0):
+        _refuse_if(depth > 48, "DEPTH")
+        if isinstance(node, dict):
+            out = {}
+            for k, v in node.items():
+                if k in NAV_KEYS and isinstance(v, str) and (v.startswith(old) or v == bare_old):
+                    count[0] += 1
+                    out[k] = new + v[len(old):] if v.startswith(old) else bare_new
+                else:
+                    out[k] = fix(v, depth + 1)
+            return out
+        if isinstance(node, list):
+            return [fix(v, depth + 1) for v in node]
+        if isinstance(node, str) and bare_old in node:
+            count[1] += 1
+        return node
+    return fix(config), count[0], count[1]
+
+
+def promote_result(req: D5Request, source: dict) -> tuple[dict, int, int]:
+    """The exact config promote writes: the source, with the declared navigation rebase only."""
+    if not req.rebase_navigation:
+        return copy.deepcopy(source), 0, 0
+    old, new = f"/{req.source_dashboard}/", f"/{req.dashboard}/"
+    result, n, other = rebase_navigation(source, old, new)
+    # Reversible and exact: mapping back must give the source byte for byte (refuses a source that
+    # already pointed at the target, where the rewrite would not be one-to-one).
+    back, _n, _o = rebase_navigation(result, new, old)
+    _refuse_if(back != source, "REBASE_AMBIGUOUS")
+    _refuse_if(n == 0, "REBASE_NOTHING")
+    return result, n, other
+
+
+def control_diff(before, after) -> dict:
+    """0.3.53 promote: house-changing entities and actions the new config adds or removes."""
+    old, new = inventory([before]), inventory([after])
+    return {"added": sorted(set(new["controls"]) - set(old["controls"])),
+            "removed": sorted(set(old["controls"]) - set(new["controls"])),
+            "actions_added": sorted(set(new["actions"]) - set(old["actions"])),
+            "templates": new["templates"], "custom_cards": new["custom_cards"]}
+
+
 def preview(req: D5Request, baseline: dict | None, source: dict | None = None) -> dict:
     """Locally recompute the exact candidate; refuses a stale or unreviewed hash."""
-    if req.kind in ("patch", "transplant"):
+    if req.kind == "promote":
+        # 0.3.53: the target becomes the D5-owned source byte for byte. Every byte of the source was
+        # either R2-guarded (create/replace) or owner-tapped (transplant/adopt), so nothing new is admitted;
+        # the tap shows the control difference (dashboard_d5_owned proves both ownerships).
+        _refuse_if(not isinstance(baseline, dict), "BASELINE_REQUIRED")
+        _refuse_if(dashboards.config_sha256(baseline) != req.expect_config_sha256,
+                   "D5_OWNED_CHANGED_SINCE_LAST_WRITE")
+        _refuse_if(not isinstance(source, dict), "SOURCE_REQUIRED")
+        _refuse_if(dashboards.config_sha256(source) != req.expect_source_config_sha256, "SOURCE_CHANGED")
+        result = promote_result(req, source)[0] if isinstance(source, dict) else {}
+        _refuse_if(result == baseline, "NO_CHANGE")
+        diff = control_diff(baseline, result)
+        _refuse_if(tuple(diff["added"]) != req.expect_added_controls
+                   or tuple(diff["removed"]) != req.expect_removed_controls, "PROMOTE_CONTROLS_MISMATCH")
+    elif req.kind == "adopt":
+        # 0.3.53: no write. Binds the live config (an owner edit) as D5's own after the owner's tap.
+        _refuse_if(not isinstance(baseline, dict), "BASELINE_REQUIRED")
+        _refuse_if(dashboards.config_sha256(baseline) != req.expect_config_sha256, "ADOPT_LIVE_CHANGED")
+        result = copy.deepcopy(baseline) if isinstance(baseline, dict) else {}
+    elif req.kind in ("patch", "transplant"):
         _refuse_if(not isinstance(baseline, dict), "BASELINE_REQUIRED")
         _refuse_if(dashboards.config_sha256(baseline) != req.expect_config_sha256,
                    "STALE_BASELINE" if req.kind == "patch" else "D5_OWNED_CHANGED_SINCE_LAST_WRITE")
